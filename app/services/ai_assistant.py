@@ -173,6 +173,8 @@ async def get_today_stats(user_id: int) -> dict:
         )
         if recovery_row["spo2_percentage"]:
             recovery_info += f", SpO2 {recovery_row['spo2_percentage']}%"
+        if recovery_row["skin_temp_celsius"]:
+            recovery_info += f", skin temp {recovery_row['skin_temp_celsius']}°C"
 
     # Recent WHOOP workouts (last 3)
     activity_rows = await pool.fetch(
