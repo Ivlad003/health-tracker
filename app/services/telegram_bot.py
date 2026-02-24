@@ -256,7 +256,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             logger.exception("Voice transcription failed for user %s", telegram_user_id)
             await update.message.reply_text(
-                "Sorry, I couldn't process your voice message. Please try again."
+                "🎙 Не вдалося обробити голосове повідомлення. Спробуй ще раз."
             )
             return
     elif update.message.text:
@@ -274,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("GPT call failed for user %s", telegram_user_id)
         await update.message.reply_text(
-            "Something went wrong. Please try again in a moment."
+            "😔 Щось пішло не так. Спробуй ще раз через хвилинку."
         )
         return
 
@@ -290,15 +290,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Add logged calories to compensate.
             total_in = stats["today_calories_in"] + just_logged_cals
             total_out = stats["today_calories_out"]
-            balance_line = f"\n\nToday: {total_in} / {daily_calorie_goal} kcal"
+            balance_line = f"\n\n📊 {total_in} / {daily_calorie_goal} kcal"
             if total_out > 0:
-                balance_line += f" (burned: {total_out} kcal)"
+                balance_line += f"  🔥 {total_out} спалено"
             response_text += balance_line
 
         elif intent == "delete_entry":
             deleted = await _handle_delete_entry(user_id)
             if not deleted:
-                response_text = "No food entries to delete."
+                response_text = "🤷 Немає записів для видалення."
 
         elif intent == "general" and gpt_result.get("calorie_goal"):
             try:
@@ -310,36 +310,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     except Exception:
         logger.exception("Intent handler failed for user %s, intent=%s", telegram_user_id, intent)
-        response_text = response_text or "I ran into an error processing your request."
+        response_text = response_text or "😔 Виникла помилка при обробці запиту."
 
     await save_conversation_message(user_id, "assistant", response_text, intent)
     await update.message.reply_text(response_text)
 
 
 HELP_TEXT = (
-    "Привіт! Я твій персональний помічник з здоров'я.\n\n"
-    "Що я вмію:\n"
-    "- Записувати їжу (просто напиши що з'їв, наприклад: \"200г курячої грудки з рисом\")\n"
-    "- Голосові повідомлення (скажи що з'їв голосом)\n"
-    "- Показувати калорії за день (з FatSecret + записи в боті)\n"
-    "- Показувати дані WHOOP (сон, відновлення, тренування)\n"
-    "- Видалити останній запис (\"видали останнє\")\n"
-    "- Встановити ціль калорій (\"встанови ціль 2500 ккал\")\n"
-    "- /sync — примусова синхронізація WHOOP + FatSecret\n\n"
-    "Підключення сервісів:\n\n"
-    "WHOOP (сон, відновлення, активність):\n"
-    f"{settings.app_base_url}/whoop/callback — після авторизації дані синхронізуються щогодини\n"
-    "Посилання для підключення:\n"
-    f"https://api.prod.whoop.com/oauth/oauth2/auth?"
-    f"client_id={settings.whoop_client_id}"
-    f"&redirect_uri={settings.whoop_redirect_uri}"
-    f"&response_type=code"
-    f"&scope=read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
-    f"&state={{telegram_id}}\n\n"
-    "FatSecret (щоденник їжі):\n"
-    f"{settings.app_base_url}/fatsecret/connect?state={{telegram_id}}\n\n"
-    "Ранкова зведення о 08:00, вечірня — о 21:00 (Київ).\n\n"
-    "Просто пиши мені як другу — я розумію українську та англійську!"
+    "👋 Привіт! Я твій персональний помічник з здоров'я.\n"
+    "\n"
+    "🍎 Що я вмію:\n"
+    "  ▸ Записувати їжу — просто напиши що з'їв\n"
+    "     Наприклад: «200г курячої грудки з рисом»\n"
+    "  ▸ 🎙 Голосові — скажи що з'їв голосом\n"
+    "  ▸ 📊 Калорії за день з FatSecret + WHOOP\n"
+    "  ▸ 😴 Дані WHOOP — сон, відновлення, тренування\n"
+    "  ▸ 🗑 Видалити останній запис — «видали останнє»\n"
+    "  ▸ 🎯 Встановити ціль — «встанови ціль 2500 ккал»\n"
+    "\n"
+    "🔗 Підключення сервісів:\n"
+    "  ⌚ WHOOP → /connect_whoop\n"
+    "  🥗 FatSecret → /connect_fatsecret\n"
+    "  🔄 Синхронізувати → /sync\n"
+    "\n"
+    "⏰ Авто-зведення: 08:00 🌅 та 21:00 🌙 (Київ)\n"
+    "\n"
+    "Просто пиши мені як другу — я розумію 🇺🇦 та 🇬🇧!"
 )
 
 
@@ -348,9 +344,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message or not update.effective_user:
         return
 
-    telegram_id = update.effective_user.id
-    text = HELP_TEXT.replace("{telegram_id}", str(telegram_id))
-    await update.message.reply_text(text, disable_web_page_preview=True)
+    await update.message.reply_text(HELP_TEXT, disable_web_page_preview=True)
 
 
 async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -368,7 +362,11 @@ async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYP
         f"&state={telegram_id}"
     )
     await update.message.reply_text(
-        f"Підключити WHOOP (сон, відновлення, активність):\n\n{url}",
+        f"⌚ Підключити WHOOP\n"
+        f"\n"
+        f"Сон, відновлення, активність — все буде доступно після авторизації.\n"
+        f"\n"
+        f"👉 {url}",
         disable_web_page_preview=True,
     )
 
@@ -381,7 +379,11 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
     telegram_id = update.effective_user.id
     url = f"{settings.app_base_url}/fatsecret/connect?state={telegram_id}"
     await update.message.reply_text(
-        f"Підключити FatSecret (щоденник їжі):\n\n{url}",
+        f"🥗 Підключити FatSecret\n"
+        f"\n"
+        f"Щоденник їжі — синхронізується автоматично.\n"
+        f"\n"
+        f"👉 {url}",
         disable_web_page_preview=True,
     )
 
@@ -395,7 +397,7 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = await _ensure_user(telegram_user_id, update.effective_user.username)
     user_id = user["id"]
 
-    await update.message.reply_text("Синхронізую дані...")
+    await update.message.reply_text("🔄 Синхронізую дані...")
 
     pool = await get_pool()
     results = []
@@ -414,12 +416,12 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         try:
             from app.services.whoop_sync import sync_whoop_user
             await sync_whoop_user(dict(whoop_row), pool, lookback_hours=168)
-            results.append("WHOOP: синхронізовано (7 днів)")
+            results.append("⌚ WHOOP — ✅ синхронізовано (7 днів)")
         except Exception:
             logger.exception("Sync WHOOP failed for user_id=%s", user_id)
-            results.append("WHOOP: помилка синхронізації")
+            results.append("⌚ WHOOP — ❌ помилка синхронізації")
     else:
-        results.append("WHOOP: не підключено")
+        results.append("⌚ WHOOP — ⚠️ не підключено")
 
     # Sync FatSecret diary (fetch today's data to verify connection)
     fs_row = await pool.fetchrow(
@@ -435,14 +437,14 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             count = diary.get("entries_count", 0)
             cals = diary.get("total_calories", 0)
-            results.append(f"FatSecret: синхронізовано ({count} записів, {cals} kcal сьогодні)")
+            results.append(f"🥗 FatSecret — ✅ {count} записів, {cals} kcal сьогодні")
         except Exception:
             logger.exception("Sync FatSecret failed for user_id=%s", user_id)
-            results.append("FatSecret: помилка синхронізації")
+            results.append("🥗 FatSecret — ❌ помилка синхронізації")
     else:
-        results.append("FatSecret: не підключено")
+        results.append("🥗 FatSecret — ⚠️ не підключено")
 
-    await update.message.reply_text("Результат:\n" + "\n".join(results))
+    await update.message.reply_text("✅ Синхронізація завершена\n\n" + "\n".join(results))
 
 
 async def start_bot() -> None:
