@@ -215,3 +215,5 @@ __marimo__/
 
 durations.svg
 .codespeak/ignored/
+.mcp.json
+.env
