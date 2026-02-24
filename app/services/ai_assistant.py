@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -59,9 +60,9 @@ def _build_context_messages(
         f"(FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}, "
         f"bot-only entries: {user_data.get('today_calories_in_bot', 0)}). "
         f"Note: bot entries sync to FatSecret, so FatSecret total is the source of truth when connected. "
-        f"Today's calories burned: {user_data.get('today_calories_out', 0)} kcal "
-        f"({user_data.get('today_workout_count', 0)} workouts, "
-        f"total strain: {user_data.get('today_strain', 0)}). "
+        f"Today's total calories burned (WHOOP daily): {user_data.get('today_calories_out', 0)} kcal "
+        f"(daily strain: {user_data.get('today_strain', 0)}, "
+        f"{user_data.get('today_workout_count', 0)} tracked workouts). "
         f"Note: WHOOP doesn't track steps. Recovery score is the best stress indicator "
         f"(low recovery = high physiological stress)."
     )
@@ -137,9 +138,34 @@ async def get_today_stats(user_id: int) -> dict:
              AND wa.started_at < CURRENT_DATE + INTERVAL '1 day'""",
         user_id,
     )
-    calories_out = float(row2["today_calories_out"]) if row2 else 0
-    today_strain = round(float(row2["today_strain"]) if row2 else 0, 1)
+    workout_calories = float(row2["today_calories_out"]) if row2 else 0
+    workout_strain = round(float(row2["today_strain"]) if row2 else 0, 1)
     workout_count = int(row2["workout_count"]) if row2 else 0
+
+    # Fetch WHOOP daily cycle (total daily calories + strain, not just workouts)
+    daily_cycle = {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0}
+    whoop_row = await pool.fetchrow(
+        "SELECT whoop_access_token, whoop_token_expires_at FROM users WHERE id = $1",
+        user_id,
+    )
+    if whoop_row and whoop_row["whoop_access_token"]:
+        try:
+            from app.services.whoop_sync import fetch_daily_cycle, refresh_token_if_needed
+            user_dict = await pool.fetchrow(
+                """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
+                   FROM users WHERE id = $1""",
+                user_id,
+            )
+            if user_dict:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    token = await refresh_token_if_needed(dict(user_dict), client, pool)
+                daily_cycle = await fetch_daily_cycle(token)
+        except Exception:
+            logger.warning("Failed to fetch WHOOP daily cycle for user_id=%s", user_id)
+
+    # Use cycle data for total daily calories/strain, fall back to workout data
+    calories_out = daily_cycle["calories"] or round(workout_calories)
+    today_strain = daily_cycle["strain"] or workout_strain
 
     # Latest WHOOP sleep data
     sleep_row = await pool.fetchrow(

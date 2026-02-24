@@ -198,6 +198,37 @@ async def store_sleep(pool, records: list[dict]) -> int:
     return len(records)
 
 
+async def fetch_daily_cycle(access_token: str) -> dict:
+    """Fetch today's WHOOP cycle (daily strain + total calories burned)."""
+    from datetime import timedelta
+
+    start = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{WHOOP_API_BASE}/cycle",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"limit": "1", "start": start},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    records = data.get("records", [])
+    if not records:
+        return {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0}
+
+    latest = records[0]
+    score = latest.get("score", {}) or {}
+    kilojoules = score.get("kilojoule", 0) or 0
+
+    return {
+        "strain": round(score.get("strain", 0) or 0, 1),
+        "calories": round(kilojoules / 4.184),
+        "avg_hr": round(score.get("average_heart_rate", 0) or 0),
+        "max_hr": round(score.get("max_heart_rate", 0) or 0),
+    }
+
+
 async def sync_whoop_user(user: dict, pool, lookback_hours: int = 2) -> None:
     """Sync WHOOP data for a single user with configurable lookback window."""
     from datetime import timedelta
