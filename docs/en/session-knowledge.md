@@ -213,6 +213,7 @@ In Code node v1:
 - `$('Node Name').item.json` works in both versions
 - `$json` shorthand works in both versions
 - `$now`, `$env` work in both versions
+- **Return `[]` to drop items** - returning `item` when data is empty forwards raw data to downstream nodes, causing SQL errors. Use `return [];` to stop propagation
 
 ### n8n Workflow Activation via API
 
@@ -272,6 +273,22 @@ The WHOOP client ID in n8n environment variables was truncated (missing last 2 c
 - Use `"operation": "before"` (not `"beforeOrEqual"` - it doesn't exist)
 - Do NOT use `"singleValue": true` on binary operators like "exists"
 - Add `"version": 2` in conditions options for v2.3 IF nodes
+
+### n8n Code Node - Empty Records Cause SQL Syntax Errors
+
+**Bug found 2026-02-24:** When WHOOP API returns no records (`records: []`), Process nodes (Workouts/Recovery/Sleep) did `return item;` which passed the raw API response to Store nodes. The SQL template resolved `{{ $json.user_id }}` to empty, producing `VALUES (, '...'` — a syntax error near `,`.
+
+**Fix:** Change `return item;` to `return [];` when `!records.length`. Returning an empty array means no items flow to the Store node, so the SQL never executes.
+
+```javascript
+// WRONG - passes raw API response to next node
+if (!records.length) return item;
+
+// CORRECT - drops the item, Store node won't execute
+if (!records.length) return [];
+```
+
+**Applied to:** `Process Workouts`, `Process Recovery`, `Process Sleep` in WHOOP Data Sync workflow (`nAjGDfKdddSDH2MD`).
 
 ---
 
