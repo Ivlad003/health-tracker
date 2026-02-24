@@ -112,6 +112,7 @@ async def create_food_diary_entry(
     access_token: str,
     access_secret: str,
     food_id: str,
+    food_entry_name: str,
     serving_id: str,
     number_of_units: float,
     meal_type: str = "other",
@@ -127,6 +128,7 @@ async def create_food_diary_entry(
         "method": "food_entry.create.v2",
         "format": "json",
         "food_id": str(food_id),
+        "food_entry_name": food_entry_name,
         "serving_id": str(serving_id),
         "number_of_units": str(number_of_units),
         "meal": _meal_type_to_fatsecret(meal_type),
@@ -165,10 +167,19 @@ async def create_food_diary_entry(
             )
             return False
 
+        # FatSecret returns 200 even for errors — check response body
+        try:
+            data = resp.json()
+            if "error" in data:
+                logger.error("FatSecret create entry error: %s", data["error"])
+                return False
+        except Exception:
+            pass
+
     logger.info(
-        "FatSecret diary entry created: food_id=%s serving_id=%s units=%s meal=%s date=%s response=%s",
-        food_id, serving_id, number_of_units,
-        _meal_type_to_fatsecret(meal_type), date, resp.text[:200],
+        "FatSecret diary entry created: food_id=%s name=%s serving_id=%s units=%s meal=%s",
+        food_id, food_entry_name, serving_id, number_of_units,
+        _meal_type_to_fatsecret(meal_type),
     )
     return True
 

@@ -131,12 +131,14 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
         fat = 0.0
         carbs = 0.0
         food_id = ""
+        food_name_fs = ""
 
         try:
             result = await search_food(name_en, max_results=1)
             foods = result.get("results", [])
             if foods:
                 food_id = foods[0].get("food_id", "")
+                food_name_fs = foods[0].get("name", name_en)
                 nutrients = _parse_fatsecret_description(foods[0].get("description", ""))
                 serving = nutrients.get("serving_size", 100.0) or 100.0
                 factor = quantity_g / serving
@@ -169,6 +171,7 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                         access_token=fs_token,
                         access_secret=fs_secret,
                         food_id=food_id,
+                        food_entry_name=food_name_fs,
                         serving_id=serving["serving_id"],
                         number_of_units=round(units, 2),
                         meal_type=meal_type,
