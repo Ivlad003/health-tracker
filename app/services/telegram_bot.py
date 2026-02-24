@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -344,6 +344,14 @@ async def start_bot() -> None:
     )
 
     await _application.initialize()
+
+    await _application.bot.set_my_commands([
+        BotCommand("start", "Почати / Інструкція"),
+        BotCommand("help", "Допомога"),
+        BotCommand("connect_whoop", "Підключити WHOOP"),
+        BotCommand("connect_fatsecret", "Підключити FatSecret"),
+    ])
+
     await _application.start()
     await _application.updater.start_polling(drop_pending_updates=True)
     logger.info("Telegram bot started (long polling)")
