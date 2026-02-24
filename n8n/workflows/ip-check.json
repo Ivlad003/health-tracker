@@ -1,0 +1,41 @@
+{
+  "_comment": "IP Check | n8n ID: g3IFs0z6mPYtwPI9 | Status: Active (utility)",
+  "_note": "Utility workflow to check n8n server outbound IP. GET /webhook/ip-check",
+  "name": "IP Check",
+  "nodes": [
+    {
+      "id": "webhook-ip",
+      "name": "IP Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ip-check",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "ip-check"
+    },
+    {
+      "id": "get-ip",
+      "name": "Get IP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [490, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.ipify.org?format=json",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "IP Webhook": {
+      "main": [[{ "node": "Get IP", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

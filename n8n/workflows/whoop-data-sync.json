@@ -1,0 +1,308 @@
+{
+  "_comment": "WHOOP Data Sync | n8n ID: nAjGDfKdddSDH2MD | Status: Active (hourly)",
+  "_note": "Replace ${WHOOP_CLIENT_ID} and ${WHOOP_CLIENT_SECRET} with n8n env vars or hardcoded values.",
+  "name": "WHOOP Data Sync",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [208, 304],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours" }] }
+      }
+    },
+    {
+      "id": "get-users",
+      "name": "Get WHOOP Users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [432, 304],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT id, telegram_user_id, whoop_user_id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at FROM users WHERE whoop_access_token IS NOT NULL AND whoop_user_id IS NOT NULL",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "pet_pg_db" }
+      }
+    },
+    {
+      "id": "check-token",
+      "name": "Token Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [640, 304],
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-expiry",
+              "leftValue": "={{ $json.whoop_token_expires_at }}",
+              "rightValue": "={{ $now.toISO() }}",
+              "operator": { "type": "dateTime", "operation": "before" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "refresh-token",
+      "name": "Refresh Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 208],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.prod.whoop.com/oauth/oauth2/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "grant_type", "value": "refresh_token" },
+            { "name": "refresh_token", "value": "={{ $json.whoop_refresh_token }}" },
+            { "name": "client_id", "value": "=${WHOOP_CLIENT_ID}" },
+            { "name": "client_secret", "value": "=${WHOOP_CLIENT_SECRET}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "update-tokens",
+      "name": "Update Tokens in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1104, 208],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE users SET whoop_access_token = '{{ $json.access_token }}', whoop_refresh_token = '{{ $json.refresh_token }}', whoop_token_expires_at = NOW() + INTERVAL '{{ $json.expires_in }} seconds', updated_at = NOW() WHERE id = {{ $('Get WHOOP Users').item.json.id }} RETURNING id, whoop_access_token, whoop_user_id",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "pet_pg_db" }
+      }
+    },
+    {
+      "id": "merge-token",
+      "name": "Merge Token Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1328, 304],
+      "parameters": {
+        "jsCode": "const item = items[0];\nlet accessToken, userId, dbUserId;\nif (item.json.whoop_access_token) {\n  accessToken = item.json.whoop_access_token;\n  userId = item.json.whoop_user_id;\n  dbUserId = item.json.id;\n} else {\n  accessToken = item.json.whoop_access_token || $('Get WHOOP Users').item.json.whoop_access_token;\n  userId = $('Get WHOOP Users').item.json.whoop_user_id;\n  dbUserId = $('Get WHOOP Users').item.json.id;\n}\nreturn [{ json: { access_token: accessToken, whoop_user_id: userId, user_id: dbUserId } }];"
+      }
+    },
+    {
+      "id": "fetch-workouts",
+      "name": "Fetch Workouts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1568, 192],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "parameters": {
+        "url": "https://api.prod.whoop.com/developer/v2/activity/workout",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "limit", "value": "25" },
+            { "name": "start", "value": "={{ $now.minus({hours: 2}).toISO() }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $json.access_token }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-recovery",
+      "name": "Fetch Recovery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1568, 352],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "parameters": {
+        "url": "https://api.prod.whoop.com/developer/v2/recovery",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "limit", "value": "10" },
+            { "name": "start", "value": "={{ $now.minus({hours: 2}).toISO() }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $('Merge Token Data').item.json.access_token }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-sleep",
+      "name": "Fetch Sleep",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1568, 512],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "parameters": {
+        "url": "https://api.prod.whoop.com/developer/v2/activity/sleep",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "limit", "value": "10" },
+            { "name": "start", "value": "={{ $now.minus({hours: 2}).toISO() }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $('Merge Token Data').item.json.access_token }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "process-workouts",
+      "name": "Process Workouts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1808, 192],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const records = item.json.records || [];\nconst userId = $('Merge Token Data').item.json.user_id;\nif (!records.length) return [];\nreturn records.map(w => ({\n  json: {\n    user_id: userId,\n    whoop_workout_id: String(w.id),\n    sport_name: w.sport_name || 'unknown',\n    score_state: w.score_state || 'PENDING_SCORE',\n    kilojoules: w.score?.kilojoule || 0,\n    calories: (w.score?.kilojoule || 0) / 4.184,\n    strain: w.score?.strain || 0,\n    avg_heart_rate: w.score?.average_heart_rate || 0,\n    max_heart_rate: w.score?.max_heart_rate || 0,\n    started_at: w.start,\n    ended_at: w.end\n  }\n}));"
+      }
+    },
+    {
+      "id": "store-workouts",
+      "name": "Store Workouts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2048, 192],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO whoop_activities (user_id, whoop_workout_id, sport_name, score_state, kilojoules, calories, strain, avg_heart_rate, max_heart_rate, started_at, ended_at) VALUES ({{ $json.user_id }}, '{{ $json.whoop_workout_id }}', '{{ $json.sport_name }}', '{{ $json.score_state }}', {{ $json.kilojoules }}, {{ $json.calories }}, {{ $json.strain }}, {{ $json.avg_heart_rate }}, {{ $json.max_heart_rate }}, '{{ $json.started_at }}', '{{ $json.ended_at }}') ON CONFLICT (whoop_workout_id) DO UPDATE SET score_state = EXCLUDED.score_state, calories = EXCLUDED.calories, strain = EXCLUDED.strain, updated_at = NOW()",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "pet_pg_db" }
+      }
+    },
+    {
+      "id": "process-recovery",
+      "name": "Process Recovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1808, 352],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const records = item.json.records || [];\nconst userId = $('Merge Token Data').item.json.user_id;\nif (!records.length) return [];\nreturn records.map(r => ({\n  json: {\n    user_id: userId,\n    whoop_cycle_id: String(r.cycle_id),\n    recovery_score: r.score?.recovery_score || 0,\n    resting_heart_rate: r.score?.resting_heart_rate || 0,\n    hrv_rmssd_milli: r.score?.hrv_rmssd_milli || 0,\n    spo2_percentage: r.score?.spo2_percentage || 0,\n    skin_temp_celsius: r.score?.skin_temp_celsius || 0,\n    recorded_at: r.created_at\n  }\n}));"
+      }
+    },
+    {
+      "id": "store-recovery",
+      "name": "Store Recovery",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2048, 352],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO whoop_recovery (user_id, whoop_cycle_id, recovery_score, resting_heart_rate, hrv_rmssd_milli, spo2_percentage, skin_temp_celsius, recorded_at) VALUES ({{ $json.user_id }}, '{{ $json.whoop_cycle_id }}', {{ $json.recovery_score }}, {{ $json.resting_heart_rate }}, {{ $json.hrv_rmssd_milli }}, {{ $json.spo2_percentage }}, {{ $json.skin_temp_celsius }}, '{{ $json.recorded_at }}') ON CONFLICT (whoop_cycle_id) DO UPDATE SET recovery_score = EXCLUDED.recovery_score, resting_heart_rate = EXCLUDED.resting_heart_rate, hrv_rmssd_milli = EXCLUDED.hrv_rmssd_milli",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "pet_pg_db" }
+      }
+    },
+    {
+      "id": "process-sleep",
+      "name": "Process Sleep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1808, 512],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const records = item.json.records || [];\nconst userId = $('Merge Token Data').item.json.user_id;\nif (!records.length) return [];\nreturn records.map(s => ({\n  json: {\n    user_id: userId,\n    whoop_sleep_id: String(s.id),\n    score_state: s.score_state || 'PENDING_SCORE',\n    sleep_performance: s.score?.sleep_performance_percentage || 0,\n    sleep_consistency: s.score?.sleep_consistency_percentage || 0,\n    sleep_efficiency: s.score?.sleep_efficiency_percentage || 0,\n    total_sleep_milli: s.score?.stage_summary?.total_in_bed_time_milli || 0,\n    total_rem_milli: s.score?.stage_summary?.total_rem_sleep_time_milli || 0,\n    total_sws_milli: s.score?.stage_summary?.total_slow_wave_sleep_time_milli || 0,\n    total_light_milli: s.score?.stage_summary?.total_light_sleep_time_milli || 0,\n    total_awake_milli: s.score?.stage_summary?.total_awake_time_milli || 0,\n    respiratory_rate: s.score?.respiratory_rate || 0,\n    started_at: s.start,\n    ended_at: s.end\n  }\n}));"
+      }
+    },
+    {
+      "id": "store-sleep",
+      "name": "Store Sleep",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2048, 512],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO whoop_sleep (user_id, whoop_sleep_id, score_state, sleep_performance_percentage, sleep_consistency_percentage, sleep_efficiency_percentage, total_sleep_time_milli, total_rem_sleep_milli, total_slow_wave_sleep_milli, total_light_sleep_milli, total_awake_milli, respiratory_rate, started_at, ended_at) VALUES ({{ $json.user_id }}, '{{ $json.whoop_sleep_id }}', '{{ $json.score_state }}', {{ $json.sleep_performance }}, {{ $json.sleep_consistency }}, {{ $json.sleep_efficiency }}, {{ $json.total_sleep_milli }}, {{ $json.total_rem_milli }}, {{ $json.total_sws_milli }}, {{ $json.total_light_milli }}, {{ $json.total_awake_milli }}, {{ $json.respiratory_rate }}, '{{ $json.started_at }}', '{{ $json.ended_at }}') ON CONFLICT (whoop_sleep_id) DO UPDATE SET score_state = EXCLUDED.score_state, sleep_performance_percentage = EXCLUDED.sleep_performance_percentage",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "YOUR_POSTGRES_CREDENTIAL_ID", "name": "pet_pg_db" }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Get WHOOP Users", "type": "main", "index": 0 }]]
+    },
+    "Get WHOOP Users": {
+      "main": [[{ "node": "Token Expired?", "type": "main", "index": 0 }]]
+    },
+    "Token Expired?": {
+      "main": [
+        [{ "node": "Refresh Token", "type": "main", "index": 0 }],
+        [{ "node": "Merge Token Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Refresh Token": {
+      "main": [[{ "node": "Update Tokens in DB", "type": "main", "index": 0 }]]
+    },
+    "Update Tokens in DB": {
+      "main": [[{ "node": "Merge Token Data", "type": "main", "index": 0 }]]
+    },
+    "Merge Token Data": {
+      "main": [[
+        { "node": "Fetch Workouts", "type": "main", "index": 0 },
+        { "node": "Fetch Recovery", "type": "main", "index": 0 },
+        { "node": "Fetch Sleep", "type": "main", "index": 0 }
+      ]]
+    },
+    "Fetch Workouts": {
+      "main": [[{ "node": "Process Workouts", "type": "main", "index": 0 }]]
+    },
+    "Process Workouts": {
+      "main": [[{ "node": "Store Workouts", "type": "main", "index": 0 }]]
+    },
+    "Fetch Recovery": {
+      "main": [[{ "node": "Process Recovery", "type": "main", "index": 0 }]]
+    },
+    "Process Recovery": {
+      "main": [[{ "node": "Store Recovery", "type": "main", "index": 0 }]]
+    },
+    "Fetch Sleep": {
+      "main": [[{ "node": "Process Sleep", "type": "main", "index": 0 }]]
+    },
+    "Process Sleep": {
+      "main": [[{ "node": "Store Sleep", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
