@@ -6,6 +6,7 @@ from decimal import Decimal
 from telegram import Update
 from telegram.ext import (
     Application,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -252,6 +253,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(response_text)
 
 
+HELP_TEXT = (
+    "Привіт! Я твій персональний помічник з здоров'я.\n\n"
+    "Що я вмію:\n"
+    "- Записувати їжу (просто напиши що з'їв, наприклад: \"200г курячої грудки з рисом\")\n"
+    "- Голосові повідомлення (скажи що з'їв голосом)\n"
+    "- Показувати калорії за день (з FatSecret + записи в боті)\n"
+    "- Показувати дані WHOOP (сон, відновлення, тренування)\n"
+    "- Видалити останній запис (\"видали останнє\")\n"
+    "- Встановити ціль калорій (\"встанови ціль 2500 ккал\")\n\n"
+    "Підключення сервісів:\n\n"
+    "WHOOP (сон, відновлення, активність):\n"
+    f"{settings.app_base_url}/whoop/callback — після авторизації дані синхронізуються щогодини\n"
+    "Посилання для підключення:\n"
+    f"https://api.prod.whoop.com/oauth/oauth2/auth?"
+    f"client_id={settings.whoop_client_id}"
+    f"&redirect_uri={settings.whoop_redirect_uri}"
+    f"&response_type=code"
+    f"&scope=read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
+    f"&state={{telegram_id}}\n\n"
+    "FatSecret (щоденник їжі):\n"
+    f"{settings.app_base_url}/fatsecret/connect?state={{telegram_id}}\n\n"
+    "Ранкова зведення о 08:00, вечірня — о 21:00 (Київ).\n\n"
+    "Просто пиши мені як другу — я розумію українську та англійську!"
+)
+
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start and /help commands."""
+    if not update.message or not update.effective_user:
+        return
+
+    telegram_id = update.effective_user.id
+    text = HELP_TEXT.replace("{telegram_id}", str(telegram_id))
+    await update.message.reply_text(text, disable_web_page_preview=True)
+
+
 async def start_bot() -> None:
     """Initialize and start the Telegram bot with long polling."""
     global _application
@@ -262,6 +299,8 @@ async def start_bot() -> None:
 
     _application = Application.builder().token(settings.telegram_bot_token).build()
 
+    _application.add_handler(CommandHandler("start", handle_help))
+    _application.add_handler(CommandHandler("help", handle_help))
     _application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
