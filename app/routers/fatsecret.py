@@ -1,4 +1,5 @@
 from typing import Optional
+import logging
 
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,6 +12,8 @@ from app.services.fatsecret_auth import (
     FATSECRET_AUTHORIZE_URL,
 )
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -69,10 +72,21 @@ async def fatsecret_callback(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
+    request_secret = row["request_secret"] or ""
+    logger.info(
+        "FatSecret callback: state=%s, oauth_token=%s..., verifier=%s..., request_secret_len=%d",
+        state, oauth_token[:10], oauth_verifier[:10], len(request_secret),
+    )
+
     tokens = await exchange_access_token(
         oauth_token=oauth_token,
         oauth_verifier=oauth_verifier,
-        token_secret=row["request_secret"],
+        token_secret=request_secret,
+    )
+
+    logger.info(
+        "FatSecret storing tokens for user_id=%s: access_token_len=%d, access_secret_len=%d",
+        row["id"], len(tokens["access_token"]), len(tokens["access_secret"]),
     )
 
     # Store access token and clear temp secret

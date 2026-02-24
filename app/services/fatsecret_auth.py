@@ -6,7 +6,7 @@ import base64
 import time
 import secrets
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -93,10 +93,17 @@ async def get_request_token(callback_url: str) -> dict:
         resp.raise_for_status()
 
     # Parse form-encoded response: oauth_token=X&oauth_token_secret=Y&oauth_callback_confirmed=true
+    logger.info("FatSecret request_token response: %s", resp.text)
     parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))
+    oauth_token = unquote(parsed.get("oauth_token", ""))
+    oauth_token_secret = unquote(parsed.get("oauth_token_secret", ""))
+    logger.info(
+        "FatSecret request_token parsed: token_len=%d secret_len=%d keys=%s",
+        len(oauth_token), len(oauth_token_secret), list(parsed.keys()),
+    )
     return {
-        "oauth_token": parsed.get("oauth_token", ""),
-        "oauth_token_secret": parsed.get("oauth_token_secret", ""),
+        "oauth_token": oauth_token,
+        "oauth_token_secret": oauth_token_secret,
     }
 
 
@@ -139,7 +146,7 @@ async def exchange_access_token(
 
     logger.info("FatSecret access_token response: %s", resp.text)
     parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))
-    from urllib.parse import unquote
+    logger.info("FatSecret access_token parsed keys: %s", list(parsed.keys()))
     access_token = unquote(parsed.get("oauth_token", ""))
     access_secret = unquote(parsed.get("oauth_token_secret", ""))
     logger.info(
