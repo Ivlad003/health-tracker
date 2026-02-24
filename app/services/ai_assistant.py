@@ -58,7 +58,10 @@ def _build_context_messages(
         f"(bot-logged: {user_data.get('today_calories_in_bot', 0)}, "
         f"FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}). "
         f"Today's calories burned: {user_data.get('today_calories_out', 0)} kcal "
-        f"({user_data.get('today_workout_count', 0)} workouts)."
+        f"({user_data.get('today_workout_count', 0)} workouts, "
+        f"total strain: {user_data.get('today_strain', 0)}). "
+        f"Note: WHOOP doesn't track steps. Recovery score is the best stress indicator "
+        f"(low recovery = high physiological stress)."
     )
     if fs_meals:
         data_context += f" FatSecret meals today: {fs_meals}."
@@ -119,9 +122,10 @@ async def get_today_stats(user_id: int) -> dict:
         except Exception:
             logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
 
-    # Calories burned from WHOOP activities today
+    # Calories burned + strain from WHOOP activities today
     row2 = await pool.fetchrow(
         """SELECT COALESCE(SUM(wa.calories), 0) AS today_calories_out,
+                  COALESCE(SUM(wa.strain), 0) AS today_strain,
                   COUNT(*) AS workout_count
            FROM whoop_activities wa
            WHERE wa.user_id = $1
@@ -130,14 +134,17 @@ async def get_today_stats(user_id: int) -> dict:
         user_id,
     )
     calories_out = float(row2["today_calories_out"]) if row2 else 0
+    today_strain = round(float(row2["today_strain"]) if row2 else 0, 1)
     workout_count = int(row2["workout_count"]) if row2 else 0
 
     # Latest WHOOP sleep data
     sleep_row = await pool.fetchrow(
-        """SELECT sleep_performance_percentage, total_sleep_time_milli,
-                  total_rem_sleep_milli, total_slow_wave_sleep_milli,
-                  total_light_sleep_milli, total_awake_milli,
-                  respiratory_rate, started_at, ended_at
+        """SELECT sleep_performance_percentage, sleep_consistency_percentage,
+                  sleep_efficiency_percentage,
+                  total_sleep_time_milli, total_rem_sleep_milli,
+                  total_slow_wave_sleep_milli, total_light_sleep_milli,
+                  total_awake_milli, respiratory_rate,
+                  disturbance_count, started_at, ended_at
            FROM whoop_sleep
            WHERE user_id = $1
            ORDER BY started_at DESC LIMIT 1""",
@@ -149,10 +156,18 @@ async def get_today_stats(user_id: int) -> dict:
         rem_h = round((sleep_row["total_rem_sleep_milli"] or 0) / 3600000, 1)
         deep_h = round((sleep_row["total_slow_wave_sleep_milli"] or 0) / 3600000, 1)
         light_h = round((sleep_row["total_light_sleep_milli"] or 0) / 3600000, 1)
+        awake_min = round((sleep_row["total_awake_milli"] or 0) / 60000)
         perf = sleep_row["sleep_performance_percentage"] or 0
+        consistency = sleep_row["sleep_consistency_percentage"] or 0
+        efficiency = sleep_row["sleep_efficiency_percentage"] or 0
+        resp_rate = round(sleep_row["respiratory_rate"] or 0, 1)
+        disturbances = sleep_row["disturbance_count"] or 0
         sleep_info = (
             f"Last sleep: {total_h}h total, performance {perf}%, "
-            f"REM {rem_h}h, deep {deep_h}h, light {light_h}h"
+            f"consistency {consistency}%, efficiency {efficiency}%, "
+            f"REM {rem_h}h, deep {deep_h}h, light {light_h}h, "
+            f"awake {awake_min} min, disturbances {disturbances}, "
+            f"respiratory rate {resp_rate} rpm"
         )
 
     # Latest WHOOP recovery data
@@ -176,18 +191,21 @@ async def get_today_stats(user_id: int) -> dict:
         if recovery_row["skin_temp_celsius"]:
             recovery_info += f", skin temp {recovery_row['skin_temp_celsius']}°C"
 
-    # Recent WHOOP workouts (last 3)
+    # Recent WHOOP workouts (last 5)
     activity_rows = await pool.fetch(
-        """SELECT sport_name, calories, strain, avg_heart_rate, started_at
+        """SELECT sport_name, calories, strain, avg_heart_rate, max_heart_rate,
+                  started_at
            FROM whoop_activities
            WHERE user_id = $1
-           ORDER BY started_at DESC LIMIT 3""",
+           ORDER BY started_at DESC LIMIT 5""",
         user_id,
     )
     activities_info = ""
     if activity_rows:
         activities_info = "Recent workouts: " + "; ".join(
-            f"{r['sport_name']} ({round(r['calories'])} kcal, strain {round(r['strain'] or 0, 1)})"
+            f"{r['sport_name']} ({round(r['calories'])} kcal, strain {round(r['strain'] or 0, 1)}, "
+            f"avg HR {r['avg_heart_rate']}, max HR {r['max_heart_rate']}, "
+            f"{r['started_at'].strftime('%d.%m %H:%M') if hasattr(r['started_at'], 'strftime') else r['started_at']})"
             for r in activity_rows
         )
 
@@ -199,6 +217,7 @@ async def get_today_stats(user_id: int) -> dict:
         "today_calories_in_fatsecret": round(fatsecret_calories),
         "today_fatsecret_meals": fatsecret_meals,
         "today_calories_out": round(calories_out),
+        "today_strain": today_strain,
         "today_workout_count": workout_count,
         "whoop_sleep": sleep_info,
         "whoop_recovery": recovery_info,
