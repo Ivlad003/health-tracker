@@ -147,24 +147,8 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
         except Exception:
             logger.warning("FatSecret lookup failed for '%s'", name_en)
 
-        await pool.execute(
-            """INSERT INTO food_entries
-                   (user_id, food_name, calories, protein, fat, carbs,
-                    serving_size, serving_unit, meal_type, source_text)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::meal_type, $10)""",
-            user_id,
-            name_original,
-            Decimal(str(calories)),
-            Decimal(str(protein)),
-            Decimal(str(fat)),
-            Decimal(str(carbs)),
-            Decimal(str(quantity_g)),
-            "g",
-            meal_type,
-            name_en,
-        )
-
-        # Sync to FatSecret diary if connected
+        # Sync to FatSecret diary if connected (FatSecret is source of truth)
+        synced_to_fs = False
         if fs_connected and food_id:
             try:
                 servings = await get_food_servings(food_id)
@@ -185,8 +169,28 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                         number_of_units=round(units, 2),
                         meal_type=meal_type,
                     )
+                    synced_to_fs = True
             except Exception:
                 logger.warning("Failed to sync '%s' to FatSecret diary", name_en)
+
+        # Only store locally if not synced to FatSecret (fallback)
+        if not synced_to_fs:
+            await pool.execute(
+                """INSERT INTO food_entries
+                       (user_id, food_name, calories, protein, fat, carbs,
+                        serving_size, serving_unit, meal_type, source_text)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::meal_type, $10)""",
+                user_id,
+                name_original,
+                Decimal(str(calories)),
+                Decimal(str(protein)),
+                Decimal(str(fat)),
+                Decimal(str(carbs)),
+                Decimal(str(quantity_g)),
+                "g",
+                meal_type,
+                name_en,
+            )
 
         logged.append({"name": name_original, "calories": round(calories)})
 
