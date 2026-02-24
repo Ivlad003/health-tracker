@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
 
     # App
     app_base_url: str = "http://localhost:8000"

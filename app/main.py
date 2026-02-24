@@ -16,11 +16,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     from app.database import get_pool, close_pool
     from app.scheduler import start_scheduler, stop_scheduler
+    from app.services.telegram_bot import start_bot, stop_bot
 
     await get_pool()
     start_scheduler()
+    await start_bot()
     logger.info("App started")
     yield
+    await stop_bot()
     stop_scheduler()
     await close_pool()
     logger.info("App stopped")
