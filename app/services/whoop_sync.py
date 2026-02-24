@@ -14,6 +14,14 @@ WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
 
 
+class TokenExpiredError(Exception):
+    """Raised when an OAuth token is expired and refresh failed — user must re-authorize."""
+
+    def __init__(self, service: str):
+        self.service = service
+        super().__init__(f"{service} token expired, re-authorization required")
+
+
 def _parse_dt(s: str) -> datetime:
     """Parse ISO 8601 datetime string from WHOOP API into datetime object."""
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -41,6 +49,22 @@ async def refresh_token_if_needed(
             "client_secret": settings.whoop_client_secret,
         },
     )
+    if resp.status_code in (400, 401, 403):
+        logger.error(
+            "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
+            user["id"], resp.status_code, resp.text,
+        )
+        await pool.execute(
+            """UPDATE users
+               SET whoop_access_token = NULL,
+                   whoop_refresh_token = NULL,
+                   whoop_token_expires_at = NULL,
+                   updated_at = NOW()
+               WHERE id = $1""",
+            user["id"],
+        )
+        logger.warning("Cleared WHOOP tokens for user_id=%s — re-auth required", user["id"])
+        raise TokenExpiredError("whoop")
     if resp.status_code != 200:
         logger.error(
             "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
@@ -334,6 +358,18 @@ async def sync_whoop_data():
         user = dict(row)
         try:
             await sync_whoop_user(user, pool, lookback_hours=2)
+        except TokenExpiredError:
+            logger.warning("WHOOP token expired for user_id=%s during hourly sync", user["id"])
+            try:
+                from app.services.telegram_bot import send_message
+                await send_message(
+                    user["telegram_user_id"],
+                    "⌚ WHOOP сесія закінчилась.\n"
+                    "\n"
+                    "🔑 Потрібно перепідключити → /connect_whoop",
+                )
+            except Exception:
+                logger.warning("Failed to notify user_id=%s about WHOOP expiry", user["id"])
         except Exception:
             logger.exception("Failed to sync WHOOP data for user_id=%s", user["id"])
             continue

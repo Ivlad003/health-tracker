@@ -106,6 +106,7 @@ async def get_today_stats(user_id: int) -> dict:
     fatsecret_calories = 0.0
     fatsecret_meals = ""
     fatsecret_ok = False
+    expired_services = []
     user_row = await pool.fetchrow(
         "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
         user_id,
@@ -124,6 +125,20 @@ async def get_today_stats(user_id: int) -> dict:
                 fatsecret_meals = "; ".join(
                     f"{m['food']} ({m['calories']} kcal)" for m in meals[:10]
                 )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                logger.warning("FatSecret auth failed for user_id=%s, clearing tokens", user_id)
+                await pool.execute(
+                    """UPDATE users
+                       SET fatsecret_access_token = NULL,
+                           fatsecret_access_secret = NULL,
+                           updated_at = NOW()
+                       WHERE id = $1""",
+                    user_id,
+                )
+                expired_services.append("fatsecret")
+            else:
+                logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
         except Exception:
             logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
 
@@ -151,7 +166,9 @@ async def get_today_stats(user_id: int) -> dict:
     )
     if whoop_user:
         try:
-            from app.services.whoop_sync import fetch_daily_cycle, refresh_token_if_needed
+            from app.services.whoop_sync import (
+                fetch_daily_cycle, refresh_token_if_needed, TokenExpiredError,
+            )
             async with httpx.AsyncClient(timeout=15.0) as client:
                 token = await refresh_token_if_needed(dict(whoop_user), client, pool)
                 try:
@@ -172,6 +189,8 @@ async def get_today_stats(user_id: int) -> dict:
                 "WHOOP daily cycle for user_id=%s: calories=%s strain=%s",
                 user_id, daily_cycle["calories"], daily_cycle["strain"],
             )
+        except TokenExpiredError:
+            expired_services.append("whoop")
         except Exception:
             logger.exception("Failed to fetch WHOOP daily cycle for user_id=%s", user_id)
 
@@ -270,6 +289,7 @@ async def get_today_stats(user_id: int) -> dict:
         "whoop_sleep": sleep_info,
         "whoop_recovery": recovery_info,
         "whoop_activities": activities_info,
+        "expired_services": expired_services,
     }
 
 

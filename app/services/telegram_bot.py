@@ -281,11 +281,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     intent = gpt_result["intent"]
     response_text = gpt_result["response"]
 
+    expired_services = []
+
     try:
         if intent == "log_food" and gpt_result["food_items"]:
             logged = await _handle_log_food(user_id, gpt_result["food_items"])
             just_logged_cals = sum(item["calories"] for item in logged)
             stats = await get_today_stats(user_id)
+            expired_services = stats.get("expired_services", [])
             # FatSecret API has a delay — just-synced entries may not appear yet.
             # Add logged calories to compensate.
             total_in = stats["today_calories_in"] + just_logged_cals
@@ -311,6 +314,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         logger.exception("Intent handler failed for user %s, intent=%s", telegram_user_id, intent)
         response_text = response_text or "😔 Виникла помилка при обробці запиту."
+
+    # Append reconnect hints for expired tokens
+    if expired_services:
+        reconnect_lines = []
+        if "whoop" in expired_services:
+            reconnect_lines.append("  ⌚ WHOOP → /connect_whoop")
+        if "fatsecret" in expired_services:
+            reconnect_lines.append("  🥗 FatSecret → /connect_fatsecret")
+        response_text += (
+            "\n\n🔑 Сесія закінчилась, потрібно перепідключити:\n"
+            + "\n".join(reconnect_lines)
+        )
 
     await save_conversation_message(user_id, "assistant", response_text, intent)
     await update.message.reply_text(response_text)
@@ -414,9 +429,11 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if whoop_row:
         try:
-            from app.services.whoop_sync import sync_whoop_user
+            from app.services.whoop_sync import sync_whoop_user, TokenExpiredError
             await sync_whoop_user(dict(whoop_row), pool, lookback_hours=168)
             results.append("⌚ WHOOP — ✅ синхронізовано (7 днів)")
+        except TokenExpiredError:
+            results.append("⌚ WHOOP — 🔑 сесія закінчилась → /connect_whoop")
         except Exception:
             logger.exception("Sync WHOOP failed for user_id=%s", user_id)
             results.append("⌚ WHOOP — ❌ помилка синхронізації")
@@ -431,6 +448,7 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if fs_row and fs_row["fatsecret_access_token"]:
         try:
             from app.services.fatsecret_api import fetch_food_diary
+            import httpx
             diary = await fetch_food_diary(
                 access_token=fs_row["fatsecret_access_token"],
                 access_secret=fs_row["fatsecret_access_secret"],
@@ -438,6 +456,20 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             count = diary.get("entries_count", 0)
             cals = diary.get("total_calories", 0)
             results.append(f"🥗 FatSecret — ✅ {count} записів, {cals} kcal сьогодні")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                await pool.execute(
+                    """UPDATE users
+                       SET fatsecret_access_token = NULL,
+                           fatsecret_access_secret = NULL,
+                           updated_at = NOW()
+                       WHERE id = $1""",
+                    user_id,
+                )
+                results.append("🥗 FatSecret — 🔑 сесія закінчилась → /connect_fatsecret")
+            else:
+                logger.exception("Sync FatSecret failed for user_id=%s", user_id)
+                results.append("🥗 FatSecret — ❌ помилка синхронізації")
         except Exception:
             logger.exception("Sync FatSecret failed for user_id=%s", user_id)
             results.append("🥗 FatSecret — ❌ помилка синхронізації")

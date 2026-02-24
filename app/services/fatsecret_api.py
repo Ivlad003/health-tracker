@@ -293,5 +293,30 @@ async def sync_fatsecret_data():
                 "FatSecret sync user_id=%s: %d entries, %d kcal",
                 row["id"], diary["entries_count"], diary["total_calories"],
             )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                logger.warning(
+                    "FatSecret auth expired for user_id=%s, clearing tokens", row["id"],
+                )
+                await pool.execute(
+                    """UPDATE users
+                       SET fatsecret_access_token = NULL,
+                           fatsecret_access_secret = NULL,
+                           updated_at = NOW()
+                       WHERE id = $1""",
+                    row["id"],
+                )
+                try:
+                    from app.services.telegram_bot import send_message
+                    await send_message(
+                        row["telegram_user_id"],
+                        "🥗 FatSecret сесія закінчилась.\n"
+                        "\n"
+                        "🔑 Потрібно перепідключити → /connect_fatsecret",
+                    )
+                except Exception:
+                    logger.warning("Failed to notify user_id=%s about FatSecret expiry", row["id"])
+            else:
+                logger.exception("Failed to sync FatSecret data for user_id=%s", row["id"])
         except Exception:
             logger.exception("Failed to sync FatSecret data for user_id=%s", row["id"])
