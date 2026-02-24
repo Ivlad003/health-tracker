@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Health Tracker API", lifespan=lifespan)
 
+from app.routers.utils import router as utils_router
+
+app.include_router(utils_router)
+
 
 @app.get("/health")
 async def health():
