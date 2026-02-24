@@ -55,8 +55,9 @@ def _build_context_messages(
         f"Current local time (Europe/Kyiv): {local_now.strftime('%Y-%m-%d %H:%M')}. "
         f"User calorie goal: {calorie_goal} kcal. "
         f"Today's total calories in: {user_data.get('today_calories_in', 0)} kcal "
-        f"(bot-logged: {user_data.get('today_calories_in_bot', 0)}, "
-        f"FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}). "
+        f"(FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}, "
+        f"bot-only entries: {user_data.get('today_calories_in_bot', 0)}). "
+        f"Note: bot entries sync to FatSecret, so FatSecret total is the source of truth when connected. "
         f"Today's calories burned: {user_data.get('today_calories_out', 0)} kcal "
         f"({user_data.get('today_workout_count', 0)} workouts, "
         f"total strain: {user_data.get('today_strain', 0)}). "
@@ -102,6 +103,7 @@ async def get_today_stats(user_id: int) -> dict:
     # Calories from FatSecret diary (if connected)
     fatsecret_calories = 0.0
     fatsecret_meals = ""
+    fatsecret_ok = False
     user_row = await pool.fetchrow(
         "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
         user_id,
@@ -114,6 +116,7 @@ async def get_today_stats(user_id: int) -> dict:
                 access_secret=user_row["fatsecret_access_secret"],
             )
             fatsecret_calories = float(diary.get("total_calories", 0))
+            fatsecret_ok = True
             meals = diary.get("meals", [])
             if meals:
                 fatsecret_meals = "; ".join(
@@ -209,7 +212,13 @@ async def get_today_stats(user_id: int) -> dict:
             for r in activity_rows
         )
 
-    total_in = round(bot_calories + fatsecret_calories)
+    # When FatSecret is connected and working, it's the source of truth
+    # (bot entries are synced there, so don't double-count).
+    # Only use bot_calories as fallback when FatSecret is unavailable.
+    if fatsecret_ok:
+        total_in = round(fatsecret_calories)
+    else:
+        total_in = round(bot_calories)
 
     return {
         "today_calories_in": total_in,
