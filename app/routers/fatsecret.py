@@ -1,8 +1,10 @@
+from typing import Optional
+
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.database import get_pool
-from app.services.fatsecret_api import search_food
+from app.services.fatsecret_api import search_food, fetch_food_diary
 from app.services.fatsecret_auth import (
     get_request_token,
     exchange_access_token,
@@ -84,3 +86,31 @@ async def fatsecret_callback(
     )
 
     return HTMLResponse(content=FATSECRET_SUCCESS_HTML)
+
+
+@router.get("/fatsecret/diary")
+async def fatsecret_diary(
+    user_id: int = Query(..., description="Telegram user ID"),
+    date: Optional[int] = Query(default=None, description="Days since epoch"),
+):
+    """Fetch user's FatSecret food diary. Requires OAuth 1.0 connection."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT fatsecret_access_token, fatsecret_access_secret
+           FROM users WHERE telegram_user_id = $1""",
+        user_id,
+    )
+    if not row or not row["fatsecret_access_token"]:
+        raise HTTPException(
+            status_code=400,
+            detail="FatSecret not connected. Use /fatsecret/connect first.",
+        )
+
+    try:
+        return await fetch_food_diary(
+            access_token=row["fatsecret_access_token"],
+            access_secret=row["fatsecret_access_secret"],
+            date=date,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"FatSecret API error: {e}")

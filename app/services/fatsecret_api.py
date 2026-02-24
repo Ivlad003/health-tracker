@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import httpx
 import logging
+import math
+import time
+import secrets as secrets_mod
 
 from app.config import settings
 
@@ -58,3 +63,82 @@ async def search_food(query: str, max_results: int = 5) -> dict:
     ]
 
     return {"query": query, "results_count": len(results), "results": results}
+
+
+async def fetch_food_diary(
+    access_token: str,
+    access_secret: str,
+    date: int | None = None,
+) -> dict:
+    """Fetch user's food diary from FatSecret via OAuth 1.0 signed request.
+
+    Args:
+        access_token: User's OAuth 1.0 access token.
+        access_secret: User's OAuth 1.0 token secret.
+        date: Days since epoch (Jan 1, 1970). Defaults to today.
+    """
+    from app.services.fatsecret_auth import sign_oauth1_request, build_oauth1_header
+
+    if date is None:
+        date = math.floor(time.time() / 86400)
+
+    api_params = {
+        "method": "food_entries.get.v2",
+        "format": "json",
+        "date": str(date),
+    }
+
+    oauth_params = {
+        "oauth_consumer_key": settings.fatsecret_client_id,
+        "oauth_token": access_token,
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_nonce": secrets_mod.token_hex(16),
+        "oauth_version": "1.0",
+    }
+
+    # Signature is computed over all params (OAuth + API)
+    all_params = {**oauth_params, **api_params}
+    signature = sign_oauth1_request(
+        method="POST",
+        url=FATSECRET_API_URL,
+        params=all_params,
+        consumer_secret=settings.fatsecret_shared_secret,
+        token_secret=access_secret,
+    )
+    oauth_params["oauth_signature"] = signature
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            FATSECRET_API_URL,
+            headers={"Authorization": build_oauth1_header(oauth_params)},
+            data=api_params,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    entries = data.get("food_entries", {}).get("food_entry", [])
+    if not isinstance(entries, list):
+        entries = [entries]
+
+    total_calories = 0.0
+    meals = []
+    for e in entries:
+        cal = float(e.get("calories", 0))
+        total_calories += cal
+        meals.append({
+            "food": e.get("food_entry_name", ""),
+            "meal": e.get("meal", ""),
+            "calories": cal,
+            "protein": e.get("protein", "0"),
+            "fat": e.get("fat", "0"),
+            "carbs": e.get("carbohydrate", "0"),
+            "serving": f"{e.get('number_of_units', '')} {e.get('serving_description', '')}".strip(),
+        })
+
+    return {
+        "date": date,
+        "total_calories": round(total_calories),
+        "entries_count": len(meals),
+        "meals": meals,
+    }
