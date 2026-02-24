@@ -161,6 +161,10 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                     )
                     metric_amount = serving["metric_serving_amount"] or 100.0
                     units = quantity_g / metric_amount
+                    logger.info(
+                        "FatSecret sync: food_id=%s serving=%s metric=%sg units=%.2f for %dg",
+                        food_id, serving["description"], metric_amount, units, quantity_g,
+                    )
                     await create_food_diary_entry(
                         access_token=fs_token,
                         access_secret=fs_secret,

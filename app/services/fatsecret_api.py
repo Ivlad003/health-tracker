@@ -165,8 +165,11 @@ async def create_food_diary_entry(
             )
             return False
 
-    logger.info("FatSecret diary entry created: food_id=%s serving_id=%s units=%s",
-                food_id, serving_id, number_of_units)
+    logger.info(
+        "FatSecret diary entry created: food_id=%s serving_id=%s units=%s meal=%s date=%s response=%s",
+        food_id, serving_id, number_of_units,
+        _meal_type_to_fatsecret(meal_type), date, resp.text[:200],
+    )
     return True
 
 
