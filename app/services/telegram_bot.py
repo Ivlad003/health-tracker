@@ -20,7 +20,11 @@ from app.services.ai_assistant import (
     transcribe_voice,
     get_today_stats,
 )
-from app.services.fatsecret_api import search_food
+from app.services.fatsecret_api import (
+    search_food,
+    get_food_servings,
+    create_food_diary_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +104,18 @@ async def _ensure_user(telegram_user_id: int, username: str | None) -> dict:
 
 
 async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
-    """Look up each food item in FatSecret, store in food_entries."""
+    """Look up each food item in FatSecret, store in food_entries, sync to FatSecret diary."""
     pool = await get_pool()
     logged = []
+
+    # Check if user has FatSecret connected for two-way sync
+    user_row = await pool.fetchrow(
+        "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
+        user_id,
+    )
+    fs_token = user_row["fatsecret_access_token"] if user_row else ""
+    fs_secret = user_row["fatsecret_access_secret"] if user_row else ""
+    fs_connected = bool(fs_token and fs_secret)
 
     for item in food_items:
         name_en = item.get("name_en", "")
@@ -117,11 +130,13 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
         protein = 0.0
         fat = 0.0
         carbs = 0.0
+        food_id = ""
 
         try:
             result = await search_food(name_en, max_results=1)
             foods = result.get("results", [])
             if foods:
+                food_id = foods[0].get("food_id", "")
                 nutrients = _parse_fatsecret_description(foods[0].get("description", ""))
                 serving = nutrients.get("serving_size", 100.0) or 100.0
                 factor = quantity_g / serving
@@ -148,6 +163,30 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
             meal_type,
             name_en,
         )
+
+        # Sync to FatSecret diary if connected
+        if fs_connected and food_id:
+            try:
+                servings = await get_food_servings(food_id)
+                if servings:
+                    # Find best serving: prefer metric grams, fallback to first
+                    serving = next(
+                        (s for s in servings
+                         if s["metric_serving_unit"] == "g" and s["metric_serving_amount"] > 0),
+                        servings[0],
+                    )
+                    metric_amount = serving["metric_serving_amount"] or 100.0
+                    units = quantity_g / metric_amount
+                    await create_food_diary_entry(
+                        access_token=fs_token,
+                        access_secret=fs_secret,
+                        food_id=food_id,
+                        serving_id=serving["serving_id"],
+                        number_of_units=round(units, 2),
+                        meal_type=meal_type,
+                    )
+            except Exception:
+                logger.warning("Failed to sync '%s' to FatSecret diary", name_en)
 
         logged.append({"name": name_original, "calories": round(calories)})
 

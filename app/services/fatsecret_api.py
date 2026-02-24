@@ -65,6 +65,111 @@ async def search_food(query: str, max_results: int = 5) -> dict:
     return {"query": query, "results_count": len(results), "results": results}
 
 
+async def get_food_servings(food_id: str) -> list[dict]:
+    """Get serving options for a food item. Returns list of servings with serving_id."""
+    token = await get_oauth2_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            FATSECRET_API_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "method": "food.get.v4",
+                "food_id": food_id,
+                "format": "json",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    servings = data.get("food", {}).get("servings", {}).get("serving", [])
+    if not isinstance(servings, list):
+        servings = [servings]
+
+    return [
+        {
+            "serving_id": s.get("serving_id", ""),
+            "description": s.get("serving_description", ""),
+            "metric_serving_amount": float(s.get("metric_serving_amount", 0) or 0),
+            "metric_serving_unit": s.get("metric_serving_unit", "g"),
+            "calories": float(s.get("calories", 0) or 0),
+        }
+        for s in servings
+    ]
+
+
+def _meal_type_to_fatsecret(meal_type: str) -> str:
+    """Convert bot meal_type to FatSecret meal name."""
+    return {
+        "breakfast": "breakfast",
+        "lunch": "lunch",
+        "dinner": "dinner",
+        "snack": "other",
+    }.get(meal_type, "other")
+
+
+async def create_food_diary_entry(
+    access_token: str,
+    access_secret: str,
+    food_id: str,
+    serving_id: str,
+    number_of_units: float,
+    meal_type: str = "other",
+    date: int | None = None,
+) -> bool:
+    """Add a food entry to user's FatSecret diary via OAuth 1.0."""
+    from app.services.fatsecret_auth import sign_oauth1_request
+
+    if date is None:
+        date = math.floor(time.time() / 86400)
+
+    api_params = {
+        "method": "food_entry.create.v2",
+        "format": "json",
+        "food_id": str(food_id),
+        "serving_id": str(serving_id),
+        "number_of_units": str(number_of_units),
+        "meal": _meal_type_to_fatsecret(meal_type),
+        "date": str(date),
+    }
+
+    oauth_params = {
+        "oauth_consumer_key": settings.fatsecret_client_id,
+        "oauth_token": access_token,
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_nonce": secrets_mod.token_hex(16),
+        "oauth_version": "1.0",
+    }
+
+    all_params = {**oauth_params, **api_params}
+    signature = sign_oauth1_request(
+        method="POST",
+        url=FATSECRET_API_URL,
+        params=all_params,
+        consumer_secret=settings.fatsecret_shared_secret,
+        token_secret=access_secret,
+    )
+    oauth_params["oauth_signature"] = signature
+
+    all_post_params = {**oauth_params, **api_params}
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            FATSECRET_API_URL,
+            data=all_post_params,
+        )
+        if resp.status_code != 200:
+            logger.error(
+                "FatSecret create entry failed: status=%s body=%s",
+                resp.status_code, resp.text,
+            )
+            return False
+
+    logger.info("FatSecret diary entry created: food_id=%s serving_id=%s units=%s",
+                food_id, serving_id, number_of_units)
+    return True
+
+
 async def fetch_food_diary(
     access_token: str,
     access_secret: str,
