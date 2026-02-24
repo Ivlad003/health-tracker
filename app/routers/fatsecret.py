@@ -102,6 +102,17 @@ async def fatsecret_callback(
         row["id"],
     )
 
+    # Notify user in Telegram
+    try:
+        from app.services.telegram_bot import send_message
+        await send_message(
+            state,
+            "FatSecret підключено! Тепер я бачу твій щоденник їжі.\n"
+            "Можеш питати скільки калорій за сьогодні.",
+        )
+    except Exception:
+        logger.exception("Failed to send FatSecret notification to %s", state)
+
     return HTMLResponse(content=FATSECRET_SUCCESS_HTML)
 
 

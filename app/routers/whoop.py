@@ -85,12 +85,31 @@ async def whoop_callback(
         logger.info("WHOOP connected for telegram_user_id=%s", state)
 
         # Trigger initial data sync (7-day lookback to get recent sleep/recovery)
+        sync_ok = False
         try:
             from app.services.whoop_sync import sync_whoop_for_telegram_user
             await sync_whoop_for_telegram_user(telegram_user_id, lookback_hours=168)
             logger.info("Initial WHOOP sync completed for telegram_user_id=%s", state)
+            sync_ok = True
         except Exception:
             logger.exception("Initial WHOOP sync failed for telegram_user_id=%s", state)
+
+        # Notify user in Telegram
+        try:
+            from app.services.telegram_bot import send_message
+            if sync_ok:
+                await send_message(
+                    telegram_user_id,
+                    "WHOOP підключено! Дані за останній тиждень синхронізовано.\n"
+                    "Тепер можеш питати про сон, відновлення та тренування.",
+                )
+            else:
+                await send_message(
+                    telegram_user_id,
+                    "WHOOP підключено! Дані синхронізуються протягом години.",
+                )
+        except Exception:
+            logger.exception("Failed to send WHOOP notification to %s", state)
 
         return HTMLResponse(content=SUCCESS_HTML)
 

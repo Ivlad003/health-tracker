@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 _application: Application | None = None
 
 
+async def send_message(telegram_user_id: int, text: str) -> None:
+    """Send a message to a user via the bot. Used by OAuth callbacks."""
+    if _application is None:
+        logger.warning("Bot not started, cannot send message to %s", telegram_user_id)
+        return
+    await _application.bot.send_message(
+        chat_id=telegram_user_id, text=text, disable_web_page_preview=True,
+    )
+
+
 def _parse_fatsecret_description(description: str) -> dict:
     """Parse FatSecret food_description string into numeric values.
 
