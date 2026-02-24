@@ -83,6 +83,15 @@ async def whoop_callback(
         )
 
         logger.info("WHOOP connected for telegram_user_id=%s", state)
+
+        # Trigger initial data sync (7-day lookback to get recent sleep/recovery)
+        try:
+            from app.services.whoop_sync import sync_whoop_for_telegram_user
+            await sync_whoop_for_telegram_user(telegram_user_id, lookback_hours=168)
+            logger.info("Initial WHOOP sync completed for telegram_user_id=%s", state)
+        except Exception:
+            logger.exception("Initial WHOOP sync failed for telegram_user_id=%s", state)
+
         return HTMLResponse(content=SUCCESS_HTML)
 
     except Exception:

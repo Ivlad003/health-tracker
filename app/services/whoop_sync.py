@@ -193,6 +193,61 @@ async def store_sleep(pool, records: list[dict]) -> int:
     return len(records)
 
 
+async def sync_whoop_user(user: dict, pool, lookback_hours: int = 2) -> None:
+    """Sync WHOOP data for a single user with configurable lookback window."""
+    from datetime import timedelta
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        access_token = await refresh_token_if_needed(user, client, pool)
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        start = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+
+        workout_resp, recovery_resp, sleep_resp = await asyncio.gather(
+            client.get(f"{WHOOP_API_BASE}/activity/workout",
+                       headers=headers, params={"limit": "25", "start": start}),
+            client.get(f"{WHOOP_API_BASE}/recovery",
+                       headers=headers, params={"limit": "10", "start": start}),
+            client.get(f"{WHOOP_API_BASE}/activity/sleep",
+                       headers=headers, params={"limit": "10", "start": start}),
+        )
+
+        for resp in (workout_resp, recovery_resp, sleep_resp):
+            resp.raise_for_status()
+
+        workouts = process_workouts(workout_resp.json(), user["id"])
+        recovery = process_recovery(recovery_resp.json(), user["id"])
+        sleep = process_sleep(sleep_resp.json(), user["id"])
+
+        w_count = await store_workouts(pool, workouts)
+        r_count = await store_recovery(pool, recovery)
+        s_count = await store_sleep(pool, sleep)
+
+        logger.info(
+            "Synced user_id=%s: %d workouts, %d recovery, %d sleep",
+            user["id"], w_count, r_count, s_count,
+        )
+
+
+async def sync_whoop_for_telegram_user(telegram_user_id: int, lookback_hours: int = 168) -> None:
+    """Sync WHOOP data for a single user by telegram_user_id. Used after OAuth callback."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT id, telegram_user_id, whoop_user_id, whoop_access_token,
+                  whoop_refresh_token, whoop_token_expires_at
+           FROM users
+           WHERE telegram_user_id = $1
+                 AND whoop_access_token IS NOT NULL
+                 AND whoop_user_id IS NOT NULL""",
+        telegram_user_id,
+    )
+    if not row:
+        logger.warning("No WHOOP user found for telegram_user_id=%s", telegram_user_id)
+        return
+
+    await sync_whoop_user(dict(row), pool, lookback_hours=lookback_hours)
+
+
 async def sync_whoop_data():
     """Main sync job: runs hourly. Fetches all WHOOP users, refreshes tokens, syncs data."""
     logger.info("Starting WHOOP data sync")
@@ -215,39 +270,7 @@ async def sync_whoop_data():
     for row in rows:
         user = dict(row)
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                access_token = await refresh_token_if_needed(user, client, pool)
-                headers = {"Authorization": f"Bearer {access_token}"}
-
-                # Fetch workouts, recovery, sleep in parallel (2-hour lookback)
-                from datetime import timedelta
-                start = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-
-                workout_resp, recovery_resp, sleep_resp = await asyncio.gather(
-                    client.get(f"{WHOOP_API_BASE}/activity/workout",
-                               headers=headers, params={"limit": "25", "start": start}),
-                    client.get(f"{WHOOP_API_BASE}/recovery",
-                               headers=headers, params={"limit": "10", "start": start}),
-                    client.get(f"{WHOOP_API_BASE}/activity/sleep",
-                               headers=headers, params={"limit": "10", "start": start}),
-                )
-
-                for resp in (workout_resp, recovery_resp, sleep_resp):
-                    resp.raise_for_status()
-
-                workouts = process_workouts(workout_resp.json(), user["id"])
-                recovery = process_recovery(recovery_resp.json(), user["id"])
-                sleep = process_sleep(sleep_resp.json(), user["id"])
-
-                w_count = await store_workouts(pool, workouts)
-                r_count = await store_recovery(pool, recovery)
-                s_count = await store_sleep(pool, sleep)
-
-                logger.info(
-                    "Synced user_id=%s: %d workouts, %d recovery, %d sleep",
-                    user["id"], w_count, r_count, s_count,
-                )
-
+            await sync_whoop_user(user, pool, lookback_hours=2)
         except Exception:
             logger.exception("Failed to sync WHOOP data for user_id=%s", user["id"])
             continue
