@@ -32,7 +32,12 @@ async def refresh_token_if_needed(
             "client_secret": settings.whoop_client_secret,
         },
     )
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        logger.error(
+            "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
+            user["id"], resp.status_code, resp.text,
+        )
+        resp.raise_for_status()
     tokens = resp.json()
 
     await pool.execute(
@@ -197,7 +202,10 @@ async def sync_whoop_data():
         """SELECT id, telegram_user_id, whoop_user_id, whoop_access_token,
                   whoop_refresh_token, whoop_token_expires_at
            FROM users
-           WHERE whoop_access_token IS NOT NULL AND whoop_user_id IS NOT NULL"""
+           WHERE whoop_access_token IS NOT NULL
+                 AND whoop_refresh_token IS NOT NULL
+                 AND whoop_refresh_token != ''
+                 AND whoop_user_id IS NOT NULL"""
     )
 
     if not rows:
