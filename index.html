@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Tracker — Your Personal Health Command Center</title>
+    <meta name="description" content="Track calories, sync WHOOP recovery data, and optimize your training load. All through a simple Telegram bot.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        accent: '#10B981',
+                        'accent-dark': '#059669',
+                        surface: '#111111',
+                        'surface-2': '#1a1a1a',
+                        'surface-3': '#242424',
+                        muted: '#a1a1aa',
+                    },
+                    fontFamily: {
+                        heading: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        body: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0a0a0a; color: #e4e4e7; }
+        .font-heading { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .gradient-text { background: linear-gradient(135deg, #10B981 0%, #34d399 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .card-hover { transition: transform 0.2s, box-shadow 0.2s; }
+        .card-hover:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(16,185,129,0.1); }
+    </style>
+</head>
+<body class="antialiased">
+
+    <!-- Header -->
+    <header class="fixed top-0 w-full z-50 bg-[#0a0a0a]/80 backdrop-blur-lg border-b border-white/5">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-2">
+                <svg class="w-8 h-8 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
+                    <path d="M8 12h2l1-3 2 6 1-3h2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="font-heading font-bold text-lg text-white">Health Tracker</span>
+            </a>
+            <nav class="hidden sm:flex items-center gap-8 text-sm text-muted">
+                <a href="#features" class="hover:text-white transition">Features</a>
+                <a href="privacy.html" class="hover:text-white transition">Privacy</a>
+            </nav>
+            <a href="#hero" class="bg-accent hover:bg-accent-dark text-black font-semibold text-sm px-4 py-2 rounded-lg transition">
+                Get Started
+            </a>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <section id="hero" class="pt-32 pb-20 px-4 sm:px-6">
+        <div class="max-w-4xl mx-auto text-center">
+            <div class="inline-flex items-center gap-2 bg-accent/10 border border-accent/20 text-accent text-xs font-semibold px-3 py-1.5 rounded-full mb-8">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="10" r="4"/></svg>
+                Powered by WHOOP API
+            </div>
+            <h1 class="font-heading font-extrabold text-4xl sm:text-5xl md:text-6xl text-white leading-tight mb-6">
+                Your Personal Health<br><span class="gradient-text">Command Center.</span>
+            </h1>
+            <p class="text-lg sm:text-xl text-muted max-w-2xl mx-auto mb-10">
+                Track calories, sync WHOOP recovery data, and optimize your training load. All through a simple Telegram bot.
+            </p>
+            <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-8">
+                <a href="https://t.me/your_bot" class="bg-accent hover:bg-accent-dark text-black font-semibold px-8 py-3.5 rounded-xl text-base transition w-full sm:w-auto">
+                    Open Telegram Bot
+                </a>
+                <a href="#features" class="border border-white/10 hover:border-white/20 text-white font-medium px-8 py-3.5 rounded-xl text-base transition w-full sm:w-auto">
+                    Learn More
+                </a>
+            </div>
+            <p class="text-sm text-muted">Free to use · WHOOP integration · Privacy-first</p>
+        </div>
+    </section>
+
+    <!-- Integrations Bar -->
+    <section class="border-y border-white/5 py-10 px-4">
+        <div class="max-w-4xl mx-auto">
+            <p class="text-center text-xs text-muted uppercase tracking-widest mb-6">Integrations</p>
+            <div class="flex flex-wrap items-center justify-center gap-8 sm:gap-16 text-muted">
+                <div class="flex items-center gap-2 text-sm font-medium">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                    WHOOP
+                </div>
+                <div class="flex items-center gap-2 text-sm font-medium">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M18.06 22.99h1.66c.84 0 1.53-.64 1.63-1.46L23 5.05h-5V1h-1.97v4.05h-4.97l-.3 2.34c1.71.47 3.31 1.32 4.27 2.26 1.44 1.42 2.43 2.89 2.43 5.29v8.05zM1 21.99V21h15.03v.99c0 .55-.45 1-1.01 1H2.01c-.56 0-1.01-.45-1.01-1zm15.03-7c0-4.42-3.01-6-7.51-6s-7.51 1.58-7.51 6h15.02z"/></svg>
+                    FatSecret
+                </div>
+                <div class="flex items-center gap-2 text-sm font-medium">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.12.02-1.96 1.25-5.55 3.67-.52.36-1 .53-1.42.52-.47-.01-1.37-.26-2.03-.48-.82-.27-1.47-.42-1.42-.88.03-.24.37-.49 1.02-.75 3.99-1.73 6.65-2.87 7.97-3.44 3.8-1.58 4.59-1.86 5.1-1.87.11 0 .37.03.53.17.14.12.18.28.2.45-.01.06.01.24 0 .38z"/></svg>
+                    Telegram
+                </div>
+                <div class="flex items-center gap-2 text-sm font-medium">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                    PostgreSQL
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="py-20 px-4 sm:px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="font-heading font-bold text-3xl sm:text-4xl text-white mb-4">Everything you need to optimize health</h2>
+                <p class="text-muted text-lg max-w-2xl mx-auto">Three powerful integrations working together to give you a complete picture of your wellness.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6">
+                <!-- Card 1 -->
+                <div class="bg-surface-2 border border-white/5 rounded-2xl p-8 card-hover">
+                    <div class="w-12 h-12 bg-accent/10 rounded-xl flex items-center justify-center mb-5">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    </div>
+                    <h3 class="font-heading font-bold text-xl text-white mb-3">Smart Calorie Tracking</h3>
+                    <p class="text-muted leading-relaxed">Search and log meals with FatSecret food database. Track daily intake and expenditure with accurate nutritional data.</p>
+                </div>
+                <!-- Card 2 -->
+                <div class="bg-surface-2 border border-white/5 rounded-2xl p-8 card-hover">
+                    <div class="w-12 h-12 bg-accent/10 rounded-xl flex items-center justify-center mb-5">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
+                    <h3 class="font-heading font-bold text-xl text-white mb-3">WHOOP Integration</h3>
+                    <p class="text-muted leading-relaxed">Auto-sync strain, recovery, sleep and workout data. See your recovery score, HRV, and resting heart rate at a glance.</p>
+                </div>
+                <!-- Card 3 -->
+                <div class="bg-surface-2 border border-white/5 rounded-2xl p-8 card-hover">
+                    <div class="w-12 h-12 bg-accent/10 rounded-xl flex items-center justify-center mb-5">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    </div>
+                    <h3 class="font-heading font-bold text-xl text-white mb-3">Training Load Optimization</h3>
+                    <p class="text-muted leading-relaxed">AI-powered recommendations based on your WHOOP recovery data. Know when to push hard and when to rest.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="py-20 px-4 sm:px-6 bg-surface/50">
+        <div class="max-w-4xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="font-heading font-bold text-3xl sm:text-4xl text-white mb-4">How it works</h2>
+                <p class="text-muted text-lg">Three simple steps to take control of your health data.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="text-center">
+                    <div class="w-14 h-14 bg-accent text-black font-heading font-bold text-xl rounded-2xl flex items-center justify-center mx-auto mb-5">1</div>
+                    <h3 class="font-heading font-bold text-lg text-white mb-2">Connect WHOOP</h3>
+                    <p class="text-muted text-sm">Authorize your WHOOP data via secure OAuth 2.0 connection</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-14 h-14 bg-accent text-black font-heading font-bold text-xl rounded-2xl flex items-center justify-center mx-auto mb-5">2</div>
+                    <h3 class="font-heading font-bold text-lg text-white mb-2">Log Your Meals</h3>
+                    <p class="text-muted text-sm">Search and track food through our Telegram bot with FatSecret database</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-14 h-14 bg-accent text-black font-heading font-bold text-xl rounded-2xl flex items-center justify-center mx-auto mb-5">3</div>
+                    <h3 class="font-heading font-bold text-lg text-white mb-2">Get Insights</h3>
+                    <p class="text-muted text-sm">Receive personalized training and nutrition recommendations</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="py-16 px-4 sm:px-6 bg-accent">
+        <div class="max-w-4xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+            <div>
+                <div class="font-heading font-extrabold text-3xl sm:text-4xl text-black">500K+</div>
+                <div class="text-sm text-black/70 mt-1">Foods in Database</div>
+            </div>
+            <div>
+                <div class="font-heading font-extrabold text-3xl sm:text-4xl text-black">24/7</div>
+                <div class="text-sm text-black/70 mt-1">WHOOP Sync</div>
+            </div>
+            <div>
+                <div class="font-heading font-extrabold text-3xl sm:text-4xl text-black">100%</div>
+                <div class="text-sm text-black/70 mt-1">Privacy-First</div>
+            </div>
+            <div>
+                <div class="font-heading font-extrabold text-3xl sm:text-4xl text-black">Free</div>
+                <div class="text-sm text-black/70 mt-1">To Use</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- AI Recommendations -->
+    <section class="py-20 px-4 sm:px-6">
+        <div class="max-w-4xl mx-auto text-center">
+            <div class="inline-flex items-center gap-2 bg-accent/10 border border-accent/20 text-accent text-xs font-semibold px-3 py-1.5 rounded-full mb-6">
+                AI-Powered
+            </div>
+            <h2 class="font-heading font-bold text-3xl sm:text-4xl text-white mb-4">Personalized Health Insights</h2>
+            <p class="text-muted text-lg max-w-2xl mx-auto mb-10">
+                Our AI analyzes your WHOOP recovery, sleep quality, and nutrition data to deliver actionable recommendations tailored to your body.
+            </p>
+            <div class="grid sm:grid-cols-2 gap-6 text-left max-w-3xl mx-auto">
+                <div class="bg-surface-2 border border-white/5 rounded-xl p-6">
+                    <div class="text-accent font-semibold text-sm mb-2">Recovery-Based Training</div>
+                    <p class="text-muted text-sm">Adjusts workout intensity based on your daily recovery score and HRV trends.</p>
+                </div>
+                <div class="bg-surface-2 border border-white/5 rounded-xl p-6">
+                    <div class="text-accent font-semibold text-sm mb-2">Nutrition Timing</div>
+                    <p class="text-muted text-sm">Optimizes meal timing around your workouts and sleep schedule.</p>
+                </div>
+                <div class="bg-surface-2 border border-white/5 rounded-xl p-6">
+                    <div class="text-accent font-semibold text-sm mb-2">Sleep Optimization</div>
+                    <p class="text-muted text-sm">Analyzes sleep stages and suggests improvements for better recovery.</p>
+                </div>
+                <div class="bg-surface-2 border border-white/5 rounded-xl p-6">
+                    <div class="text-accent font-semibold text-sm mb-2">Calorie Balance</div>
+                    <p class="text-muted text-sm">Tracks intake vs. expenditure and adjusts goals based on your activity.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="py-20 px-4 sm:px-6 bg-surface/50">
+        <div class="max-w-3xl mx-auto">
+            <h2 class="font-heading font-bold text-3xl sm:text-4xl text-white text-center mb-12">Frequently Asked Questions</h2>
+            <div class="space-y-4">
+                <details class="group bg-surface-2 border border-white/5 rounded-xl">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer text-white font-medium">
+                        Do I need a WHOOP device?
+                        <svg class="w-5 h-5 text-muted group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <div class="px-6 pb-6 text-muted text-sm leading-relaxed">
+                        A WHOOP device and active membership are required for activity, recovery, and sleep tracking features. You can still use calorie tracking and meal logging without WHOOP.
+                    </div>
+                </details>
+                <details class="group bg-surface-2 border border-white/5 rounded-xl">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer text-white font-medium">
+                        Is my health data secure?
+                        <svg class="w-5 h-5 text-muted group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <div class="px-6 pb-6 text-muted text-sm leading-relaxed">
+                        Yes. We use encrypted database storage, secure OAuth 2.0 for API connections, and never share your data with third parties. Read our <a href="privacy.html" class="text-accent hover:underline">Privacy Policy</a> for details.
+                    </div>
+                </details>
+                <details class="group bg-surface-2 border border-white/5 rounded-xl">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer text-white font-medium">
+                        How does calorie tracking work?
+                        <svg class="w-5 h-5 text-muted group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <div class="px-6 pb-6 text-muted text-sm leading-relaxed">
+                        Send a message to our Telegram bot with what you ate — by text or voice. We search the FatSecret database (500K+ foods) and log the nutritional data automatically.
+                    </div>
+                </details>
+                <details class="group bg-surface-2 border border-white/5 rounded-xl">
+                    <summary class="flex items-center justify-between p-6 cursor-pointer text-white font-medium">
+                        Is it really free?
+                        <svg class="w-5 h-5 text-muted group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <div class="px-6 pb-6 text-muted text-sm leading-relaxed">
+                        Yes, Health Tracker is free to use. You need your own WHOOP membership for activity data, but the bot and calorie tracking are completely free.
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="py-20 px-4 sm:px-6">
+        <div class="max-w-3xl mx-auto text-center">
+            <h2 class="font-heading font-bold text-3xl sm:text-4xl text-white mb-4">Ready to optimize your health?</h2>
+            <p class="text-muted text-lg mb-8">Start tracking your nutrition and recovery data today.</p>
+            <a href="https://t.me/your_bot" class="inline-flex bg-accent hover:bg-accent-dark text-black font-semibold px-8 py-4 rounded-xl text-base transition">
+                Open Telegram Bot
+            </a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 py-12 px-4 sm:px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="grid sm:grid-cols-4 gap-8 mb-10">
+                <div>
+                    <div class="flex items-center gap-2 mb-4">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
+                            <path d="M8 12h2l1-3 2 6 1-3h2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <span class="font-heading font-bold text-white">Health Tracker</span>
+                    </div>
+                    <p class="text-muted text-sm">Your personal health command center powered by WHOOP and Telegram.</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Product</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="#features" class="hover:text-white transition">Features</a></li>
+                        <li><a href="#" class="hover:text-white transition">Integrations</a></li>
+                        <li><a href="#" class="hover:text-white transition">Changelog</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Company</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="#" class="hover:text-white transition">About</a></li>
+                        <li><a href="#" class="hover:text-white transition">Blog</a></li>
+                        <li><a href="#" class="hover:text-white transition">Contact</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Legal</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="privacy.html" class="hover:text-white transition">Privacy Policy</a></li>
+                        <li><a href="#" class="hover:text-white transition">Terms of Service</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-white/5 pt-8 text-center text-sm text-muted">
+                &copy; 2026 Health Tracker. All rights reserved.
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>

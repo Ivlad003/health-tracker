@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy — Health Tracker</title>
+    <meta name="description" content="Privacy Policy for Health Tracker. Learn how we collect, use, and protect your health data.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        accent: '#10B981',
+                        'accent-dark': '#059669',
+                        surface: '#111111',
+                        'surface-2': '#1a1a1a',
+                        'surface-3': '#242424',
+                        muted: '#a1a1aa',
+                    },
+                    fontFamily: {
+                        heading: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        body: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0a0a0a; color: #e4e4e7; }
+        .font-heading { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .prose-custom h2 { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 1.5rem; color: #fff; margin-top: 2.5rem; margin-bottom: 1rem; }
+        .prose-custom h3 { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 600; font-size: 1.125rem; color: #e4e4e7; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+        .prose-custom p { color: #a1a1aa; line-height: 1.75; margin-bottom: 1rem; }
+        .prose-custom ul { color: #a1a1aa; list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+        .prose-custom li { margin-bottom: 0.5rem; line-height: 1.75; }
+        .prose-custom a { color: #10B981; text-decoration: underline; }
+        .prose-custom a:hover { color: #059669; }
+    </style>
+</head>
+<body class="antialiased">
+
+    <!-- Header -->
+    <header class="fixed top-0 w-full z-50 bg-[#0a0a0a]/80 backdrop-blur-lg border-b border-white/5">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            <a href="index.html" class="flex items-center gap-2">
+                <svg class="w-8 h-8 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
+                    <path d="M8 12h2l1-3 2 6 1-3h2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="font-heading font-bold text-lg text-white">Health Tracker</span>
+            </a>
+            <nav class="hidden sm:flex items-center gap-8 text-sm text-muted">
+                <a href="index.html#features" class="hover:text-white transition">Features</a>
+                <a href="privacy.html" class="text-white transition">Privacy</a>
+            </nav>
+            <a href="index.html" class="bg-accent hover:bg-accent-dark text-black font-semibold text-sm px-4 py-2 rounded-lg transition">
+                Back to Home
+            </a>
+        </div>
+    </header>
+
+    <!-- Privacy Hero -->
+    <section class="pt-32 pb-12 px-4 sm:px-6">
+        <div class="max-w-3xl mx-auto text-center">
+            <h1 class="font-heading font-extrabold text-4xl sm:text-5xl text-white mb-4">Privacy Policy</h1>
+            <p class="text-muted text-lg">Effective Date: February 24, 2026</p>
+        </div>
+    </section>
+
+    <!-- Privacy Content -->
+    <section class="pb-20 px-4 sm:px-6">
+        <div class="max-w-3xl mx-auto prose-custom">
+
+            <p>
+                Health Tracker ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, store, and protect your personal and health-related data when you use our Telegram bot and associated services.
+            </p>
+
+            <h2>1. Information We Collect</h2>
+
+            <h3>1.1 WHOOP Data (via OAuth 2.0)</h3>
+            <p>When you connect your WHOOP account, we access the following data through the WHOOP API with your explicit authorization:</p>
+            <ul>
+                <li>Basic profile information (name, user ID)</li>
+                <li>Workout data (strain, heart rate zones, duration, calories burned)</li>
+                <li>Recovery metrics (recovery score, HRV, resting heart rate, SpO2)</li>
+                <li>Sleep data (sleep stages, duration, efficiency, performance)</li>
+                <li>Physiological cycle data</li>
+            </ul>
+
+            <h3>1.2 FatSecret Data</h3>
+            <p>When you log meals, we interact with the FatSecret API to:</p>
+            <ul>
+                <li>Search food items and their nutritional information</li>
+                <li>Store your meal entries with calorie, protein, fat, and carbohydrate data</li>
+            </ul>
+
+            <h3>1.3 Telegram User Data</h3>
+            <p>Through the Telegram Bot API, we collect:</p>
+            <ul>
+                <li>Telegram user ID and username</li>
+                <li>Messages you send to the bot (text and voice)</li>
+                <li>Language preferences</li>
+            </ul>
+
+            <h3>1.4 Voice Data</h3>
+            <p>If you use voice logging, your audio messages are:</p>
+            <ul>
+                <li>Sent to OpenAI Whisper API for transcription</li>
+                <li>Transcribed text is processed for food logging</li>
+                <li>Audio files are not permanently stored by us</li>
+            </ul>
+
+            <h3>1.5 Automatically Collected Data</h3>
+            <ul>
+                <li>Timestamps of interactions</li>
+                <li>Service usage patterns (for improving the experience)</li>
+                <li>Error logs (for debugging and reliability)</li>
+            </ul>
+
+            <h2>2. How We Use Your Data</h2>
+            <p>We use the collected data exclusively to:</p>
+            <ul>
+                <li>Display your health and wellness metrics in the Telegram Web App</li>
+                <li>Calculate daily calorie balance (intake vs. expenditure)</li>
+                <li>Generate personalized training and nutrition recommendations</li>
+                <li>Sync and display WHOOP recovery, sleep, and workout data</li>
+                <li>Provide historical data views and trends</li>
+                <li>Improve the service reliability and user experience</li>
+            </ul>
+            <p>We <strong>do not</strong> sell, rent, or share your personal data with third parties for marketing purposes.</p>
+
+            <h2>3. Data Storage and Security</h2>
+            <ul>
+                <li><strong>Database:</strong> Your data is stored in a PostgreSQL database with encrypted connections</li>
+                <li><strong>OAuth Tokens:</strong> WHOOP access tokens and refresh tokens are stored securely and used only to maintain your API connection</li>
+                <li><strong>Encryption:</strong> All data in transit uses TLS/HTTPS encryption</li>
+                <li><strong>Access Control:</strong> Database access is restricted to the application service only</li>
+                <li><strong>Hosting:</strong> Our infrastructure is deployed via Dokploy with Docker containers in isolated environments</li>
+            </ul>
+
+            <h2>4. Third-Party Integrations</h2>
+            <p>Health Tracker integrates with the following third-party services. Each has their own privacy policy:</p>
+            <ul>
+                <li><strong>WHOOP:</strong> <a href="https://www.whoop.com/privacy/">WHOOP Privacy Policy</a> — We access your data only with scopes you explicitly authorize</li>
+                <li><strong>FatSecret:</strong> <a href="https://www.fatsecret.com/Default.aspx?pa=prgp">FatSecret Privacy Policy</a> — Used for food search and nutritional data lookup</li>
+                <li><strong>Telegram:</strong> <a href="https://telegram.org/privacy">Telegram Privacy Policy</a> — Used as the bot platform and user interface</li>
+                <li><strong>OpenAI:</strong> <a href="https://openai.com/policies/privacy-policy/">OpenAI Privacy Policy</a> — Used for voice-to-text transcription via Whisper API</li>
+            </ul>
+
+            <h2>5. Your Rights and Controls</h2>
+            <p>You have the following rights regarding your data:</p>
+            <ul>
+                <li><strong>Access:</strong> Request a copy of all data we store about you</li>
+                <li><strong>Deletion:</strong> Request complete deletion of your account and all associated data</li>
+                <li><strong>Revoke Access:</strong> Disconnect your WHOOP account at any time through the bot settings, which revokes our API access</li>
+                <li><strong>Data Export:</strong> Export your data in a machine-readable format</li>
+                <li><strong>Correction:</strong> Request correction of inaccurate data</li>
+            </ul>
+
+            <h3>GDPR Compliance</h3>
+            <p>If you are located in the European Economic Area (EEA), you have additional rights under the General Data Protection Regulation (GDPR):</p>
+            <ul>
+                <li>Right to be informed about data processing</li>
+                <li>Right to restrict processing</li>
+                <li>Right to data portability</li>
+                <li>Right to object to processing</li>
+                <li>Right to lodge a complaint with a supervisory authority</li>
+            </ul>
+
+            <h2>6. Cookies and Analytics</h2>
+            <p>Our landing page and web app do not use tracking cookies. We do not use third-party analytics services. Minimal server logs are maintained for operational purposes and are automatically purged after 30 days.</p>
+
+            <h2>7. Data Retention</h2>
+            <ul>
+                <li>Active account data is retained as long as your account is active</li>
+                <li>Deleted account data is permanently removed within 30 days</li>
+                <li>Voice recordings are not stored; only transcriptions are kept</li>
+                <li>Server logs are retained for a maximum of 30 days</li>
+            </ul>
+
+            <h2>8. Changes to This Policy</h2>
+            <p>We may update this Privacy Policy from time to time. When we make significant changes, we will notify you through the Telegram bot. The "Effective Date" at the top of this page indicates when the policy was last updated.</p>
+
+            <h2>9. Contact Us</h2>
+            <p>If you have questions about this Privacy Policy or want to exercise your data rights, contact us at:</p>
+            <ul>
+                <li>Email: <a href="mailto:privacy@healthtracker.app">privacy@healthtracker.app</a></li>
+            </ul>
+
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 py-12 px-4 sm:px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="grid sm:grid-cols-4 gap-8 mb-10">
+                <div>
+                    <div class="flex items-center gap-2 mb-4">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
+                            <path d="M8 12h2l1-3 2 6 1-3h2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <span class="font-heading font-bold text-white">Health Tracker</span>
+                    </div>
+                    <p class="text-muted text-sm">Your personal health command center powered by WHOOP and Telegram.</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Product</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="index.html#features" class="hover:text-white transition">Features</a></li>
+                        <li><a href="index.html" class="hover:text-white transition">Integrations</a></li>
+                        <li><a href="index.html" class="hover:text-white transition">Changelog</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Company</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="index.html" class="hover:text-white transition">About</a></li>
+                        <li><a href="index.html" class="hover:text-white transition">Blog</a></li>
+                        <li><a href="index.html" class="hover:text-white transition">Contact</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-white text-sm mb-3">Legal</h4>
+                    <ul class="space-y-2 text-sm text-muted">
+                        <li><a href="privacy.html" class="text-white transition">Privacy Policy</a></li>
+                        <li><a href="index.html" class="hover:text-white transition">Terms of Service</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-white/5 pt-8 text-center text-sm text-muted">
+                &copy; 2026 Health Tracker. All rights reserved.
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
