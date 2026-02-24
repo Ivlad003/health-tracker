@@ -50,6 +50,7 @@ async def whoop_callback(
             )
             token_resp.raise_for_status()
             tokens = token_resp.json()
+            logger.info("WHOOP token response keys: %s", list(tokens.keys()))
 
             # Fetch recovery to get whoop_user_id (profile endpoint unavailable)
             recovery_resp = await client.get(
@@ -61,6 +62,10 @@ async def whoop_callback(
             whoop_user_id = recovery_resp.json()["records"][0]["user_id"]
 
         # Store tokens in DB using parameterized queries
+        access_token = tokens.get("access_token", "")
+        refresh_token = tokens.get("refresh_token", "")
+        expires_in = tokens.get("expires_in", 3600)
+
         pool = await get_pool()
         await pool.execute(
             """UPDATE users
@@ -70,9 +75,9 @@ async def whoop_callback(
                    whoop_user_id = $4,
                    updated_at = NOW()
                WHERE telegram_user_id = $5""",
-            tokens["access_token"],
-            tokens["refresh_token"],
-            tokens["expires_in"],
+            access_token,
+            refresh_token,
+            expires_in,
             str(whoop_user_id),
             telegram_user_id,
         )
