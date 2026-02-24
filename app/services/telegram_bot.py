@@ -276,9 +276,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if intent == "log_food" and gpt_result["food_items"]:
-            await _handle_log_food(user_id, gpt_result["food_items"])
+            logged = await _handle_log_food(user_id, gpt_result["food_items"])
+            just_logged_cals = sum(item["calories"] for item in logged)
             stats = await get_today_stats(user_id)
-            total_in = stats["today_calories_in"]
+            # FatSecret API has a delay — just-synced entries may not appear yet.
+            # Add logged calories to compensate.
+            total_in = stats["today_calories_in"] + just_logged_cals
             total_out = stats["today_calories_out"]
             balance_line = f"\n\nToday: {total_in} / {daily_calorie_goal} kcal"
             if total_out > 0:

@@ -29,6 +29,7 @@ INTENT DEFINITIONS:
 
 For log_food, also extract:
 - food_items: array of objects with name_en (English), name_original (user's language), quantity_g (grams, estimate if not specified), meal_type.
+- IMPORTANT: For log_food response, just confirm what was added (e.g. "Додано 100г рису"). Do NOT include calorie totals or daily summary — the system appends an accurate balance line automatically.
 
 For general, if user wants to set calorie goal, extract:
 - calorie_goal: integer (e.g., 2500)
