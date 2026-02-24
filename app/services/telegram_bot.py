@@ -324,7 +324,8 @@ HELP_TEXT = (
     "- Показувати калорії за день (з FatSecret + записи в боті)\n"
     "- Показувати дані WHOOP (сон, відновлення, тренування)\n"
     "- Видалити останній запис (\"видали останнє\")\n"
-    "- Встановити ціль калорій (\"встанови ціль 2500 ккал\")\n\n"
+    "- Встановити ціль калорій (\"встанови ціль 2500 ккал\")\n"
+    "- /sync — примусова синхронізація WHOOP + FatSecret\n\n"
     "Підключення сервісів:\n\n"
     "WHOOP (сон, відновлення, активність):\n"
     f"{settings.app_base_url}/whoop/callback — після авторизації дані синхронізуються щогодини\n"
@@ -385,6 +386,65 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /sync command — force sync all data from WHOOP and FatSecret."""
+    if not update.message or not update.effective_user:
+        return
+
+    telegram_user_id = update.effective_user.id
+    user = await _ensure_user(telegram_user_id, update.effective_user.username)
+    user_id = user["id"]
+
+    await update.message.reply_text("Синхронізую дані...")
+
+    pool = await get_pool()
+    results = []
+
+    # Sync WHOOP (7-day lookback)
+    whoop_row = await pool.fetchrow(
+        """SELECT id, telegram_user_id, whoop_user_id, whoop_access_token,
+                  whoop_refresh_token, whoop_token_expires_at
+           FROM users
+           WHERE id = $1
+                 AND whoop_access_token IS NOT NULL
+                 AND whoop_user_id IS NOT NULL""",
+        user_id,
+    )
+    if whoop_row:
+        try:
+            from app.services.whoop_sync import sync_whoop_user
+            await sync_whoop_user(dict(whoop_row), pool, lookback_hours=168)
+            results.append("WHOOP: синхронізовано (7 днів)")
+        except Exception:
+            logger.exception("Sync WHOOP failed for user_id=%s", user_id)
+            results.append("WHOOP: помилка синхронізації")
+    else:
+        results.append("WHOOP: не підключено")
+
+    # Sync FatSecret diary (fetch today's data to verify connection)
+    fs_row = await pool.fetchrow(
+        "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
+        user_id,
+    )
+    if fs_row and fs_row["fatsecret_access_token"]:
+        try:
+            from app.services.fatsecret_api import fetch_food_diary
+            diary = await fetch_food_diary(
+                access_token=fs_row["fatsecret_access_token"],
+                access_secret=fs_row["fatsecret_access_secret"],
+            )
+            count = diary.get("entries_count", 0)
+            cals = diary.get("total_calories", 0)
+            results.append(f"FatSecret: синхронізовано ({count} записів, {cals} kcal сьогодні)")
+        except Exception:
+            logger.exception("Sync FatSecret failed for user_id=%s", user_id)
+            results.append("FatSecret: помилка синхронізації")
+    else:
+        results.append("FatSecret: не підключено")
+
+    await update.message.reply_text("Результат:\n" + "\n".join(results))
+
+
 async def start_bot() -> None:
     """Initialize and start the Telegram bot with long polling."""
     global _application
@@ -399,6 +459,7 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("help", handle_help))
     _application.add_handler(CommandHandler("connect_whoop", handle_connect_whoop))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
+    _application.add_handler(CommandHandler("sync", handle_sync))
     _application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
@@ -413,6 +474,7 @@ async def start_bot() -> None:
         BotCommand("help", "Допомога"),
         BotCommand("connect_whoop", "Підключити WHOOP"),
         BotCommand("connect_fatsecret", "Підключити FatSecret"),
+        BotCommand("sync", "Синхронізувати дані"),
     ])
 
     await _application.start()
