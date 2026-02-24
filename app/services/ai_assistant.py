@@ -23,7 +23,7 @@ RULES:
 
 INTENT DEFINITIONS:
 - log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided).
-- query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to FatSecret diary data and bot-logged food — use both when answering calorie questions.
+- query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to WHOOP data (sleep, recovery, activities), FatSecret diary, and bot-logged food — use all available data when answering.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - general: Everything else — greetings, setting calorie goal (extract number), health tips, questions about the bot.
 
@@ -57,10 +57,17 @@ def _build_context_messages(
         f"Today's total calories in: {user_data.get('today_calories_in', 0)} kcal "
         f"(bot-logged: {user_data.get('today_calories_in_bot', 0)}, "
         f"FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}). "
-        f"Today's calories burned: {user_data.get('today_calories_out', 0)} kcal."
+        f"Today's calories burned: {user_data.get('today_calories_out', 0)} kcal "
+        f"({user_data.get('today_workout_count', 0)} workouts)."
     )
     if fs_meals:
         data_context += f" FatSecret meals today: {fs_meals}."
+    if user_data.get("whoop_sleep"):
+        data_context += f" {user_data['whoop_sleep']}."
+    if user_data.get("whoop_recovery"):
+        data_context += f" {user_data['whoop_recovery']}."
+    if user_data.get("whoop_activities"):
+        data_context += f" {user_data['whoop_activities']}."
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -112,9 +119,10 @@ async def get_today_stats(user_id: int) -> dict:
         except Exception:
             logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
 
-    # Calories burned from WHOOP
+    # Calories burned from WHOOP activities today
     row2 = await pool.fetchrow(
-        """SELECT COALESCE(SUM(wa.calories), 0) AS today_calories_out
+        """SELECT COALESCE(SUM(wa.calories), 0) AS today_calories_out,
+                  COUNT(*) AS workout_count
            FROM whoop_activities wa
            WHERE wa.user_id = $1
              AND wa.started_at >= CURRENT_DATE
@@ -122,6 +130,64 @@ async def get_today_stats(user_id: int) -> dict:
         user_id,
     )
     calories_out = float(row2["today_calories_out"]) if row2 else 0
+    workout_count = int(row2["workout_count"]) if row2 else 0
+
+    # Latest WHOOP sleep data
+    sleep_row = await pool.fetchrow(
+        """SELECT sleep_performance_percentage, total_sleep_time_milli,
+                  total_rem_sleep_milli, total_slow_wave_sleep_milli,
+                  total_light_sleep_milli, total_awake_milli,
+                  respiratory_rate, started_at, ended_at
+           FROM whoop_sleep
+           WHERE user_id = $1
+           ORDER BY started_at DESC LIMIT 1""",
+        user_id,
+    )
+    sleep_info = ""
+    if sleep_row and sleep_row["total_sleep_time_milli"]:
+        total_h = round(sleep_row["total_sleep_time_milli"] / 3600000, 1)
+        rem_h = round((sleep_row["total_rem_sleep_milli"] or 0) / 3600000, 1)
+        deep_h = round((sleep_row["total_slow_wave_sleep_milli"] or 0) / 3600000, 1)
+        light_h = round((sleep_row["total_light_sleep_milli"] or 0) / 3600000, 1)
+        perf = sleep_row["sleep_performance_percentage"] or 0
+        sleep_info = (
+            f"Last sleep: {total_h}h total, performance {perf}%, "
+            f"REM {rem_h}h, deep {deep_h}h, light {light_h}h"
+        )
+
+    # Latest WHOOP recovery data
+    recovery_row = await pool.fetchrow(
+        """SELECT recovery_score, resting_heart_rate, hrv_rmssd_milli,
+                  spo2_percentage, skin_temp_celsius
+           FROM whoop_recovery
+           WHERE user_id = $1
+           ORDER BY recorded_at DESC LIMIT 1""",
+        user_id,
+    )
+    recovery_info = ""
+    if recovery_row and recovery_row["recovery_score"] is not None:
+        recovery_info = (
+            f"Recovery: {recovery_row['recovery_score']}%, "
+            f"resting HR {recovery_row['resting_heart_rate']} bpm, "
+            f"HRV {round(recovery_row['hrv_rmssd_milli'] or 0, 1)} ms"
+        )
+        if recovery_row["spo2_percentage"]:
+            recovery_info += f", SpO2 {recovery_row['spo2_percentage']}%"
+
+    # Recent WHOOP workouts (last 3)
+    activity_rows = await pool.fetch(
+        """SELECT sport_name, calories, strain, avg_heart_rate, started_at
+           FROM whoop_activities
+           WHERE user_id = $1
+           ORDER BY started_at DESC LIMIT 3""",
+        user_id,
+    )
+    activities_info = ""
+    if activity_rows:
+        activities_info = "Recent workouts: " + "; ".join(
+            f"{r['sport_name']} ({round(r['calories'])} kcal, strain {round(r['strain'] or 0, 1)})"
+            for r in activity_rows
+        )
 
     total_in = round(bot_calories + fatsecret_calories)
 
@@ -131,6 +197,10 @@ async def get_today_stats(user_id: int) -> dict:
         "today_calories_in_fatsecret": round(fatsecret_calories),
         "today_fatsecret_meals": fatsecret_meals,
         "today_calories_out": round(calories_out),
+        "today_workout_count": workout_count,
+        "whoop_sleep": sleep_info,
+        "whoop_recovery": recovery_info,
+        "whoop_activities": activities_info,
     }
 
 
