@@ -15,10 +15,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.database import get_pool, close_pool
+    from app.scheduler import start_scheduler, stop_scheduler
 
     await get_pool()
+    start_scheduler()
     logger.info("App started")
     yield
+    stop_scheduler()
     await close_pool()
     logger.info("App stopped")
 
