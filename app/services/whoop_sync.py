@@ -20,11 +20,15 @@ def _parse_dt(s: str) -> datetime:
 
 
 async def refresh_token_if_needed(
-    user: dict, client: httpx.AsyncClient, pool
+    user: dict, client: httpx.AsyncClient, pool, *, force: bool = False,
 ) -> str:
-    """Check if token is expired, refresh if needed, return valid access_token."""
+    """Check if token is expired, refresh if needed, return valid access_token.
+
+    Args:
+        force: If True, refresh even if token hasn't expired (e.g. after 401).
+    """
     expires_at = user["whoop_token_expires_at"]
-    if expires_at and expires_at > datetime.now(timezone.utc):
+    if not force and expires_at and expires_at > datetime.now(timezone.utc):
         return user["whoop_access_token"]
 
     logger.info("Refreshing WHOOP token for user_id=%s", user["id"])
@@ -229,27 +233,50 @@ async def fetch_daily_cycle(access_token: str) -> dict:
     }
 
 
-async def sync_whoop_user(user: dict, pool, lookback_hours: int = 2) -> None:
-    """Sync WHOOP data for a single user with configurable lookback window."""
+async def _fetch_whoop_data(client: httpx.AsyncClient, access_token: str, lookback_hours: int):
+    """Fetch workout, recovery, and sleep data from WHOOP API."""
     from datetime import timedelta
 
+    headers = {"Authorization": f"Bearer {access_token}"}
+    start = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+
+    workout_resp, recovery_resp, sleep_resp = await asyncio.gather(
+        client.get(f"{WHOOP_API_BASE}/activity/workout",
+                   headers=headers, params={"limit": "25", "start": start}),
+        client.get(f"{WHOOP_API_BASE}/recovery",
+                   headers=headers, params={"limit": "10", "start": start}),
+        client.get(f"{WHOOP_API_BASE}/activity/sleep",
+                   headers=headers, params={"limit": "10", "start": start}),
+    )
+
+    for resp in (workout_resp, recovery_resp, sleep_resp):
+        resp.raise_for_status()
+
+    return workout_resp, recovery_resp, sleep_resp
+
+
+async def sync_whoop_user(user: dict, pool, lookback_hours: int = 2) -> None:
+    """Sync WHOOP data for a single user with configurable lookback window."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         access_token = await refresh_token_if_needed(user, client, pool)
-        headers = {"Authorization": f"Bearer {access_token}"}
 
-        start = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
-
-        workout_resp, recovery_resp, sleep_resp = await asyncio.gather(
-            client.get(f"{WHOOP_API_BASE}/activity/workout",
-                       headers=headers, params={"limit": "25", "start": start}),
-            client.get(f"{WHOOP_API_BASE}/recovery",
-                       headers=headers, params={"limit": "10", "start": start}),
-            client.get(f"{WHOOP_API_BASE}/activity/sleep",
-                       headers=headers, params={"limit": "10", "start": start}),
-        )
-
-        for resp in (workout_resp, recovery_resp, sleep_resp):
-            resp.raise_for_status()
+        try:
+            workout_resp, recovery_resp, sleep_resp = await _fetch_whoop_data(
+                client, access_token, lookback_hours,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                logger.warning(
+                    "WHOOP sync 401 for user_id=%s, force-refreshing token", user["id"],
+                )
+                access_token = await refresh_token_if_needed(
+                    user, client, pool, force=True,
+                )
+                workout_resp, recovery_resp, sleep_resp = await _fetch_whoop_data(
+                    client, access_token, lookback_hours,
+                )
+            else:
+                raise
 
         workouts = process_workouts(workout_resp.json(), user["id"])
         recovery = process_recovery(recovery_resp.json(), user["id"])

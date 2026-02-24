@@ -154,7 +154,20 @@ async def get_today_stats(user_id: int) -> dict:
             from app.services.whoop_sync import fetch_daily_cycle, refresh_token_if_needed
             async with httpx.AsyncClient(timeout=15.0) as client:
                 token = await refresh_token_if_needed(dict(whoop_user), client, pool)
-            daily_cycle = await fetch_daily_cycle(token)
+                try:
+                    daily_cycle = await fetch_daily_cycle(token)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 401:
+                        logger.warning(
+                            "WHOOP cycle 401 for user_id=%s, force-refreshing token",
+                            user_id,
+                        )
+                        token = await refresh_token_if_needed(
+                            dict(whoop_user), client, pool, force=True,
+                        )
+                        daily_cycle = await fetch_daily_cycle(token)
+                    else:
+                        raise
             logger.info(
                 "WHOOP daily cycle for user_id=%s: calories=%s strain=%s",
                 user_id, daily_cycle["calories"], daily_cycle["strain"],
