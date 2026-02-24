@@ -25,6 +25,17 @@ def start_scheduler():
         next_run_time=datetime.now(),
     )
 
+    # FatSecret diary sync every hour
+    from app.services.fatsecret_api import sync_fatsecret_data
+    scheduler.add_job(
+        sync_fatsecret_data,
+        trigger=IntervalTrigger(hours=1),
+        id="fatsecret_data_sync",
+        name="FatSecret Data Sync (hourly)",
+        replace_existing=True,
+        next_run_time=datetime.now(),
+    )
+
     # Morning briefing at 08:00 Kyiv (handles DST automatically)
     from app.services.briefings import morning_briefing
     scheduler.add_job(
@@ -57,7 +68,7 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started — WHOOP sync 1h, "
+        "Scheduler started — WHOOP sync 1h, FatSecret sync 1h, "
         "morning 08:00 Kyiv, evening 21:00 Kyiv, cleanup 03:00 UTC"
     )
 

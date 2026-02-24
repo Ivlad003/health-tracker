@@ -261,3 +261,37 @@ async def fetch_food_diary(
         "entries_count": len(meals),
         "meals": meals,
     }
+
+
+async def sync_fatsecret_data():
+    """Sync job: runs hourly. Fetches FatSecret diary for all connected users (pre-warms cache)."""
+    from app.database import get_pool
+
+    logger.info("Starting FatSecret data sync")
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, telegram_user_id, fatsecret_access_token, fatsecret_access_secret
+           FROM users
+           WHERE fatsecret_access_token IS NOT NULL
+                 AND fatsecret_access_token != ''
+                 AND fatsecret_access_secret IS NOT NULL
+                 AND fatsecret_access_secret != ''"""
+    )
+
+    if not rows:
+        logger.info("No FatSecret users to sync")
+        return
+
+    for row in rows:
+        try:
+            diary = await fetch_food_diary(
+                access_token=row["fatsecret_access_token"],
+                access_secret=row["fatsecret_access_secret"],
+            )
+            logger.info(
+                "FatSecret sync user_id=%s: %d entries, %d kcal",
+                row["id"], diary["entries_count"], diary["total_calories"],
+            )
+        except Exception:
+            logger.exception("Failed to sync FatSecret data for user_id=%s", row["id"])
