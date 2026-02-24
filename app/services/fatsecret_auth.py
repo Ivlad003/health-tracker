@@ -137,8 +137,16 @@ async def exchange_access_token(
             )
         resp.raise_for_status()
 
+    logger.info("FatSecret access_token response: %s", resp.text)
     parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))
+    from urllib.parse import unquote
+    access_token = unquote(parsed.get("oauth_token", ""))
+    access_secret = unquote(parsed.get("oauth_token_secret", ""))
+    logger.info(
+        "FatSecret parsed tokens: token_len=%d secret_len=%d",
+        len(access_token), len(access_secret),
+    )
     return {
-        "access_token": parsed.get("oauth_token", ""),
-        "access_secret": parsed.get("oauth_token_secret", ""),
+        "access_token": access_token,
+        "access_secret": access_secret,
     }
