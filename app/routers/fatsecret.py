@@ -10,4 +10,4 @@ async def food_search(q: str = Query(..., min_length=1)):
     try:
         return await search_food(q)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"FatSecret API error: {e}")
+        raise HTTPException(status_code=502, detail="FatSecret API is currently unavailable")

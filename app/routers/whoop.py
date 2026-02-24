@@ -27,7 +27,12 @@ async def whoop_callback(
     code: Optional[str] = Query(default=None),
     state: Optional[str] = Query(default=None),
 ):
-    if not code:
+    if not code or not state:
+        return HTMLResponse(content=ERROR_HTML, status_code=400)
+
+    try:
+        telegram_user_id = int(state)
+    except (ValueError, TypeError):
         return HTMLResponse(content=ERROR_HTML, status_code=400)
 
     try:
@@ -69,7 +74,7 @@ async def whoop_callback(
             tokens["refresh_token"],
             tokens["expires_in"],
             str(whoop_user_id),
-            int(state) if state else 0,
+            telegram_user_id,
         )
 
         logger.info("WHOOP connected for telegram_user_id=%s", state)
