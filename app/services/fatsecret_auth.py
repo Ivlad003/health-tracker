@@ -83,7 +83,7 @@ async def get_request_token(callback_url: str) -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             FATSECRET_REQUEST_TOKEN_URL,
-            headers={"Authorization": build_oauth1_header(params)},
+            data=params,
         )
         if resp.status_code != 200:
             logger.error(
@@ -128,8 +128,13 @@ async def exchange_access_token(
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             FATSECRET_ACCESS_TOKEN_URL,
-            headers={"Authorization": build_oauth1_header(params)},
+            data=params,
         )
+        if resp.status_code != 200:
+            logger.error(
+                "FatSecret access_token failed: status=%s body=%s",
+                resp.status_code, resp.text,
+            )
         resp.raise_for_status()
 
     parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))

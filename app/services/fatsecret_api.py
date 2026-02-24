@@ -108,11 +108,11 @@ async def fetch_food_diary(
     )
     oauth_params["oauth_signature"] = signature
 
+    all_post_params = {**oauth_params, **api_params}
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             FATSECRET_API_URL,
-            headers={"Authorization": build_oauth1_header(oauth_params)},
-            data=api_params,
+            data=all_post_params,
         )
         resp.raise_for_status()
         data = resp.json()
