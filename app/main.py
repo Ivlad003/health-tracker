@@ -28,6 +28,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Health Tracker API", lifespan=lifespan)
 
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 from app.routers.utils import router as utils_router
 from app.routers.fatsecret import router as fatsecret_router
 from app.routers.whoop import router as whoop_router
@@ -35,8 +41,3 @@ from app.routers.whoop import router as whoop_router
 app.include_router(utils_router)
 app.include_router(fatsecret_router)
 app.include_router(whoop_router)
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
