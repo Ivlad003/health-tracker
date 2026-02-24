@@ -14,6 +14,11 @@ WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
 
 
+def _parse_dt(s: str) -> datetime:
+    """Parse ISO 8601 datetime string from WHOOP API into datetime object."""
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
 async def refresh_token_if_needed(
     user: dict, client: httpx.AsyncClient, pool
 ) -> str:
@@ -72,8 +77,8 @@ def process_workouts(data: dict, user_id: int) -> list[dict]:
             "strain": w.get("score", {}).get("strain", 0),
             "avg_heart_rate": w.get("score", {}).get("average_heart_rate", 0),
             "max_heart_rate": w.get("score", {}).get("max_heart_rate", 0),
-            "started_at": w["start"],
-            "ended_at": w["end"],
+            "started_at": _parse_dt(w["start"]),
+            "ended_at": _parse_dt(w["end"]),
         }
         for w in records
     ]
@@ -93,7 +98,7 @@ def process_recovery(data: dict, user_id: int) -> list[dict]:
             "hrv_rmssd_milli": r.get("score", {}).get("hrv_rmssd_milli", 0),
             "spo2_percentage": r.get("score", {}).get("spo2_percentage", 0),
             "skin_temp_celsius": r.get("score", {}).get("skin_temp_celsius", 0),
-            "recorded_at": r["created_at"],
+            "recorded_at": _parse_dt(r["created_at"]),
         }
         for r in records
     ]
@@ -118,8 +123,8 @@ def process_sleep(data: dict, user_id: int) -> list[dict]:
             "total_light_milli": s.get("score", {}).get("stage_summary", {}).get("total_light_sleep_time_milli", 0),
             "total_awake_milli": s.get("score", {}).get("stage_summary", {}).get("total_awake_time_milli", 0),
             "respiratory_rate": s.get("score", {}).get("respiratory_rate", 0),
-            "started_at": s["start"],
-            "ended_at": s["end"],
+            "started_at": _parse_dt(s["start"]),
+            "ended_at": _parse_dt(s["end"]),
         }
         for s in records
     ]
