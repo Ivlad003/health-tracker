@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -17,9 +18,10 @@ def start_scheduler():
         id="whoop_data_sync",
         name="WHOOP Data Sync (hourly)",
         replace_existing=True,
+        next_run_time=datetime.now(),
     )
     scheduler.start()
-    logger.info("Scheduler started — WHOOP sync every 1 hour")
+    logger.info("Scheduler started — WHOOP sync every 1 hour (first run: now)")
 
 
 def stop_scheduler():

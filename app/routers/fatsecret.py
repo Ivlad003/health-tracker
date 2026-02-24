@@ -26,7 +26,7 @@ async def food_search(q: str = Query(..., min_length=1)):
 
 
 @router.get("/fatsecret/connect")
-async def fatsecret_connect(state: str = Query(...)):
+async def fatsecret_connect(state: int = Query(...)):
     """OAuth 1.0 Step 1: Get request token, store secret, redirect user to FatSecret."""
     callback_url = f"{settings.app_base_url}/fatsecret/callback?state={state}"
     tokens = await get_request_token(callback_url)
@@ -41,7 +41,7 @@ async def fatsecret_connect(state: str = Query(...)):
                updated_at = NOW()
            WHERE telegram_user_id = $2""",
         tokens["oauth_token_secret"],
-        int(state),
+        state,
     )
 
     authorize_url = f"{FATSECRET_AUTHORIZE_URL}?oauth_token={tokens['oauth_token']}"
@@ -52,7 +52,7 @@ async def fatsecret_connect(state: str = Query(...)):
 async def fatsecret_callback(
     oauth_token: str = Query(...),
     oauth_verifier: str = Query(...),
-    state: str = Query(...),
+    state: int = Query(...),
 ):
     """OAuth 1.0 Step 3: Exchange request token for access token, store in DB."""
     pool = await get_pool()
@@ -61,7 +61,7 @@ async def fatsecret_callback(
     row = await pool.fetchrow(
         """SELECT id, settings->>'fatsecret_request_token_secret' as request_secret
            FROM users WHERE telegram_user_id = $1""",
-        int(state),
+        state,
     )
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -113,4 +113,4 @@ async def fatsecret_diary(
             date=date,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"FatSecret API error: {e}")
+        raise HTTPException(status_code=502, detail="FatSecret API is currently unavailable")
