@@ -25,6 +25,11 @@
 |----------|----|--------|
 | WHOOP OAuth Callback | `sWOs9ycgABYKCQ8g` | Active |
 | WHOOP Data Sync | `nAjGDfKdddSDH2MD` | Active (hourly) |
+| FatSecret Food Search | `qTHRcgiqFx9SqTNm` | Active (webhook: `/webhook/food/search?q=`) |
+| FatSecret OAuth Connect | `5W40Z9r0cn5Z5Nyx` | Inactive (crypto blocked) |
+| FatSecret OAuth Callback | `2kyFWt88FfOt14mw` | Inactive (crypto blocked) |
+| FatSecret Food Diary | `5HazDbwcUsZPvXzS` | Inactive (awaiting OAuth) |
+| IP Check | `g3IFs0z6mPYtwPI9` | Active (utility) |
 
 ---
 
@@ -78,7 +83,74 @@ GET /developer/v2/recovery?limit=1 -> response.records[0].user_id
 
 ---
 
-## 3. Database Schema - Reality vs Docs
+## 3. FatSecret API - Critical Discoveries
+
+### Two Separate Credential Sets
+
+FatSecret uses **different credentials** for OAuth 1.0 vs OAuth 2.0:
+
+| | OAuth 2.0 | OAuth 1.0 |
+|---|---|---|
+| Key name | Client ID | Consumer Key |
+| Secret name | Client Secret | Shared Secret |
+| Values | Same key, **different secrets** | Same key, **different secrets** |
+| Use case | Public food database (search) | User's personal food diary |
+
+> The Consumer Key is the same as the Client ID, but the secrets are different.
+> Both are on the FatSecret account page: https://platform.fatsecret.com/my-account/api-key
+
+### OAuth 2.0 (Server-to-Server) - WORKING
+
+- Token endpoint: `POST https://oauth.fatsecret.com/connect/token`
+- API endpoint: `POST https://platform.fatsecret.com/rest/server.api`
+- Scopes: `basic`, `premier`, `barcode`, `localization`, `nlp`, `image-recognition`
+- Used for: food search, food details (public database)
+- Token lifetime: 86400 seconds (24 hours)
+- **Requires IP whitelisting** on `platform.fatsecret.com`
+
+### OAuth 1.0 Three-Legged (User Data) - IN PROGRESS
+
+Required to access user's personal food diary (`food_entries.get`).
+
+**Endpoints:**
+- Request Token: `POST https://authentication.fatsecret.com/oauth/request_token`
+- User Authorization: `GET https://authentication.fatsecret.com/oauth/authorize?oauth_token={token}`
+- Access Token: `POST https://authentication.fatsecret.com/oauth/access_token`
+
+**Signing:** HMAC-SHA1 (all requests must be signed)
+
+**n8n approach:** Use built-in `oAuth1Api` credential type (handles signing automatically).
+- Credential created: name `FatSecret OAuth1`, ID `VCx6xRbjDM47owI0`
+- User must click "Connect" in n8n Credentials UI to authorize
+
+**BLOCKER:** n8n Code nodes **cannot use `require('crypto')`** - module is sandboxed.
+Custom OAuth 1.0 signing in Code nodes is impossible. Must use n8n's built-in OAuth1 credential.
+
+**BLOCKER:** FatSecret OAuth1 "Connect" returns **400 error** - likely IP whitelist issue.
+- n8n server outbound IP: `84.54.23.99` (confirmed via ipify.org)
+- This IP must be whitelisted at https://platform.fatsecret.com/my-account/api-key
+- FatSecret warns: **IP changes can take up to 24 hours to take effect**
+- User added IP on 2026-02-24 - retry after 2026-02-25
+
+### Food Diary API (`food_entries.get.v2`)
+
+Once OAuth 1.0 is connected, fetch diary entries with:
+- URL: `POST https://platform.fatsecret.com/rest/server.api`
+- Params: `method=food_entries.get.v2&format=json&date={days_since_epoch}`
+- `date` parameter: integer = days since Jan 1, 1970 (defaults to today)
+- Returns: food_entry_name, calories, protein, fat, carbohydrate, serving info, meal type
+
+### DB Columns Added for FatSecret
+
+```sql
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS fatsecret_access_token TEXT,
+    ADD COLUMN IF NOT EXISTS fatsecret_access_secret TEXT;
+```
+
+---
+
+## 4. Database Schema - Reality vs Docs
 
 ### CRITICAL: Existing DB uses INTEGER, not UUID
 
@@ -114,7 +186,7 @@ Migration `001_initial_schema.sql` has UUID-based schema but was **never applied
 
 ---
 
-## 4. n8n Node Version Compatibility (v2.35.5)
+## 5. n8n Node Version Compatibility (v2.35.5)
 
 ### CRITICAL: Use these exact typeVersions
 
@@ -158,7 +230,7 @@ Deactivate: same URL but `/deactivate`.
 
 ---
 
-## 5. Common Pitfalls & Fixes
+## 6. Common Pitfalls & Fixes
 
 ### .env Parsing in Bash
 
@@ -203,7 +275,7 @@ The WHOOP client ID in n8n environment variables was truncated (missing last 2 c
 
 ---
 
-## 6. Workflow Architecture Notes
+## 7. Workflow Architecture Notes
 
 ### WHOOP OAuth Callback Flow
 
@@ -233,7 +305,7 @@ Schedule Trigger (every 1 hour)
 
 ---
 
-## 7. Files Reference
+## 8. Files Reference
 
 | File | Purpose |
 |------|---------|
@@ -246,12 +318,22 @@ Schedule Trigger (every 1 hour)
 
 ---
 
-## 8. TODO / Known Issues
+## 9. TODO / Known Issues
+
+### IMMEDIATE - Next Session (after 24h IP whitelist propagation)
+
+- [ ] **Retry FatSecret OAuth1 Connect** - Go to n8n Credentials -> "FatSecret OAuth1" -> click "Connect". IP `84.54.23.99` should be whitelisted by then
+- [ ] **Test food diary fetch** - Once OAuth1 connected, activate `FatSecret Food Diary` workflow (`5HazDbwcUsZPvXzS`) and test via `/webhook/fatsecret/diary`
+- [ ] **Build FatSecret diary sync to DB** - After OAuth works, create scheduled workflow to sync food diary into `food_entries` table
+- [ ] **Cleanup unused workflows** - Delete or archive `FatSecret OAuth Connect` (`5W40Z9r0cn5Z5Nyx`) and `FatSecret OAuth Callback` (`2kyFWt88FfOt14mw`) - they use `require('crypto')` which is blocked
+
+### BACKLOG
 
 - [ ] **Update local JSON workflow files** in `n8n/workflows/` to match deployed n8n versions
 - [ ] **Fix `docs/en/architecture.md`** - says "UUID for primary keys" but actual DB uses INTEGER
-- [ ] **Fix `docs/en/api-integration.md`** - remove `read:cycles` from scopes list (invalid)
-- [ ] **WHOOP OAuth uses webhook-test URL** (`/webhook-test/whoop/callback`) - this only works when workflow is active in test mode. For production, change to `/webhook/whoop/callback`
-- [ ] **SQL injection risk** in n8n Store Tokens query - uses string interpolation for tokens. Consider parameterized queries
+- [ ] **Fix `docs/en/api-integration.md`** - remove `read:cycles` from scopes list (invalid), add FatSecret OAuth 1.0 vs 2.0 distinction
+- [ ] **WHOOP OAuth uses webhook-test URL** (`/webhook-test/whoop/callback`) - for production, change to `/webhook/whoop/callback`
+- [ ] **SQL injection risk** in n8n Store Tokens query - uses string interpolation for tokens
 - [ ] **Verify WHOOP_CLIENT_ID** in n8n/Dokploy environment is not truncated
-- [ ] **WHOOP Data Sync hourly interval** vs 1-hour token expiry creates a race condition - consider refreshing tokens proactively or using a shorter sync interval
+- [ ] **WHOOP Data Sync hourly interval** vs 1-hour token expiry - race condition
+- [ ] **n8n Code nodes cannot `require('crypto')`** - any future HMAC/signing must use n8n built-in credential types or Execute Command node
