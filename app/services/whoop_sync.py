@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+import asyncio
+import httpx
+import logging
+from datetime import datetime, timezone
+
+from app.config import settings
+from app.database import get_pool
+
+logger = logging.getLogger(__name__)
+
+WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
+WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
+
+
+async def refresh_token_if_needed(
+    user: dict, client: httpx.AsyncClient, pool
+) -> str:
+    """Check if token is expired, refresh if needed, return valid access_token."""
+    expires_at = user["whoop_token_expires_at"]
+    if expires_at and expires_at > datetime.now(timezone.utc):
+        return user["whoop_access_token"]
+
+    logger.info("Refreshing WHOOP token for user_id=%s", user["id"])
+    resp = await client.post(
+        WHOOP_TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": user["whoop_refresh_token"],
+            "client_id": settings.whoop_client_id,
+            "client_secret": settings.whoop_client_secret,
+        },
+    )
+    resp.raise_for_status()
+    tokens = resp.json()
+
+    await pool.execute(
+        """UPDATE users
+           SET whoop_access_token = $1,
+               whoop_refresh_token = $2,
+               whoop_token_expires_at = NOW() + make_interval(secs => $3),
+               updated_at = NOW()
+           WHERE id = $4""",
+        tokens["access_token"],
+        tokens["refresh_token"],
+        tokens["expires_in"],
+        user["id"],
+    )
+
+    return tokens["access_token"]
+
+
+def process_workouts(data: dict, user_id: int) -> list[dict]:
+    """Transform WHOOP workout API response into DB-ready dicts."""
+    records = data.get("records", [])
+    if not records:
+        return []
+    return [
+        {
+            "user_id": user_id,
+            "whoop_workout_id": str(w["id"]),
+            "sport_name": w.get("sport_name", "unknown"),
+            "score_state": w.get("score_state", "PENDING_SCORE"),
+            "kilojoules": w.get("score", {}).get("kilojoule", 0),
+            "calories": (w.get("score", {}).get("kilojoule", 0) or 0) / 4.184,
+            "strain": w.get("score", {}).get("strain", 0),
+            "avg_heart_rate": w.get("score", {}).get("average_heart_rate", 0),
+            "max_heart_rate": w.get("score", {}).get("max_heart_rate", 0),
+            "started_at": w["start"],
+            "ended_at": w["end"],
+        }
+        for w in records
+    ]
+
+
+def process_recovery(data: dict, user_id: int) -> list[dict]:
+    """Transform WHOOP recovery API response into DB-ready dicts."""
+    records = data.get("records", [])
+    if not records:
+        return []
+    return [
+        {
+            "user_id": user_id,
+            "whoop_cycle_id": str(r["cycle_id"]),
+            "recovery_score": r.get("score", {}).get("recovery_score", 0),
+            "resting_heart_rate": r.get("score", {}).get("resting_heart_rate", 0),
+            "hrv_rmssd_milli": r.get("score", {}).get("hrv_rmssd_milli", 0),
+            "spo2_percentage": r.get("score", {}).get("spo2_percentage", 0),
+            "skin_temp_celsius": r.get("score", {}).get("skin_temp_celsius", 0),
+            "recorded_at": r["created_at"],
+        }
+        for r in records
+    ]
+
+
+def process_sleep(data: dict, user_id: int) -> list[dict]:
+    """Transform WHOOP sleep API response into DB-ready dicts."""
+    records = data.get("records", [])
+    if not records:
+        return []
+    return [
+        {
+            "user_id": user_id,
+            "whoop_sleep_id": str(s["id"]),
+            "score_state": s.get("score_state", "PENDING_SCORE"),
+            "sleep_performance": s.get("score", {}).get("sleep_performance_percentage", 0),
+            "sleep_consistency": s.get("score", {}).get("sleep_consistency_percentage", 0),
+            "sleep_efficiency": s.get("score", {}).get("sleep_efficiency_percentage", 0),
+            "total_sleep_milli": s.get("score", {}).get("stage_summary", {}).get("total_in_bed_time_milli", 0),
+            "total_rem_milli": s.get("score", {}).get("stage_summary", {}).get("total_rem_sleep_time_milli", 0),
+            "total_sws_milli": s.get("score", {}).get("stage_summary", {}).get("total_slow_wave_sleep_time_milli", 0),
+            "total_light_milli": s.get("score", {}).get("stage_summary", {}).get("total_light_sleep_time_milli", 0),
+            "total_awake_milli": s.get("score", {}).get("stage_summary", {}).get("total_awake_time_milli", 0),
+            "respiratory_rate": s.get("score", {}).get("respiratory_rate", 0),
+            "started_at": s["start"],
+            "ended_at": s["end"],
+        }
+        for s in records
+    ]
+
+
+async def store_workouts(pool, workouts: list[dict]) -> int:
+    """UPSERT workouts into whoop_activities table."""
+    if not workouts:
+        return 0
+    for w in workouts:
+        await pool.execute(
+            """INSERT INTO whoop_activities
+                   (user_id, whoop_workout_id, sport_name, score_state, kilojoules,
+                    calories, strain, avg_heart_rate, max_heart_rate, started_at, ended_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+               ON CONFLICT (whoop_workout_id) DO UPDATE SET
+                   score_state = EXCLUDED.score_state,
+                   calories = EXCLUDED.calories,
+                   strain = EXCLUDED.strain,
+                   updated_at = NOW()""",
+            w["user_id"], w["whoop_workout_id"], w["sport_name"], w["score_state"],
+            w["kilojoules"], w["calories"], w["strain"],
+            w["avg_heart_rate"], w["max_heart_rate"], w["started_at"], w["ended_at"],
+        )
+    return len(workouts)
+
+
+async def store_recovery(pool, records: list[dict]) -> int:
+    """UPSERT recovery records into whoop_recovery table."""
+    if not records:
+        return 0
+    for r in records:
+        await pool.execute(
+            """INSERT INTO whoop_recovery
+                   (user_id, whoop_cycle_id, recovery_score, resting_heart_rate,
+                    hrv_rmssd_milli, spo2_percentage, skin_temp_celsius, recorded_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (whoop_cycle_id) DO UPDATE SET
+                   recovery_score = EXCLUDED.recovery_score,
+                   resting_heart_rate = EXCLUDED.resting_heart_rate,
+                   hrv_rmssd_milli = EXCLUDED.hrv_rmssd_milli""",
+            r["user_id"], r["whoop_cycle_id"], r["recovery_score"],
+            r["resting_heart_rate"], r["hrv_rmssd_milli"],
+            r["spo2_percentage"], r["skin_temp_celsius"], r["recorded_at"],
+        )
+    return len(records)
+
+
+async def store_sleep(pool, records: list[dict]) -> int:
+    """UPSERT sleep records into whoop_sleep table."""
+    if not records:
+        return 0
+    for s in records:
+        await pool.execute(
+            """INSERT INTO whoop_sleep
+                   (user_id, whoop_sleep_id, score_state, sleep_performance_percentage,
+                    sleep_consistency_percentage, sleep_efficiency_percentage,
+                    total_sleep_time_milli, total_rem_sleep_milli,
+                    total_slow_wave_sleep_milli, total_light_sleep_milli,
+                    total_awake_milli, respiratory_rate, started_at, ended_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               ON CONFLICT (whoop_sleep_id) DO UPDATE SET
+                   score_state = EXCLUDED.score_state,
+                   sleep_performance_percentage = EXCLUDED.sleep_performance_percentage""",
+            s["user_id"], s["whoop_sleep_id"], s["score_state"],
+            s["sleep_performance"], s["sleep_consistency"], s["sleep_efficiency"],
+            s["total_sleep_milli"], s["total_rem_milli"], s["total_sws_milli"],
+            s["total_light_milli"], s["total_awake_milli"], s["respiratory_rate"],
+            s["started_at"], s["ended_at"],
+        )
+    return len(records)
+
+
+async def sync_whoop_data():
+    """Main sync job: runs hourly. Fetches all WHOOP users, refreshes tokens, syncs data."""
+    logger.info("Starting WHOOP data sync")
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, telegram_user_id, whoop_user_id, whoop_access_token,
+                  whoop_refresh_token, whoop_token_expires_at
+           FROM users
+           WHERE whoop_access_token IS NOT NULL AND whoop_user_id IS NOT NULL"""
+    )
+
+    if not rows:
+        logger.info("No WHOOP users to sync")
+        return
+
+    for row in rows:
+        user = dict(row)
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                access_token = await refresh_token_if_needed(user, client, pool)
+                headers = {"Authorization": f"Bearer {access_token}"}
+
+                # Fetch workouts, recovery, sleep in parallel (2-hour lookback)
+                from datetime import timedelta
+                start = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+
+                workout_resp, recovery_resp, sleep_resp = await asyncio.gather(
+                    client.get(f"{WHOOP_API_BASE}/activity/workout",
+                               headers=headers, params={"limit": "25", "start": start}),
+                    client.get(f"{WHOOP_API_BASE}/recovery",
+                               headers=headers, params={"limit": "10", "start": start}),
+                    client.get(f"{WHOOP_API_BASE}/activity/sleep",
+                               headers=headers, params={"limit": "10", "start": start}),
+                )
+
+                for resp in (workout_resp, recovery_resp, sleep_resp):
+                    resp.raise_for_status()
+
+                workouts = process_workouts(workout_resp.json(), user["id"])
+                recovery = process_recovery(recovery_resp.json(), user["id"])
+                sleep = process_sleep(sleep_resp.json(), user["id"])
+
+                w_count = await store_workouts(pool, workouts)
+                r_count = await store_recovery(pool, recovery)
+                s_count = await store_sleep(pool, sleep)
+
+                logger.info(
+                    "Synced user_id=%s: %d workouts, %d recovery, %d sleep",
+                    user["id"], w_count, r_count, s_count,
+                )
+
+        except Exception:
+            logger.exception("Failed to sync WHOOP data for user_id=%s", user["id"])
+            continue
+
+    logger.info("WHOOP data sync complete")
