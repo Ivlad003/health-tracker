@@ -289,6 +289,39 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(text, disable_web_page_preview=True)
 
 
+async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /connect_whoop command."""
+    if not update.message or not update.effective_user:
+        return
+
+    telegram_id = update.effective_user.id
+    url = (
+        f"https://api.prod.whoop.com/oauth/oauth2/auth?"
+        f"client_id={settings.whoop_client_id}"
+        f"&redirect_uri={settings.whoop_redirect_uri}"
+        f"&response_type=code"
+        f"&scope=read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
+        f"&state={telegram_id}"
+    )
+    await update.message.reply_text(
+        f"Підключити WHOOP (сон, відновлення, активність):\n\n{url}",
+        disable_web_page_preview=True,
+    )
+
+
+async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /connect_fatsecret command."""
+    if not update.message or not update.effective_user:
+        return
+
+    telegram_id = update.effective_user.id
+    url = f"{settings.app_base_url}/fatsecret/connect?state={telegram_id}"
+    await update.message.reply_text(
+        f"Підключити FatSecret (щоденник їжі):\n\n{url}",
+        disable_web_page_preview=True,
+    )
+
+
 async def start_bot() -> None:
     """Initialize and start the Telegram bot with long polling."""
     global _application
@@ -301,6 +334,8 @@ async def start_bot() -> None:
 
     _application.add_handler(CommandHandler("start", handle_help))
     _application.add_handler(CommandHandler("help", handle_help))
+    _application.add_handler(CommandHandler("connect_whoop", handle_connect_whoop))
+    _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
