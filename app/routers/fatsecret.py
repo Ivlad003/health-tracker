@@ -29,7 +29,10 @@ async def food_search(q: str = Query(..., min_length=1)):
 async def fatsecret_connect(state: int = Query(...)):
     """OAuth 1.0 Step 1: Get request token, store secret, redirect user to FatSecret."""
     callback_url = f"{settings.app_base_url}/fatsecret/callback?state={state}"
-    tokens = await get_request_token(callback_url)
+    try:
+        tokens = await get_request_token(callback_url)
+    except Exception:
+        raise HTTPException(status_code=502, detail="FatSecret authorization is currently unavailable")
 
     # Store request token secret in user settings for step 3
     pool = await get_pool()

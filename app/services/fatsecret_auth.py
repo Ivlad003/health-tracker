@@ -73,11 +73,23 @@ async def get_request_token(callback_url: str) -> dict:
     )
     params["oauth_signature"] = signature
 
+    logger.info(
+        "FatSecret request_token: consumer_key=%s shared_secret_len=%d callback=%s",
+        settings.fatsecret_client_id,
+        len(settings.fatsecret_shared_secret),
+        callback_url,
+    )
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             FATSECRET_REQUEST_TOKEN_URL,
             headers={"Authorization": build_oauth1_header(params)},
         )
+        if resp.status_code != 200:
+            logger.error(
+                "FatSecret request_token failed: status=%s body=%s",
+                resp.status_code, resp.text,
+            )
         resp.raise_for_status()
 
     # Parse form-encoded response: oauth_token=X&oauth_token_secret=Y&oauth_callback_confirmed=true
