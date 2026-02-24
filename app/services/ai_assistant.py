@@ -144,24 +144,23 @@ async def get_today_stats(user_id: int) -> dict:
 
     # Fetch WHOOP daily cycle (total daily calories + strain, not just workouts)
     daily_cycle = {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0}
-    whoop_row = await pool.fetchrow(
-        "SELECT whoop_access_token, whoop_token_expires_at FROM users WHERE id = $1",
+    whoop_user = await pool.fetchrow(
+        """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
+           FROM users WHERE id = $1 AND whoop_access_token IS NOT NULL""",
         user_id,
     )
-    if whoop_row and whoop_row["whoop_access_token"]:
+    if whoop_user:
         try:
             from app.services.whoop_sync import fetch_daily_cycle, refresh_token_if_needed
-            user_dict = await pool.fetchrow(
-                """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
-                   FROM users WHERE id = $1""",
-                user_id,
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                token = await refresh_token_if_needed(dict(whoop_user), client, pool)
+            daily_cycle = await fetch_daily_cycle(token)
+            logger.info(
+                "WHOOP daily cycle for user_id=%s: calories=%s strain=%s",
+                user_id, daily_cycle["calories"], daily_cycle["strain"],
             )
-            if user_dict:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    token = await refresh_token_if_needed(dict(user_dict), client, pool)
-                daily_cycle = await fetch_daily_cycle(token)
         except Exception:
-            logger.warning("Failed to fetch WHOOP daily cycle for user_id=%s", user_id)
+            logger.exception("Failed to fetch WHOOP daily cycle for user_id=%s", user_id)
 
     # Use cycle data for total daily calories/strain, fall back to workout data
     calories_out = daily_cycle["calories"] or round(workout_calories)
