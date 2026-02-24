@@ -304,3 +304,42 @@ Schedule Trigger (кожну годину)
 - [ ] **Перевірити WHOOP_CLIENT_ID** в n8n/Dokploy
 - [ ] **Гонка токенів WHOOP** - інтервал синхронізації = термін токена (1 год)
 - [ ] **n8n Code ноди не можуть `require('crypto')`** - підписання тільки через вбудовані credential типи
+
+---
+
+## 10. Міграція з n8n на Python (2026-02-24)
+
+Workflows n8n замінено єдиним FastAPI Python-додатком.
+
+### Маппінг Workflows на Ендпоінти
+
+| n8n Workflow | n8n ID | Python еквівалент |
+|---|---|---|
+| WHOOP Data Sync | nAjGDfKdddSDH2MD | `app/services/whoop_sync.py` (APScheduler щогодини) |
+| WHOOP OAuth Callback | sWOs9ycgABYKCQ8g | `GET /whoop/callback` |
+| FatSecret Food Search | qTHRcgiqFx9SqTNm | `GET /food/search?q=` |
+| FatSecret OAuth Connect | 5W40Z9r0cn5Z5Nyx | `GET /fatsecret/connect?state=` (ВИПРАВЛЕНО) |
+| FatSecret OAuth Callback | 2kyFWt88FfOt14mw | `GET /fatsecret/callback` (ВИПРАВЛЕНО) |
+| FatSecret Food Diary | 5HazDbwcUsZPvXzS | `GET /fatsecret/diary?user_id=` (РЕАЛІЗОВАНО) |
+| IP Check | g3IFs0z6mPYtwPI9 | `GET /ip-check` |
+
+### Нові ендпоінти
+
+| Ендпоінт | Призначення |
+|---|---|
+| `GET /health` | Перевірка стану для Dokploy |
+| `GET /food/search?q=` | Публічний пошук продуктів FatSecret |
+| `GET /fatsecret/connect?state=` | Ініціація OAuth 1.0 FatSecret |
+| `GET /fatsecret/callback` | Завершення OAuth 1.0 FatSecret |
+| `GET /fatsecret/diary?user_id=` | Щоденник харчування користувача FatSecret |
+| `GET /whoop/callback` | OAuth 2.0 callback WHOOP |
+| `GET /ip-check` | Перевірка публічної IP-адреси сервера |
+
+### Розгортання
+
+Docker образ: `health-tracker`, розгорнутий на Dokploy замість контейнера n8n.
+
+```bash
+docker build -t health-tracker .
+docker run --env-file .env -p 8000:8000 health-tracker
+```

@@ -354,3 +354,42 @@ Schedule Trigger (every 1 hour)
 - [ ] **Verify WHOOP_CLIENT_ID** in n8n/Dokploy environment is not truncated
 - [ ] **WHOOP Data Sync hourly interval** vs 1-hour token expiry - race condition
 - [ ] **n8n Code nodes cannot `require('crypto')`** - any future HMAC/signing must use n8n built-in credential types or Execute Command node
+
+---
+
+## 10. n8n to Python Migration (2026-02-24)
+
+The n8n workflows have been replaced by a single FastAPI Python application.
+
+### Workflow to Endpoint Mapping
+
+| n8n Workflow | n8n ID | Python Equivalent |
+|---|---|---|
+| WHOOP Data Sync | nAjGDfKdddSDH2MD | `app/services/whoop_sync.py` (APScheduler hourly) |
+| WHOOP OAuth Callback | sWOs9ycgABYKCQ8g | `GET /whoop/callback` |
+| FatSecret Food Search | qTHRcgiqFx9SqTNm | `GET /food/search?q=` |
+| FatSecret OAuth Connect | 5W40Z9r0cn5Z5Nyx | `GET /fatsecret/connect?state=` (FIXED) |
+| FatSecret OAuth Callback | 2kyFWt88FfOt14mw | `GET /fatsecret/callback` (FIXED) |
+| FatSecret Food Diary | 5HazDbwcUsZPvXzS | `GET /fatsecret/diary?user_id=` (IMPLEMENTED) |
+| IP Check | g3IFs0z6mPYtwPI9 | `GET /ip-check` |
+
+### New Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Dokploy health check |
+| `GET /food/search?q=` | FatSecret public food search |
+| `GET /fatsecret/connect?state=` | FatSecret OAuth 1.0 initiation |
+| `GET /fatsecret/callback` | FatSecret OAuth 1.0 completion |
+| `GET /fatsecret/diary?user_id=` | FatSecret user food diary |
+| `GET /whoop/callback` | WHOOP OAuth 2.0 callback |
+| `GET /ip-check` | Server public IP check |
+
+### Deployment
+
+Docker image: `health-tracker`, deployed on Dokploy replacing n8n container.
+
+```bash
+docker build -t health-tracker .
+docker run --env-file .env -p 8000:8000 health-tracker
+```
