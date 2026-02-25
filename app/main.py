@@ -126,6 +126,8 @@ logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     handlers=handlers,
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
