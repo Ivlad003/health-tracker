@@ -233,7 +233,8 @@
                   "lineHeight": 1.6,
                   "textAlign": "center",
                   "fontFamily": "Inter",
-                  "fontSize": 20
+                  "fontSize": 20,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -571,7 +572,8 @@
                   "lineHeight": 1.6,
                   "textAlign": "center",
                   "fontFamily": "Inter",
-                  "fontSize": 18
+                  "fontSize": 18,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -636,7 +638,8 @@
                       "content": "Search and log meals with FatSecret food database. Track daily intake and expenditure with accurate nutritional data including Ukrainian food products.",
                       "lineHeight": 1.6,
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 },
@@ -694,7 +697,8 @@
                       "content": "Auto-sync strain, recovery, sleep and workout data. See your recovery score, HRV, and resting heart rate at a glance via secure OAuth 2.0.",
                       "lineHeight": 1.6,
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 },
@@ -752,7 +756,8 @@
                       "content": "AI-powered recommendations based on your WHOOP recovery data. Know when to push hard and when to rest for optimal performance.",
                       "lineHeight": 1.6,
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 }
@@ -868,7 +873,8 @@
                       "lineHeight": 1.6,
                       "textAlign": "center",
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 },
@@ -926,7 +932,8 @@
                       "lineHeight": 1.6,
                       "textAlign": "center",
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 },
@@ -984,1339 +991,12 @@
                       "lineHeight": 1.6,
                       "textAlign": "center",
                       "fontFamily": "Inter",
-                      "fontSize": 15
+                      "fontSize": 15,
+                      "fontWeight": "normal"
                     }
                   ]
                 }
               ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "MWPtX",
-          "name": "Stats Section",
-          "width": "fill_container",
-          "fill": "#10B981",
-          "padding": [
-            64,
-            80
-          ],
-          "justifyContent": "space_around",
-          "alignItems": "center",
-          "children": [
-            {
-              "type": "frame",
-              "id": "rUr82",
-              "name": "stat1",
-              "layout": "vertical",
-              "gap": 4,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "Oqqjy",
-                  "name": "stat1Val",
-                  "fill": "#FFFFFF",
-                  "content": "10K+",
-                  "lineHeight": 1,
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 44,
-                  "fontWeight": "800"
-                },
-                {
-                  "type": "text",
-                  "id": "hfmdF",
-                  "name": "stat1Label",
-                  "fill": "#FFFFFFB3",
-                  "content": "Meals Tracked",
-                  "fontFamily": "Inter",
-                  "fontSize": 16,
-                  "fontWeight": "500"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "C0s5x",
-              "name": "stat2",
-              "layout": "vertical",
-              "gap": 4,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "i7xhz",
-                  "name": "stat2Val",
-                  "fill": "#FFFFFF",
-                  "content": "500K+",
-                  "lineHeight": 1,
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 44,
-                  "fontWeight": "800"
-                },
-                {
-                  "type": "text",
-                  "id": "2byov",
-                  "name": "stat2Label",
-                  "fill": "#FFFFFFB3",
-                  "content": "WHOOP Data Points Synced",
-                  "fontFamily": "Inter",
-                  "fontSize": 16,
-                  "fontWeight": "500"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "CenYi",
-              "name": "stat3",
-              "layout": "vertical",
-              "gap": 4,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "5MEds",
-                  "name": "stat3Val",
-                  "fill": "#FFFFFF",
-                  "content": "99.9%",
-                  "lineHeight": 1,
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 44,
-                  "fontWeight": "800"
-                },
-                {
-                  "type": "text",
-                  "id": "71LRP",
-                  "name": "stat3Label",
-                  "fill": "#FFFFFFB3",
-                  "content": "API Uptime",
-                  "fontFamily": "Inter",
-                  "fontSize": 16,
-                  "fontWeight": "500"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "cgKMV",
-              "name": "stat4",
-              "layout": "vertical",
-              "gap": 4,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "Teyh3",
-                  "name": "stat4Val",
-                  "fill": "#FFFFFF",
-                  "content": "24/7",
-                  "lineHeight": 1,
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 44,
-                  "fontWeight": "800"
-                },
-                {
-                  "type": "text",
-                  "id": "mjuyN",
-                  "name": "stat4Label",
-                  "fill": "#FFFFFFB3",
-                  "content": "Auto Token Refresh",
-                  "fontFamily": "Inter",
-                  "fontSize": 16,
-                  "fontWeight": "500"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "JnXkW",
-          "name": "AI Recommendations",
-          "width": "fill_container",
-          "layout": "vertical",
-          "gap": 48,
-          "padding": 80,
-          "alignItems": "center",
-          "children": [
-            {
-              "type": "frame",
-              "id": "rZzz8",
-              "name": "aiHead",
-              "width": 720,
-              "layout": "vertical",
-              "gap": 16,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "OBmis",
-                  "name": "aiLabel",
-                  "fill": "#10B98120",
-                  "cornerRadius": 100,
-                  "gap": 8,
-                  "padding": [
-                    6,
-                    16
-                  ],
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "icon_font",
-                      "id": "PWgd3",
-                      "name": "aiLabelIc",
-                      "width": 16,
-                      "height": 16,
-                      "iconFontName": "sparkles",
-                      "iconFontFamily": "lucide",
-                      "fill": "#10B981"
-                    },
-                    {
-                      "type": "text",
-                      "id": "0O9zm",
-                      "name": "aiLabelTx",
-                      "fill": "#059669",
-                      "content": "WHOOP-POWERED",
-                      "fontFamily": "Inter",
-                      "fontSize": 12,
-                      "fontWeight": "700",
-                      "letterSpacing": 2
-                    }
-                  ]
-                },
-                {
-                  "type": "text",
-                  "id": "hsMdd",
-                  "name": "aiTitle",
-                  "fill": "#18181B",
-                  "textGrowth": "fixed-width",
-                  "width": 720,
-                  "content": "Smart recommendations from your WHOOP data",
-                  "lineHeight": 1.15,
-                  "textAlign": "center",
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 40,
-                  "fontWeight": "800"
-                },
-                {
-                  "type": "text",
-                  "id": "xgw6k",
-                  "name": "aiSub",
-                  "fill": "#71717A",
-                  "textGrowth": "fixed-width",
-                  "width": 620,
-                  "content": "Health Tracker analyzes your WHOOP recovery, strain and sleep data alongside calorie intake to deliver actionable recommendations.",
-                  "lineHeight": 1.6,
-                  "textAlign": "center",
-                  "fontFamily": "Inter",
-                  "fontSize": 18
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "F2dFJ",
-              "name": "aiCards",
-              "width": "fill_container",
-              "gap": 24,
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "UJ3NT",
-                  "name": "aiCol1",
-                  "width": "fill_container",
-                  "layout": "vertical",
-                  "gap": 24,
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "CenBQ",
-                      "name": "c1",
-                      "width": "fill_container",
-                      "fill": "#F0FDF4",
-                      "cornerRadius": 24,
-                      "stroke": {
-                        "thickness": 1,
-                        "fill": "#10B98130"
-                      },
-                      "layout": "vertical",
-                      "gap": 16,
-                      "padding": 28,
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "mWvFv",
-                          "name": "c1top",
-                          "gap": 12,
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "N2abE",
-                              "name": "c1ic",
-                              "width": 44,
-                              "height": 44,
-                              "fill": "#10B981",
-                              "cornerRadius": 12,
-                              "justifyContent": "center",
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon_font",
-                                  "id": "iIZQV",
-                                  "name": "c1ici",
-                                  "width": 22,
-                                  "height": 22,
-                                  "iconFontName": "moon",
-                                  "iconFontFamily": "lucide",
-                                  "fill": "#FFFFFF"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "text",
-                              "id": "hEYNS",
-                              "name": "c1t",
-                              "fill": "#18181B",
-                              "content": "Recovery-Based Training",
-                              "fontFamily": "Plus Jakarta Sans",
-                              "fontSize": 18,
-                              "fontWeight": "700"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "KaHp6",
-                          "name": "c1d",
-                          "fill": "#52525B",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "&quot;Your WHOOP recovery score is 84% today. Perfect time for high-intensity training. Suggested calorie target: 2,800 kcal.&quot;",
-                          "lineHeight": 1.6,
-                          "fontFamily": "Inter",
-                          "fontSize": 15,
-                          "fontStyle": "italic"
-                        },
-                        {
-                          "type": "frame",
-                          "id": "L0Uhz",
-                          "name": "c1tag",
-                          "gap": 8,
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "ThLpF",
-                              "name": "c1t1",
-                              "fill": "#10B98115",
-                              "cornerRadius": 100,
-                              "padding": [
-                                4,
-                                12
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "vnXz2",
-                                  "name": "c1t1t",
-                                  "fill": "#059669",
-                                  "content": "Whoop + FatSecret",
-                                  "fontFamily": "Inter",
-                                  "fontSize": 12,
-                                  "fontWeight": "600"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "fJ721",
-                      "name": "c2",
-                      "width": "fill_container",
-                      "fill": "#F0FDF4",
-                      "cornerRadius": 24,
-                      "stroke": {
-                        "thickness": 1,
-                        "fill": "#10B98130"
-                      },
-                      "layout": "vertical",
-                      "gap": 16,
-                      "padding": 28,
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "zigvF",
-                          "name": "c2top",
-                          "gap": 12,
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "EOmyK",
-                              "name": "c2ic",
-                              "width": 44,
-                              "height": 44,
-                              "fill": "#10B981",
-                              "cornerRadius": 12,
-                              "justifyContent": "center",
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon_font",
-                                  "id": "t4Tmx",
-                                  "name": "c2ici",
-                                  "width": 22,
-                                  "height": 22,
-                                  "iconFontName": "zap",
-                                  "iconFontFamily": "lucide",
-                                  "fill": "#FFFFFF"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "text",
-                              "id": "UbFUx",
-                              "name": "c2t",
-                              "fill": "#18181B",
-                              "content": "Calorie Balance",
-                              "fontFamily": "Plus Jakarta Sans",
-                              "fontSize": 18,
-                              "fontWeight": "700"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "6OOuv",
-                          "name": "c2d",
-                          "fill": "#52525B",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "&quot;You burned 3,200 kcal yesterday but only consumed 2,100. Consider adding a high-protein meal to support recovery.&quot;",
-                          "lineHeight": 1.6,
-                          "fontFamily": "Inter",
-                          "fontSize": 15,
-                          "fontStyle": "italic"
-                        },
-                        {
-                          "type": "frame",
-                          "id": "Y0Nx0",
-                          "name": "c2tag",
-                          "gap": 8,
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "PwIK8",
-                              "name": "c2t1",
-                              "fill": "#10B98115",
-                              "cornerRadius": 100,
-                              "padding": [
-                                4,
-                                12
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "jjnEE",
-                                  "name": "c2t1t",
-                                  "fill": "#059669",
-                                  "content": "Garmin + Whoop",
-                                  "fontFamily": "Inter",
-                                  "fontSize": 12,
-                                  "fontWeight": "600"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "tmkgk",
-                  "name": "aiCol2",
-                  "width": "fill_container",
-                  "layout": "vertical",
-                  "gap": 24,
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "i0pjz",
-                      "name": "c3",
-                      "width": "fill_container",
-                      "fill": "#F0FDF4",
-                      "cornerRadius": 24,
-                      "stroke": {
-                        "thickness": 1,
-                        "fill": "#10B98130"
-                      },
-                      "layout": "vertical",
-                      "gap": 16,
-                      "padding": 28,
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "wgfqy",
-                          "name": "c3top",
-                          "gap": 12,
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "R26jW",
-                              "name": "c3ic",
-                              "width": 44,
-                              "height": 44,
-                              "fill": "#10B981",
-                              "cornerRadius": 12,
-                              "justifyContent": "center",
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon_font",
-                                  "id": "P70XE",
-                                  "name": "c3ici",
-                                  "width": 22,
-                                  "height": 22,
-                                  "iconFontName": "salad",
-                                  "iconFontFamily": "lucide",
-                                  "fill": "#FFFFFF"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "text",
-                              "id": "ygtbs",
-                              "name": "c3t",
-                              "fill": "#18181B",
-                              "content": "Sleep & Nutrition",
-                              "fontFamily": "Plus Jakarta Sans",
-                              "fontSize": 18,
-                              "fontWeight": "700"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "Rfex7",
-                          "name": "c3d",
-                          "fill": "#52525B",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "&quot;Your WHOOP sleep score improves 23% when you stop eating 3 hours before bed. Try finishing dinner by 7pm tonight.&quot;",
-                          "lineHeight": 1.6,
-                          "fontFamily": "Inter",
-                          "fontSize": 15,
-                          "fontStyle": "italic"
-                        },
-                        {
-                          "type": "frame",
-                          "id": "8j4bH",
-                          "name": "c3tag",
-                          "gap": 8,
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "b9awv",
-                              "name": "c3t1",
-                              "fill": "#10B98115",
-                              "cornerRadius": 100,
-                              "padding": [
-                                4,
-                                12
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "Bq2S5",
-                                  "name": "c3t1t",
-                                  "fill": "#059669",
-                                  "content": "FatSecret + Garmin",
-                                  "fontFamily": "Inter",
-                                  "fontSize": 12,
-                                  "fontWeight": "600"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "WIPyP",
-                      "name": "c4",
-                      "width": "fill_container",
-                      "fill": "#F0FDF4",
-                      "cornerRadius": 24,
-                      "stroke": {
-                        "thickness": 1,
-                        "fill": "#10B98130"
-                      },
-                      "layout": "vertical",
-                      "gap": 16,
-                      "padding": 28,
-                      "children": [
-                        {
-                          "type": "frame",
-                          "id": "97F4U",
-                          "name": "c4top",
-                          "gap": 12,
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "AFShf",
-                              "name": "c4ic",
-                              "width": 44,
-                              "height": 44,
-                              "fill": "#10B981",
-                              "cornerRadius": 12,
-                              "justifyContent": "center",
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "icon_font",
-                                  "id": "7WORN",
-                                  "name": "c4ici",
-                                  "width": 22,
-                                  "height": 22,
-                                  "iconFontName": "heart-pulse",
-                                  "iconFontFamily": "lucide",
-                                  "fill": "#FFFFFF"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "text",
-                              "id": "kPSkl",
-                              "name": "c4t",
-                              "fill": "#18181B",
-                              "content": "Strain Optimization",
-                              "fontFamily": "Plus Jakarta Sans",
-                              "fontSize": 18,
-                              "fontWeight": "700"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "text",
-                          "id": "LbIVi",
-                          "name": "c4d",
-                          "fill": "#52525B",
-                          "textGrowth": "fixed-width",
-                          "width": "fill_container",
-                          "content": "&quot;Based on your HRV trend and this week's strain, take a recovery day tomorrow. Your body needs it for peak performance.&quot;",
-                          "lineHeight": 1.6,
-                          "fontFamily": "Inter",
-                          "fontSize": 15,
-                          "fontStyle": "italic"
-                        },
-                        {
-                          "type": "frame",
-                          "id": "BfsLp",
-                          "name": "c4tag",
-                          "gap": 8,
-                          "children": [
-                            {
-                              "type": "frame",
-                              "id": "DKFbv",
-                              "name": "c4t1",
-                              "fill": "#10B98115",
-                              "cornerRadius": 100,
-                              "padding": [
-                                4,
-                                12
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "c19a8",
-                                  "name": "c4t1t",
-                                  "fill": "#059669",
-                                  "content": "Whoop + Apple Health",
-                                  "fontFamily": "Inter",
-                                  "fontSize": 12,
-                                  "fontWeight": "600"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "eRgax",
-          "name": "FAQ Section",
-          "width": "fill_container",
-          "fill": "#F9FAFB",
-          "layout": "vertical",
-          "gap": 48,
-          "padding": [
-            80,
-            200
-          ],
-          "alignItems": "center",
-          "children": [
-            {
-              "type": "frame",
-              "id": "kMqSR",
-              "name": "faqHead",
-              "layout": "vertical",
-              "gap": 16,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "pJmjo",
-                  "name": "faqLabel",
-                  "fill": "#10B981",
-                  "content": "FAQ",
-                  "fontFamily": "Inter",
-                  "fontSize": 13,
-                  "fontWeight": "700",
-                  "letterSpacing": 2
-                },
-                {
-                  "type": "text",
-                  "id": "9YyGp",
-                  "name": "faqTitle",
-                  "fill": "#18181B",
-                  "content": "Frequently asked questions",
-                  "textAlign": "center",
-                  "fontFamily": "Plus Jakarta Sans",
-                  "fontSize": 40,
-                  "fontWeight": "800"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "ldNyK",
-              "name": "faqList",
-              "clip": true,
-              "width": "fill_container",
-              "fill": "#FFFFFF",
-              "cornerRadius": 24,
-              "layout": "vertical",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "rdzac",
-                  "name": "fq1",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "N57WB",
-                      "name": "fq1t",
-                      "fill": "#18181B",
-                      "content": "How does the WHOOP integration work?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "73WKB",
-                      "name": "fq1i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-down",
-                      "iconFontFamily": "lucide",
-                      "fill": "#10B981"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "1HE45",
-                  "name": "fq1a",
-                  "width": "fill_container",
-                  "padding": [
-                    0,
-                    24,
-                    20,
-                    24
-                  ],
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "d42Yz",
-                      "name": "fq1at",
-                      "fill": "#71717A",
-                      "textGrowth": "fixed-width",
-                      "width": "fill_container",
-                      "content": "Health Tracker uses WHOOP's official OAuth 2.0 API to securely connect your account. Once authorized, your recovery score, strain, sleep data, HRV, and workout metrics sync automatically. The n8n automation handles token refresh every 50 minutes so your data stays current.",
-                      "lineHeight": 1.6,
-                      "fontFamily": "Inter",
-                      "fontSize": 15
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "2WPgP",
-                  "name": "fq1d",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#E4E4E7"
-                },
-                {
-                  "type": "frame",
-                  "id": "hN9eb",
-                  "name": "fq2",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "dqwLz",
-                      "name": "fq2t",
-                      "fill": "#18181B",
-                      "content": "Is my health data safe and private?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "EHAnM",
-                      "name": "fq2i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-right",
-                      "iconFontFamily": "lucide",
-                      "fill": "#A1A1AA"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "Nwp09",
-                  "name": "fq2d",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#E4E4E7"
-                },
-                {
-                  "type": "frame",
-                  "id": "vRndA",
-                  "name": "fq3",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "wZMkR",
-                      "name": "fq3t",
-                      "fill": "#18181B",
-                      "content": "How do I track my meals?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "Z1TwI",
-                      "name": "fq3i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-right",
-                      "iconFontFamily": "lucide",
-                      "fill": "#A1A1AA"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "9QacS",
-                  "name": "fq3d",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#E4E4E7"
-                },
-                {
-                  "type": "frame",
-                  "id": "BDAjr",
-                  "name": "fq4",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "pYzA9",
-                      "name": "fq4t",
-                      "fill": "#18181B",
-                      "content": "Is this free to use?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "OsHH5",
-                      "name": "fq4i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-right",
-                      "iconFontFamily": "lucide",
-                      "fill": "#A1A1AA"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "7XnUx",
-                  "name": "fq4d",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#E4E4E7"
-                },
-                {
-                  "type": "frame",
-                  "id": "8Bvaq",
-                  "name": "fq5",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "H6Lys",
-                      "name": "fq5t",
-                      "fill": "#18181B",
-                      "content": "What WHOOP data scopes are required?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "rLQYu",
-                      "name": "fq5i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-right",
-                      "iconFontFamily": "lucide",
-                      "fill": "#A1A1AA"
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "GbZ4g",
-                  "name": "fq5d",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#E4E4E7"
-                },
-                {
-                  "type": "frame",
-                  "id": "MTnlo",
-                  "name": "fq6",
-                  "width": "fill_container",
-                  "padding": [
-                    20,
-                    24
-                  ],
-                  "justifyContent": "space_between",
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "ZwAoK",
-                      "name": "fq6t",
-                      "fill": "#18181B",
-                      "content": "Can I revoke WHOOP access anytime?",
-                      "fontFamily": "Inter",
-                      "fontSize": 16,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "icon_font",
-                      "id": "AWCBS",
-                      "name": "fq6i",
-                      "width": 20,
-                      "height": 20,
-                      "iconFontName": "chevron-right",
-                      "iconFontFamily": "lucide",
-                      "fill": "#A1A1AA"
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "2O8uz",
-          "name": "Final CTA",
-          "width": "fill_container",
-          "fill": {
-            "type": "gradient",
-            "gradientType": "linear",
-            "enabled": true,
-            "rotation": 180,
-            "size": {
-              "height": 1
-            },
-            "colors": [
-              {
-                "color": "#DCFCE7",
-                "position": 0
-              },
-              {
-                "color": "#F0FDF4",
-                "position": 0.5
-              },
-              {
-                "color": "#FFFFFF",
-                "position": 1
-              }
-            ]
-          },
-          "layout": "vertical",
-          "gap": 32,
-          "padding": 80,
-          "alignItems": "center",
-          "children": [
-            {
-              "type": "text",
-              "id": "aeYiy",
-              "name": "ctaTitle",
-              "fill": "#18181B",
-              "content": "Ready to take control of your health?",
-              "textAlign": "center",
-              "fontFamily": "Plus Jakarta Sans",
-              "fontSize": 40,
-              "fontWeight": "800"
-            },
-            {
-              "type": "text",
-              "id": "2wnsL",
-              "name": "ctaSub",
-              "fill": "#71717A",
-              "textGrowth": "fixed-width",
-              "width": 600,
-              "content": "Connect your WHOOP, track your meals, and get personalized recommendations — all through a simple Telegram bot.",
-              "lineHeight": 1.6,
-              "textAlign": "center",
-              "fontFamily": "Inter",
-              "fontSize": 18
-            },
-            {
-              "type": "frame",
-              "id": "goaMy",
-              "name": "ctaBtn",
-              "fill": "#10B981",
-              "cornerRadius": 24,
-              "gap": 8,
-              "padding": [
-                16,
-                36
-              ],
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "ItLku",
-                  "name": "ctaBtnTx",
-                  "fill": "#FFFFFF",
-                  "content": "Open Telegram Bot",
-                  "fontFamily": "Inter",
-                  "fontSize": 17,
-                  "fontWeight": "600"
-                },
-                {
-                  "type": "icon_font",
-                  "id": "UYC28",
-                  "name": "ctaBtnIc",
-                  "width": 20,
-                  "height": 20,
-                  "iconFontName": "send",
-                  "iconFontFamily": "lucide",
-                  "fill": "#FFFFFF"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
-          "id": "8hOSG",
-          "name": "Footer",
-          "width": "fill_container",
-          "fill": "#18181B",
-          "layout": "vertical",
-          "gap": 32,
-          "padding": [
-            48,
-            80
-          ],
-          "children": [
-            {
-              "type": "frame",
-              "id": "cfxvY",
-              "name": "footerTop",
-              "width": "fill_container",
-              "justifyContent": "space_between",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "U2gvk",
-                  "name": "footerBrand",
-                  "width": 300,
-                  "layout": "vertical",
-                  "gap": 12,
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "9D9tx",
-                      "name": "footerLogo",
-                      "gap": 10,
-                      "alignItems": "center",
-                      "children": [
-                        {
-                          "type": "icon_font",
-                          "id": "utyrj",
-                          "name": "footerLogoIc",
-                          "width": 24,
-                          "height": 24,
-                          "iconFontName": "heart-pulse",
-                          "iconFontFamily": "lucide",
-                          "fill": "#10B981"
-                        },
-                        {
-                          "type": "text",
-                          "id": "FFWhC",
-                          "name": "footerLogoTx",
-                          "fill": "#FFFFFF",
-                          "content": "Health Tracker",
-                          "fontFamily": "Plus Jakarta Sans",
-                          "fontSize": 20,
-                          "fontWeight": "700"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "text",
-                      "id": "ZDqqG",
-                      "name": "footerDesc",
-                      "fill": "#71717A",
-                      "textGrowth": "fixed-width",
-                      "width": 280,
-                      "content": "Your personal health and calorie management platform powered by WHOOP data and Telegram.",
-                      "lineHeight": 1.6,
-                      "fontFamily": "Inter",
-                      "fontSize": 14
-                    }
-                  ]
-                },
-                {
-                  "type": "frame",
-                  "id": "EAFMM",
-                  "name": "footerLinks",
-                  "gap": 64,
-                  "children": [
-                    {
-                      "type": "frame",
-                      "id": "j8Ep3",
-                      "name": "col1",
-                      "layout": "vertical",
-                      "gap": 14,
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "0ZR1V",
-                          "name": "col1Title",
-                          "fill": "#FFFFFF",
-                          "content": "Product",
-                          "fontFamily": "Inter",
-                          "fontSize": 14,
-                          "fontWeight": "600"
-                        },
-                        {
-                          "type": "text",
-                          "id": "VfQ0F",
-                          "name": "col1L1",
-                          "fill": "#71717A",
-                          "content": "Features",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "fCdWt",
-                          "name": "col1L2",
-                          "fill": "#71717A",
-                          "content": "WHOOP Integration",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "8aj1L",
-                          "name": "col1L3",
-                          "fill": "#71717A",
-                          "content": "Calorie Tracking",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "TnPfj",
-                      "name": "col2",
-                      "layout": "vertical",
-                      "gap": 14,
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "V6Lvr",
-                          "name": "col2Title",
-                          "fill": "#FFFFFF",
-                          "content": "Company",
-                          "fontFamily": "Inter",
-                          "fontSize": 14,
-                          "fontWeight": "600"
-                        },
-                        {
-                          "type": "text",
-                          "id": "OWwi3",
-                          "name": "col2L1",
-                          "fill": "#71717A",
-                          "content": "About",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "RufLb",
-                          "name": "col2L2",
-                          "fill": "#71717A",
-                          "content": "Contact",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "Z5t7i",
-                          "name": "col2L3",
-                          "fill": "#71717A",
-                          "content": "Support",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        }
-                      ]
-                    },
-                    {
-                      "type": "frame",
-                      "id": "8ATAr",
-                      "name": "col3",
-                      "layout": "vertical",
-                      "gap": 14,
-                      "children": [
-                        {
-                          "type": "text",
-                          "id": "agPXv",
-                          "name": "col3Title",
-                          "fill": "#FFFFFF",
-                          "content": "Legal",
-                          "fontFamily": "Inter",
-                          "fontSize": 14,
-                          "fontWeight": "600"
-                        },
-                        {
-                          "type": "text",
-                          "id": "Bsx0d",
-                          "name": "col3L1",
-                          "fill": "#10B981",
-                          "content": "Privacy Policy",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "S4J4h",
-                          "name": "col3L2",
-                          "fill": "#71717A",
-                          "content": "Terms of Service",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        },
-                        {
-                          "type": "text",
-                          "id": "5vJHl",
-                          "name": "col3L3",
-                          "fill": "#71717A",
-                          "content": "GDPR",
-                          "fontFamily": "Inter",
-                          "fontSize": 14
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "1HSUP",
-              "name": "footerDiv",
-              "width": "fill_container",
-              "height": 1,
-              "fill": "#2D2D30"
-            },
-            {
-              "type": "text",
-              "id": "emWhe",
-              "name": "footerBottom",
-              "fill": "#52525B",
-              "content": "© 2026 Health Tracker. All rights reserved.",
-              "fontFamily": "Inter",
-              "fontSize": 13
             }
           ]
         }
@@ -2492,7 +1172,8 @@
               "fill": "#71717A",
               "content": "Last updated: February 24, 2026",
               "fontFamily": "Inter",
-              "fontSize": 16
+              "fontSize": 16,
+              "fontWeight": "normal"
             },
             {
               "type": "text",
@@ -2505,7 +1186,8 @@
               "lineHeight": 1.6,
               "textAlign": "center",
               "fontFamily": "Inter",
-              "fontSize": 18
+              "fontSize": 18,
+              "fontWeight": "normal"
             }
           ]
         },
@@ -2549,7 +1231,8 @@
                   "content": "a) Data from WHOOP (via OAuth 2.0): Profile data (name, email), body measurements (height, weight, max HR), recovery data (recovery score, HRV, resting HR), sleep data (duration, stages, sleep score), workout data (strain, HR zones, calories), and physiological cycles.\n\nb) Data from FatSecret: Food search queries and nutritional information for selected food items.\n\nc) Data from User Input: Telegram user ID, food logs and meal entries, personal goals (calorie targets, training goals), and preferences.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 },
                 {
                   "type": "text",
@@ -2561,7 +1244,8 @@
                   "content": "d) Automatically Collected: Timestamps of interactions and device/platform information (Telegram client). We do not collect data beyond what is necessary to provide calorie tracking, WHOOP sync, and recommendation features.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2593,7 +1277,8 @@
                   "content": "Your health data is used solely to provide Health Tracker's core functionality: syncing WHOOP recovery and strain data, tracking calories via FatSecret, generating personalized training load recommendations, and improving service quality. We never sell your personal health data to third parties. Data is not used for advertising or shared with third parties except the API providers (WHOOP, FatSecret).",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2625,7 +1310,8 @@
                   "content": "All data is stored in PostgreSQL database, encrypted at rest and in transit (TLS/SSL). OAuth tokens are stored securely and never exposed to the client. Access tokens are refreshed automatically every 50 minutes via n8n automation. Data is retained only while your account is active. You can request deletion at any time.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2657,7 +1343,8 @@
                   "content": "When you connect WHOOP via OAuth 2.0, we request only the minimum scopes needed: read:profile, read:body_measurement, read:recovery, read:sleep, read:workout, read:cycles. FatSecret API is used for food database search. Telegram Bot API processes your meal logging commands. Each integration can be disconnected independently.\n\nWHOOP Privacy Policy: whoop.com/privacy\nFatSecret Privacy Policy: fatsecret.com/privacy-policy\nTelegram Privacy Policy: telegram.org/privacy",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2689,7 +1376,8 @@
                   "content": "You have full control over your data. You can export all your data at any time. You can revoke WHOOP access via the WHOOP app or our service. You can request complete deletion of your account and all associated data within 30 days. Under GDPR, CCPA, and similar regulations, you have rights to access, rectify, port, and erase your personal data.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2721,7 +1409,8 @@
                   "content": "We use minimal cookies for session management only. No tracking cookies or advertising cookies are used. The service operates primarily through Telegram, so browser cookies are limited to the landing page and privacy policy pages only.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2753,7 +1442,8 @@
                   "content": "We may update this privacy policy from time to time. We will notify you of any material changes via Telegram bot notification at least 30 days before they take effect. Continued use of Health Tracker after changes constitutes acceptance of the updated policy. This service is not intended for users under 18.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             },
@@ -2788,7 +1478,8 @@
                   "content": "Contact our Data Protection Officer at privacy@healthtracker.app. You can also reach us at contact@healthtracker.app for general inquiries.",
                   "lineHeight": 1.7,
                   "fontFamily": "Inter",
-                  "fontSize": 16
+                  "fontSize": 16,
+                  "fontWeight": "normal"
                 }
               ]
             }
@@ -2861,7 +1552,8 @@
                       "content": "Your personal health and calorie management platform powered by WHOOP data and Telegram.",
                       "lineHeight": 1.6,
                       "fontFamily": "Inter",
-                      "fontSize": 14
+                      "fontSize": 14,
+                      "fontWeight": "normal"
                     }
                   ]
                 },
@@ -2895,7 +1587,8 @@
                           "fill": "#71717A",
                           "content": "Features",
                           "fontFamily": "Inter",
-                          "fontSize": 14
+                          "fontSize": 14,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -2904,7 +1597,8 @@
                           "fill": "#71717A",
                           "content": "WHOOP Integration",
                           "fontFamily": "Inter",
-                          "fontSize": 14
+                          "fontSize": 14,
+                          "fontWeight": "normal"
                         }
                       ]
                     },
@@ -2932,7 +1626,8 @@
                           "fill": "#10B981",
                           "content": "Privacy Policy",
                           "fontFamily": "Inter",
-                          "fontSize": 14
+                          "fontSize": 14,
+                          "fontWeight": "normal"
                         },
                         {
                           "type": "text",
@@ -2941,7 +1636,8 @@
                           "fill": "#71717A",
                           "content": "Terms of Service",
                           "fontFamily": "Inter",
-                          "fontSize": 14
+                          "fontSize": 14,
+                          "fontWeight": "normal"
                         }
                       ]
                     }
@@ -2964,9 +1660,1366 @@
               "fill": "#52525B",
               "content": "© 2026 Health Tracker. All rights reserved.",
               "fontFamily": "Inter",
-              "fontSize": 13
+              "fontSize": 13,
+              "fontWeight": "normal"
             }
           ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "MWPtX",
+      "x": 900,
+      "y": 2379,
+      "name": "Stats Section",
+      "width": "fill_container(1440)",
+      "fill": "#10B981",
+      "padding": [
+        64,
+        80
+      ],
+      "justifyContent": "space_around",
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "rUr82",
+          "name": "stat1",
+          "layout": "vertical",
+          "gap": 4,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "Oqqjy",
+              "name": "stat1Val",
+              "fill": "#FFFFFF",
+              "content": "10K+",
+              "lineHeight": 1,
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 44,
+              "fontWeight": "800"
+            },
+            {
+              "type": "text",
+              "id": "hfmdF",
+              "name": "stat1Label",
+              "fill": "#FFFFFFB3",
+              "content": "Meals Tracked",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "C0s5x",
+          "name": "stat2",
+          "layout": "vertical",
+          "gap": 4,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "i7xhz",
+              "name": "stat2Val",
+              "fill": "#FFFFFF",
+              "content": "500K+",
+              "lineHeight": 1,
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 44,
+              "fontWeight": "800"
+            },
+            {
+              "type": "text",
+              "id": "2byov",
+              "name": "stat2Label",
+              "fill": "#FFFFFFB3",
+              "content": "WHOOP Data Points Synced",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "CenYi",
+          "name": "stat3",
+          "layout": "vertical",
+          "gap": 4,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "5MEds",
+              "name": "stat3Val",
+              "fill": "#FFFFFF",
+              "content": "99.9%",
+              "lineHeight": 1,
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 44,
+              "fontWeight": "800"
+            },
+            {
+              "type": "text",
+              "id": "71LRP",
+              "name": "stat3Label",
+              "fill": "#FFFFFFB3",
+              "content": "API Uptime",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "cgKMV",
+          "name": "stat4",
+          "layout": "vertical",
+          "gap": 4,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "Teyh3",
+              "name": "stat4Val",
+              "fill": "#FFFFFF",
+              "content": "24/7",
+              "lineHeight": 1,
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 44,
+              "fontWeight": "800"
+            },
+            {
+              "type": "text",
+              "id": "mjuyN",
+              "name": "stat4Label",
+              "fill": "#FFFFFFB3",
+              "content": "Auto Token Refresh",
+              "fontFamily": "Inter",
+              "fontSize": 16,
+              "fontWeight": "500"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "JnXkW",
+      "x": 900,
+      "y": 2574,
+      "name": "AI Recommendations",
+      "width": "fill_container(1440)",
+      "layout": "vertical",
+      "gap": 48,
+      "padding": 80,
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "rZzz8",
+          "name": "aiHead",
+          "width": 720,
+          "layout": "vertical",
+          "gap": 16,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "OBmis",
+              "name": "aiLabel",
+              "fill": "#10B98120",
+              "cornerRadius": 100,
+              "gap": 8,
+              "padding": [
+                6,
+                16
+              ],
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon_font",
+                  "id": "PWgd3",
+                  "name": "aiLabelIc",
+                  "width": 16,
+                  "height": 16,
+                  "iconFontName": "sparkles",
+                  "iconFontFamily": "lucide",
+                  "fill": "#10B981"
+                },
+                {
+                  "type": "text",
+                  "id": "0O9zm",
+                  "name": "aiLabelTx",
+                  "fill": "#059669",
+                  "content": "WHOOP-POWERED",
+                  "fontFamily": "Inter",
+                  "fontSize": 12,
+                  "fontWeight": "700",
+                  "letterSpacing": 2
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "hsMdd",
+              "name": "aiTitle",
+              "fill": "#18181B",
+              "textGrowth": "fixed-width",
+              "width": 720,
+              "content": "Smart recommendations from your WHOOP data",
+              "lineHeight": 1.15,
+              "textAlign": "center",
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 40,
+              "fontWeight": "800"
+            },
+            {
+              "type": "text",
+              "id": "xgw6k",
+              "name": "aiSub",
+              "fill": "#71717A",
+              "textGrowth": "fixed-width",
+              "width": 620,
+              "content": "Health Tracker analyzes your WHOOP recovery, strain and sleep data alongside calorie intake to deliver actionable recommendations.",
+              "lineHeight": 1.6,
+              "textAlign": "center",
+              "fontFamily": "Inter",
+              "fontSize": 18,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "F2dFJ",
+          "name": "aiCards",
+          "width": "fill_container",
+          "gap": 24,
+          "children": [
+            {
+              "type": "frame",
+              "id": "UJ3NT",
+              "name": "aiCol1",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 24,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "CenBQ",
+                  "name": "c1",
+                  "width": "fill_container",
+                  "fill": "#F0FDF4",
+                  "cornerRadius": 24,
+                  "stroke": {
+                    "thickness": 1,
+                    "fill": "#10B98130"
+                  },
+                  "layout": "vertical",
+                  "gap": 16,
+                  "padding": 28,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "mWvFv",
+                      "name": "c1top",
+                      "gap": 12,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "N2abE",
+                          "name": "c1ic",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#10B981",
+                          "cornerRadius": 12,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "iIZQV",
+                              "name": "c1ici",
+                              "width": 22,
+                              "height": 22,
+                              "iconFontName": "moon",
+                              "iconFontFamily": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "hEYNS",
+                          "name": "c1t",
+                          "fill": "#18181B",
+                          "content": "Recovery-Based Training",
+                          "fontFamily": "Plus Jakarta Sans",
+                          "fontSize": 18,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "KaHp6",
+                      "name": "c1d",
+                      "fill": "#52525B",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "&quot;Your WHOOP recovery score is 84% today. Perfect time for high-intensity training. Suggested calorie target: 2,800 kcal.&quot;",
+                      "lineHeight": 1.6,
+                      "fontFamily": "Inter",
+                      "fontSize": 15,
+                      "fontWeight": "normal",
+                      "fontStyle": "italic"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "L0Uhz",
+                      "name": "c1tag",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "ThLpF",
+                          "name": "c1t1",
+                          "fill": "#10B98115",
+                          "cornerRadius": 100,
+                          "padding": [
+                            4,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "vnXz2",
+                              "name": "c1t1t",
+                              "fill": "#059669",
+                              "content": "Whoop + FatSecret",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "fJ721",
+                  "name": "c2",
+                  "width": "fill_container",
+                  "fill": "#F0FDF4",
+                  "cornerRadius": 24,
+                  "stroke": {
+                    "thickness": 1,
+                    "fill": "#10B98130"
+                  },
+                  "layout": "vertical",
+                  "gap": 16,
+                  "padding": 28,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "zigvF",
+                      "name": "c2top",
+                      "gap": 12,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "EOmyK",
+                          "name": "c2ic",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#10B981",
+                          "cornerRadius": 12,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "t4Tmx",
+                              "name": "c2ici",
+                              "width": 22,
+                              "height": 22,
+                              "iconFontName": "zap",
+                              "iconFontFamily": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "UbFUx",
+                          "name": "c2t",
+                          "fill": "#18181B",
+                          "content": "Calorie Balance",
+                          "fontFamily": "Plus Jakarta Sans",
+                          "fontSize": 18,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "6OOuv",
+                      "name": "c2d",
+                      "fill": "#52525B",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "&quot;You burned 3,200 kcal yesterday but only consumed 2,100. Consider adding a high-protein meal to support recovery.&quot;",
+                      "lineHeight": 1.6,
+                      "fontFamily": "Inter",
+                      "fontSize": 15,
+                      "fontWeight": "normal",
+                      "fontStyle": "italic"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Y0Nx0",
+                      "name": "c2tag",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "PwIK8",
+                          "name": "c2t1",
+                          "fill": "#10B98115",
+                          "cornerRadius": 100,
+                          "padding": [
+                            4,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "jjnEE",
+                              "name": "c2t1t",
+                              "fill": "#059669",
+                              "content": "Garmin + Whoop",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "tmkgk",
+              "name": "aiCol2",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 24,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "i0pjz",
+                  "name": "c3",
+                  "width": "fill_container",
+                  "fill": "#F0FDF4",
+                  "cornerRadius": 24,
+                  "stroke": {
+                    "thickness": 1,
+                    "fill": "#10B98130"
+                  },
+                  "layout": "vertical",
+                  "gap": 16,
+                  "padding": 28,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "wgfqy",
+                      "name": "c3top",
+                      "gap": 12,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "R26jW",
+                          "name": "c3ic",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#10B981",
+                          "cornerRadius": 12,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "P70XE",
+                              "name": "c3ici",
+                              "width": 22,
+                              "height": 22,
+                              "iconFontName": "salad",
+                              "iconFontFamily": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "ygtbs",
+                          "name": "c3t",
+                          "fill": "#18181B",
+                          "content": "Sleep & Nutrition",
+                          "fontFamily": "Plus Jakarta Sans",
+                          "fontSize": 18,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "Rfex7",
+                      "name": "c3d",
+                      "fill": "#52525B",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "&quot;Your WHOOP sleep score improves 23% when you stop eating 3 hours before bed. Try finishing dinner by 7pm tonight.&quot;",
+                      "lineHeight": 1.6,
+                      "fontFamily": "Inter",
+                      "fontSize": 15,
+                      "fontWeight": "normal",
+                      "fontStyle": "italic"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "8j4bH",
+                      "name": "c3tag",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "b9awv",
+                          "name": "c3t1",
+                          "fill": "#10B98115",
+                          "cornerRadius": 100,
+                          "padding": [
+                            4,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Bq2S5",
+                              "name": "c3t1t",
+                              "fill": "#059669",
+                              "content": "FatSecret + Garmin",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "WIPyP",
+                  "name": "c4",
+                  "width": "fill_container",
+                  "fill": "#F0FDF4",
+                  "cornerRadius": 24,
+                  "stroke": {
+                    "thickness": 1,
+                    "fill": "#10B98130"
+                  },
+                  "layout": "vertical",
+                  "gap": 16,
+                  "padding": 28,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "97F4U",
+                      "name": "c4top",
+                      "gap": 12,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "AFShf",
+                          "name": "c4ic",
+                          "width": 44,
+                          "height": 44,
+                          "fill": "#10B981",
+                          "cornerRadius": 12,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon_font",
+                              "id": "7WORN",
+                              "name": "c4ici",
+                              "width": 22,
+                              "height": 22,
+                              "iconFontName": "heart-pulse",
+                              "iconFontFamily": "lucide",
+                              "fill": "#FFFFFF"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "kPSkl",
+                          "name": "c4t",
+                          "fill": "#18181B",
+                          "content": "Strain Optimization",
+                          "fontFamily": "Plus Jakarta Sans",
+                          "fontSize": 18,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "LbIVi",
+                      "name": "c4d",
+                      "fill": "#52525B",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "&quot;Based on your HRV trend and this week's strain, take a recovery day tomorrow. Your body needs it for peak performance.&quot;",
+                      "lineHeight": 1.6,
+                      "fontFamily": "Inter",
+                      "fontSize": 15,
+                      "fontWeight": "normal",
+                      "fontStyle": "italic"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "BfsLp",
+                      "name": "c4tag",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "DKFbv",
+                          "name": "c4t1",
+                          "fill": "#10B98115",
+                          "cornerRadius": 100,
+                          "padding": [
+                            4,
+                            12
+                          ],
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "c19a8",
+                              "name": "c4t1t",
+                              "fill": "#059669",
+                              "content": "Whoop + Apple Health",
+                              "fontFamily": "Inter",
+                              "fontSize": 12,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "eRgax",
+      "x": 900,
+      "y": 3422,
+      "name": "FAQ Section",
+      "width": "fill_container(1440)",
+      "fill": "#F9FAFB",
+      "layout": "vertical",
+      "gap": 48,
+      "padding": [
+        80,
+        200
+      ],
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "kMqSR",
+          "name": "faqHead",
+          "layout": "vertical",
+          "gap": 16,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "pJmjo",
+              "name": "faqLabel",
+              "fill": "#10B981",
+              "content": "FAQ",
+              "fontFamily": "Inter",
+              "fontSize": 13,
+              "fontWeight": "700",
+              "letterSpacing": 2
+            },
+            {
+              "type": "text",
+              "id": "9YyGp",
+              "name": "faqTitle",
+              "fill": "#18181B",
+              "content": "Frequently asked questions",
+              "textAlign": "center",
+              "fontFamily": "Plus Jakarta Sans",
+              "fontSize": 40,
+              "fontWeight": "800"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "ldNyK",
+          "name": "faqList",
+          "clip": true,
+          "width": "fill_container",
+          "fill": "#FFFFFF",
+          "cornerRadius": 24,
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "rdzac",
+              "name": "fq1",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "N57WB",
+                  "name": "fq1t",
+                  "fill": "#18181B",
+                  "content": "How does the WHOOP integration work?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "73WKB",
+                  "name": "fq1i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-down",
+                  "iconFontFamily": "lucide",
+                  "fill": "#10B981"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "1HE45",
+              "name": "fq1a",
+              "width": "fill_container",
+              "padding": [
+                0,
+                24,
+                20,
+                24
+              ],
+              "children": [
+                {
+                  "type": "text",
+                  "id": "d42Yz",
+                  "name": "fq1at",
+                  "fill": "#71717A",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Health Tracker uses WHOOP's official OAuth 2.0 API to securely connect your account. Once authorized, your recovery score, strain, sleep data, HRV, and workout metrics sync automatically. The n8n automation handles token refresh every 50 minutes so your data stays current.",
+                  "lineHeight": 1.6,
+                  "fontFamily": "Inter",
+                  "fontSize": 15,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "2WPgP",
+              "name": "fq1d",
+              "width": "fill_container",
+              "height": 1,
+              "fill": "#E4E4E7"
+            },
+            {
+              "type": "frame",
+              "id": "hN9eb",
+              "name": "fq2",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "dqwLz",
+                  "name": "fq2t",
+                  "fill": "#18181B",
+                  "content": "Is my health data safe and private?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "EHAnM",
+                  "name": "fq2i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-right",
+                  "iconFontFamily": "lucide",
+                  "fill": "#A1A1AA"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "Nwp09",
+              "name": "fq2d",
+              "width": "fill_container",
+              "height": 1,
+              "fill": "#E4E4E7"
+            },
+            {
+              "type": "frame",
+              "id": "vRndA",
+              "name": "fq3",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "wZMkR",
+                  "name": "fq3t",
+                  "fill": "#18181B",
+                  "content": "How do I track my meals?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "Z1TwI",
+                  "name": "fq3i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-right",
+                  "iconFontFamily": "lucide",
+                  "fill": "#A1A1AA"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "9QacS",
+              "name": "fq3d",
+              "width": "fill_container",
+              "height": 1,
+              "fill": "#E4E4E7"
+            },
+            {
+              "type": "frame",
+              "id": "BDAjr",
+              "name": "fq4",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "pYzA9",
+                  "name": "fq4t",
+                  "fill": "#18181B",
+                  "content": "Is this free to use?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "OsHH5",
+                  "name": "fq4i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-right",
+                  "iconFontFamily": "lucide",
+                  "fill": "#A1A1AA"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "7XnUx",
+              "name": "fq4d",
+              "width": "fill_container",
+              "height": 1,
+              "fill": "#E4E4E7"
+            },
+            {
+              "type": "frame",
+              "id": "8Bvaq",
+              "name": "fq5",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "H6Lys",
+                  "name": "fq5t",
+                  "fill": "#18181B",
+                  "content": "What WHOOP data scopes are required?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "rLQYu",
+                  "name": "fq5i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-right",
+                  "iconFontFamily": "lucide",
+                  "fill": "#A1A1AA"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "GbZ4g",
+              "name": "fq5d",
+              "width": "fill_container",
+              "height": 1,
+              "fill": "#E4E4E7"
+            },
+            {
+              "type": "frame",
+              "id": "MTnlo",
+              "name": "fq6",
+              "width": "fill_container",
+              "padding": [
+                20,
+                24
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "ZwAoK",
+                  "name": "fq6t",
+                  "fill": "#18181B",
+                  "content": "Can I revoke WHOOP access anytime?",
+                  "fontFamily": "Inter",
+                  "fontSize": 16,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "icon_font",
+                  "id": "AWCBS",
+                  "name": "fq6i",
+                  "width": 20,
+                  "height": 20,
+                  "iconFontName": "chevron-right",
+                  "iconFontFamily": "lucide",
+                  "fill": "#A1A1AA"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "2O8uz",
+      "x": 900,
+      "y": 4145,
+      "name": "Final CTA",
+      "width": "fill_container(1440)",
+      "fill": {
+        "type": "gradient",
+        "gradientType": "linear",
+        "enabled": true,
+        "rotation": 180,
+        "size": {
+          "height": 1
+        },
+        "colors": [
+          {
+            "color": "#DCFCE7",
+            "position": 0
+          },
+          {
+            "color": "#F0FDF4",
+            "position": 0.5
+          },
+          {
+            "color": "#FFFFFF",
+            "position": 1
+          }
+        ]
+      },
+      "layout": "vertical",
+      "gap": 32,
+      "padding": 80,
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "text",
+          "id": "aeYiy",
+          "name": "ctaTitle",
+          "fill": "#18181B",
+          "content": "Ready to take control of your health?",
+          "textAlign": "center",
+          "fontFamily": "Plus Jakarta Sans",
+          "fontSize": 40,
+          "fontWeight": "800"
+        },
+        {
+          "type": "text",
+          "id": "2wnsL",
+          "name": "ctaSub",
+          "fill": "#71717A",
+          "textGrowth": "fixed-width",
+          "width": 600,
+          "content": "Connect your WHOOP, track your meals, and get personalized recommendations — all through a simple Telegram bot.",
+          "lineHeight": 1.6,
+          "textAlign": "center",
+          "fontFamily": "Inter",
+          "fontSize": 18,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "goaMy",
+          "name": "ctaBtn",
+          "fill": "#10B981",
+          "cornerRadius": 24,
+          "gap": 8,
+          "padding": [
+            16,
+            36
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "ItLku",
+              "name": "ctaBtnTx",
+              "fill": "#FFFFFF",
+              "content": "Open Telegram Bot",
+              "fontFamily": "Inter",
+              "fontSize": 17,
+              "fontWeight": "600"
+            },
+            {
+              "type": "icon_font",
+              "id": "UYC28",
+              "name": "ctaBtnIc",
+              "width": 20,
+              "height": 20,
+              "iconFontName": "send",
+              "iconFontFamily": "lucide",
+              "fill": "#FFFFFF"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "8hOSG",
+      "x": 900,
+      "y": 4530,
+      "name": "Footer",
+      "width": "fill_container(1440)",
+      "fill": "#18181B",
+      "layout": "vertical",
+      "gap": 32,
+      "padding": [
+        48,
+        80
+      ],
+      "children": [
+        {
+          "type": "frame",
+          "id": "cfxvY",
+          "name": "footerTop",
+          "width": "fill_container",
+          "justifyContent": "space_between",
+          "children": [
+            {
+              "type": "frame",
+              "id": "U2gvk",
+              "name": "footerBrand",
+              "width": 300,
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "9D9tx",
+                  "name": "footerLogo",
+                  "gap": 10,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon_font",
+                      "id": "utyrj",
+                      "name": "footerLogoIc",
+                      "width": 24,
+                      "height": 24,
+                      "iconFontName": "heart-pulse",
+                      "iconFontFamily": "lucide",
+                      "fill": "#10B981"
+                    },
+                    {
+                      "type": "text",
+                      "id": "FFWhC",
+                      "name": "footerLogoTx",
+                      "fill": "#FFFFFF",
+                      "content": "Health Tracker",
+                      "fontFamily": "Plus Jakarta Sans",
+                      "fontSize": 20,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "ZDqqG",
+                  "name": "footerDesc",
+                  "fill": "#71717A",
+                  "textGrowth": "fixed-width",
+                  "width": 280,
+                  "content": "Your personal health and calorie management platform powered by WHOOP data and Telegram.",
+                  "lineHeight": 1.6,
+                  "fontFamily": "Inter",
+                  "fontSize": 14,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "EAFMM",
+              "name": "footerLinks",
+              "gap": 64,
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "j8Ep3",
+                  "name": "col1",
+                  "layout": "vertical",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "0ZR1V",
+                      "name": "col1Title",
+                      "fill": "#FFFFFF",
+                      "content": "Product",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "VfQ0F",
+                      "name": "col1L1",
+                      "fill": "#71717A",
+                      "content": "Features",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "fCdWt",
+                      "name": "col1L2",
+                      "fill": "#71717A",
+                      "content": "WHOOP Integration",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "8aj1L",
+                      "name": "col1L3",
+                      "fill": "#71717A",
+                      "content": "Calorie Tracking",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "TnPfj",
+                  "name": "col2",
+                  "layout": "vertical",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "V6Lvr",
+                      "name": "col2Title",
+                      "fill": "#FFFFFF",
+                      "content": "Company",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "OWwi3",
+                      "name": "col2L1",
+                      "fill": "#71717A",
+                      "content": "About",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "RufLb",
+                      "name": "col2L2",
+                      "fill": "#71717A",
+                      "content": "Contact",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Z5t7i",
+                      "name": "col2L3",
+                      "fill": "#71717A",
+                      "content": "Support",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "8ATAr",
+                  "name": "col3",
+                  "layout": "vertical",
+                  "gap": 14,
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "agPXv",
+                      "name": "col3Title",
+                      "fill": "#FFFFFF",
+                      "content": "Legal",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Bsx0d",
+                      "name": "col3L1",
+                      "fill": "#10B981",
+                      "content": "Privacy Policy",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "S4J4h",
+                      "name": "col3L2",
+                      "fill": "#71717A",
+                      "content": "Terms of Service",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "5vJHl",
+                      "name": "col3L3",
+                      "fill": "#71717A",
+                      "content": "GDPR",
+                      "fontFamily": "Inter",
+                      "fontSize": 14,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "1HSUP",
+          "name": "footerDiv",
+          "width": "fill_container",
+          "height": 1,
+          "fill": "#2D2D30"
+        },
+        {
+          "type": "text",
+          "id": "emWhe",
+          "name": "footerBottom",
+          "fill": "#52525B",
+          "content": "© 2026 Health Tracker. All rights reserved.",
+          "fontFamily": "Inter",
+          "fontSize": 13,
+          "fontWeight": "normal"
         }
       ]
     }
