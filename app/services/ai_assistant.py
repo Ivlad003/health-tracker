@@ -53,18 +53,17 @@ def _build_context_messages(
     local_now = datetime.now(ZoneInfo("Europe/Kyiv"))
     calorie_goal = user_data.get("daily_calorie_goal") or 2000
     fs_meals = user_data.get("today_fatsecret_meals", "")
+    calories_in = user_data.get("today_calories_in", 0)
+    calories_out = user_data.get("today_calories_out", 0)
     data_context = (
         f"Current local time (Europe/Kyiv): {local_now.strftime('%Y-%m-%d %H:%M')}. "
         f"User calorie goal: {calorie_goal} kcal. "
-        f"Today's total calories in: {user_data.get('today_calories_in', 0)} kcal "
-        f"(FatSecret diary: {user_data.get('today_calories_in_fatsecret', 0)}, "
-        f"bot-only entries: {user_data.get('today_calories_in_bot', 0)}). "
-        f"Note: bot entries sync to FatSecret, so FatSecret total is the source of truth when connected. "
-        f"Today's total calories burned (WHOOP daily): {user_data.get('today_calories_out', 0)} kcal "
+        f"Today's calories eaten: {calories_in} kcal. "
+        f"Today's calories burned (WHOOP): {calories_out} kcal "
         f"(daily strain: {user_data.get('today_strain', 0)}, "
         f"{user_data.get('today_workout_count', 0)} tracked workouts). "
-        f"Note: WHOOP doesn't track steps. Recovery score is the best stress indicator "
-        f"(low recovery = high physiological stress)."
+        f"IMPORTANT: Use ONLY these exact numbers when answering about calories. "
+        f"Do NOT add or recalculate — these are already the correct totals."
     )
     if fs_meals:
         data_context += f" FatSecret meals today: {fs_meals}."
@@ -291,8 +290,6 @@ async def get_today_stats(user_id: int) -> dict:
 
     return {
         "today_calories_in": total_in,
-        "today_calories_in_bot": round(bot_calories),
-        "today_calories_in_fatsecret": round(fatsecret_calories),
         "today_fatsecret_meals": fatsecret_meals,
         "today_calories_out": round(calories_out),
         "today_strain": today_strain,
