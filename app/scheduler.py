@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
-from app.services.whoop_sync import sync_whoop_data, refresh_whoop_tokens
+from app.services.whoop_sync import refresh_whoop_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +15,6 @@ scheduler = AsyncIOScheduler()
 
 
 def start_scheduler():
-    # WHOOP data sync every hour (existing)
-    scheduler.add_job(
-        sync_whoop_data,
-        trigger=IntervalTrigger(hours=1),
-        id="whoop_data_sync",
-        name="WHOOP Data Sync (hourly)",
-        replace_existing=True,
-        next_run_time=datetime.now(),
-    )
-
     # WHOOP token refresh every 30 minutes
     scheduler.add_job(
         refresh_whoop_tokens,
@@ -35,23 +25,13 @@ def start_scheduler():
     )
 
     # FatSecret token health check every 30 minutes
-    from app.services.fatsecret_api import check_fatsecret_tokens, sync_fatsecret_data
+    from app.services.fatsecret_api import check_fatsecret_tokens
     scheduler.add_job(
         check_fatsecret_tokens,
         trigger=IntervalTrigger(minutes=30),
         id="fatsecret_token_check",
         name="FatSecret Token Check (30min)",
         replace_existing=True,
-    )
-
-    # FatSecret diary sync every hour
-    scheduler.add_job(
-        sync_fatsecret_data,
-        trigger=IntervalTrigger(hours=1),
-        id="fatsecret_data_sync",
-        name="FatSecret Data Sync (hourly)",
-        replace_existing=True,
-        next_run_time=datetime.now(),
     )
 
     # Morning briefing at 08:00 Kyiv (handles DST automatically)
@@ -86,7 +66,7 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started — tokens 30min (WHOOP+FatSecret), WHOOP sync 1h, FatSecret sync 1h, "
+        "Scheduler started — tokens 30min (WHOOP+FatSecret), "
         "morning 08:00 Kyiv, evening 21:00 Kyiv, cleanup 03:00 UTC"
     )
 

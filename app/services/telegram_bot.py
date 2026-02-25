@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-import httpx
-
 from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
@@ -426,7 +424,7 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
 
 
 async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /sync command — force sync all data from WHOOP and FatSecret."""
+    """Handle /sync command — verify WHOOP and FatSecret connections by fetching live data."""
     if not update.message or not update.effective_user:
         return
 
@@ -434,74 +432,49 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = await _ensure_user(telegram_user_id, update.effective_user.username)
     user_id = user["id"]
 
-    await update.message.reply_text("🔄 Синхронізую дані...")
+    await update.message.reply_text("🔄 Перевіряю з'єднання...")
 
-    pool = await get_pool()
+    stats = await get_today_stats(user_id)
     results = []
 
-    # Sync WHOOP (7-day lookback)
+    # WHOOP status
+    pool = await get_pool()
     whoop_row = await pool.fetchrow(
-        """SELECT id, telegram_user_id, whoop_user_id, whoop_access_token,
-                  whoop_refresh_token, whoop_token_expires_at
-           FROM users
-           WHERE id = $1
-                 AND whoop_access_token IS NOT NULL
-                 AND whoop_user_id IS NOT NULL""",
+        "SELECT whoop_access_token FROM users WHERE id = $1 AND whoop_access_token IS NOT NULL",
         user_id,
     )
     if whoop_row:
-        try:
-            from app.services.whoop_sync import sync_whoop_user, TokenExpiredError
-            await sync_whoop_user(dict(whoop_row), pool, lookback_hours=168)
-            results.append("⌚ WHOOP — ✅ синхронізовано (7 днів)")
-        except TokenExpiredError:
+        if "whoop" in stats.get("expired_services", []):
             results.append("⌚ WHOOP — 🔑 сесія закінчилась → /connect_whoop")
-        except Exception:
-            logger.exception("Sync WHOOP failed for user_id=%s", user_id)
-            results.append("⌚ WHOOP — ❌ помилка синхронізації")
+        elif stats["today_calories_out"] > 0 or stats["whoop_sleep"] or stats["whoop_recovery"]:
+            parts = []
+            if stats["today_calories_out"] > 0:
+                parts.append(f"{stats['today_calories_out']} kcal спалено")
+            if stats["whoop_recovery"]:
+                parts.append("recovery ✓")
+            if stats["whoop_sleep"]:
+                parts.append("sleep ✓")
+            results.append(f"⌚ WHOOP — ✅ {', '.join(parts)}")
+        else:
+            results.append("⌚ WHOOP — ✅ підключено (дані ще збираються)")
     else:
         results.append("⌚ WHOOP — ⚠️ не підключено")
 
-    # Sync FatSecret diary (fetch today's data to verify connection)
+    # FatSecret status
     fs_row = await pool.fetchrow(
-        "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
+        "SELECT fatsecret_access_token FROM users WHERE id = $1 AND fatsecret_access_token IS NOT NULL",
         user_id,
     )
-    if fs_row and fs_row["fatsecret_access_token"]:
-        try:
-            from app.services.fatsecret_api import fetch_food_diary, FatSecretAuthError
-            diary = await fetch_food_diary(
-                access_token=fs_row["fatsecret_access_token"],
-                access_secret=fs_row["fatsecret_access_secret"],
-            )
-            count = diary.get("entries_count", 0)
-            cals = diary.get("total_calories", 0)
-            results.append(f"🥗 FatSecret — ✅ {count} записів, {cals} kcal сьогодні")
-        except (httpx.HTTPStatusError, FatSecretAuthError) as e:
-            is_auth = (
-                isinstance(e, FatSecretAuthError)
-                or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403))
-            )
-            if is_auth:
-                await pool.execute(
-                    """UPDATE users
-                       SET fatsecret_access_token = NULL,
-                           fatsecret_access_secret = NULL,
-                           updated_at = NOW()
-                       WHERE id = $1""",
-                    user_id,
-                )
-                results.append("🥗 FatSecret — 🔑 сесія закінчилась → /connect_fatsecret")
-            else:
-                logger.exception("Sync FatSecret failed for user_id=%s", user_id)
-                results.append("🥗 FatSecret — ❌ помилка синхронізації")
-        except Exception:
-            logger.exception("Sync FatSecret failed for user_id=%s", user_id)
-            results.append("🥗 FatSecret — ❌ помилка синхронізації")
+    if fs_row:
+        if "fatsecret" in stats.get("expired_services", []):
+            results.append("🥗 FatSecret — 🔑 сесія закінчилась → /connect_fatsecret")
+        else:
+            cals = stats["today_calories_in"]
+            results.append(f"🥗 FatSecret — ✅ {cals} kcal сьогодні")
     else:
         results.append("🥗 FatSecret — ⚠️ не підключено")
 
-    await update.message.reply_text("✅ Синхронізація завершена\n\n" + "\n".join(results))
+    await update.message.reply_text("✅ Перевірка завершена\n\n" + "\n".join(results))
 
 
 async def start_bot() -> None:
