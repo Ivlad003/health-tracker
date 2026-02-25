@@ -382,5 +382,9 @@ async def transcribe_voice(file_bytes: bytes, file_name: str = "voice.ogg") -> s
     transcript = await client.audio.transcriptions.create(
         model="whisper-1",
         file=(file_name, file_bytes),
+        prompt=(
+            "Їжа, калорії, грам, грамів, сніданок, обід, вечеря. "
+            "Food logging: grams, breakfast, lunch, dinner, chicken, rice, salad."
+        ),
     )
     return transcript.text

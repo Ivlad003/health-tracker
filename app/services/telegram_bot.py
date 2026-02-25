@@ -272,7 +272,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         return
 
-    if not message_text.strip():
+    # Ignore empty or meaningless messages (single chars, dashes, dots)
+    cleaned = message_text.strip().strip(".-–—…_ ")
+    if not cleaned:
         return
 
     await save_conversation_message(user_id, "user", message_text)
