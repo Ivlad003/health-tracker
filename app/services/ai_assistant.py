@@ -25,6 +25,7 @@ RULES:
 INTENT DEFINITIONS:
 - log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The bot automatically syncs entries to FatSecret if connected, so always log food when user asks.
 - query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to WHOOP data (sleep, recovery, strain, activities), FatSecret diary, and bot-logged food — use all available data when answering.
+  NOTE: WHOOP tracks steps in the app, but the WHOOP API does not provide step count data. If user asks about steps, explain that step data is only visible in the WHOOP app directly and cannot be accessed through the bot yet. Suggest they check the WHOOP app for step count.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - general: Everything else — greetings, setting calorie goal (extract number), health tips, questions about the bot.
 
