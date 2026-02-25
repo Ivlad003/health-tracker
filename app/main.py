@@ -126,9 +126,6 @@ logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     handlers=handlers,
 )
-for noisy in ("httpx", "httpcore", "uvicorn.access", "telegram",
-               "apscheduler", "asyncpg", "openai", "newrelic"):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
