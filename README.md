@@ -16,20 +16,21 @@ The system allows you to:
 ## 🏗 Architecture
 
 ```
-Telegram Web App → n8n Workflows → APIs (FatSecret, WHOOP, OpenAI) → PostgreSQL
+Telegram Bot → FastAPI (Python) → APIs (FatSecret, WHOOP, OpenAI) → PostgreSQL
 ```
 
 ## 📁 Project Structure
 
 ```
 health-tracker/
+├── app/                  # FastAPI Python application
+│   ├── routers/          # API route handlers
+│   ├── services/         # Business logic
+│   ├── main.py           # App entrypoint
+│   └── scheduler.py      # Periodic jobs
 ├── .github/specs/        # GitHub Spec Kit specifications
-├── docs/
-│   ├── uk/               # 🇺🇦 Ukrainian documentation
-│   ├── en/               # 🇬🇧 English documentation
-│   └── design/pages/     # Design specifications
+├── docs/                 # Bilingual documentation (uk/en)
 ├── database/migrations/  # SQL migrations
-├── n8n/workflows/        # n8n workflow files
 ├── CLAUDE.md             # AI assistant instructions
 ├── README.md             # This file
 └── README.uk.md          # Ukrainian README
@@ -39,7 +40,7 @@ health-tracker/
 
 ### Prerequisites
 
-- n8n (self-hosted or cloud)
+- Python 3.12+
 - PostgreSQL 15+
 - API keys: Telegram, FatSecret, WHOOP, OpenAI
 
@@ -47,8 +48,8 @@ health-tracker/
 
 1. Clone the repository
 2. Create `.env` file with credentials
-3. Import n8n workflows
-4. Run database migrations
+3. Run database migrations
+4. Start the app: `uvicorn app.main:app`
 
 ## 📖 Documentation
 

@@ -13,9 +13,8 @@ Health & Wellness Tracker Bot helps you track calories, physical activity, and m
 - (Optional) WHOOP device for activity tracking
 
 ### For Developers
-- Node.js 18+
+- Python 3.12+
 - PostgreSQL 15+
-- n8n (self-hosted or cloud)
 - API keys (see below)
 
 ## Installation
@@ -64,11 +63,11 @@ createdb healthlog
 psql -d healthlog -f database/migrations/001_initial_schema.sql
 ```
 
-### 4. Import n8n Workflows
+### 4. Start the Application
 
-1. Open n8n
-2. Import files from `n8n/workflows/`
-3. Configure credentials
+```bash
+uvicorn app.main:app --reload
+```
 
 ## Getting API Keys
 

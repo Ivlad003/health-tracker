@@ -39,17 +39,16 @@ Users need a simple way to track their nutrition and fitness data without manual
 ### Architecture
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                   TELEGRAM WEB APP                               │
-│                  (Frontend - React/Vue)                          │
+│                   TELEGRAM BOT                                   │
+│              (python-telegram-bot v21)                           │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         n8n                                      │
-│                 (Automation & Orchestration)                     │
+│                      FastAPI App                                 │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
-│  │  Telegram   │  │   OpenAI    │  │   HTTP      │              │
-│  │   Trigger   │  │   Whisper   │  │   Requests  │              │
+│  │  AI         │  │   WHOOP     │  │  FatSecret  │              │
+│  │  Assistant  │  │   Sync      │  │   Sync      │              │
 │  └─────────────┘  └─────────────┘  └─────────────┘              │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -57,14 +56,14 @@ Users need a simple way to track their nutrition and fitness data without manual
            ▼               ▼               ▼
     ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
     │  FatSecret  │ │    WHOOP    │ │  Database   │
-    │     API     │ │     API     │ │ (PostgreSQL)│
+    │     API     │ │   API v2   │ │ (PostgreSQL)│
     └─────────────┘ └─────────────┘ └─────────────┘
 ```
 
 ### Tech Stack
-- **Frontend:** Telegram Web App (React + TypeScript)
-- **Backend:** n8n workflows + PostgreSQL
-- **APIs:** FatSecret, WHOOP, OpenAI
+- **Backend:** FastAPI (Python 3.12+), asyncpg
+- **Bot:** python-telegram-bot v21
+- **APIs:** FatSecret (OAuth 1.0), WHOOP v2 (OAuth 2.0), OpenAI (GPT + Whisper)
 - **Hosting:** Dokploy (Docker)
 
 ## 6. User Stories

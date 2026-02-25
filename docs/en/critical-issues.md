@@ -52,17 +52,7 @@ This document describes critical issues that must be resolved before project lau
 
 ---
 
-### 4. n8n — Not for Production API
-
-**Problem:** n8n is not designed for high-load API serving.
-
-**Solution:** 
-- Add Fastify/Hono API layer between Web App and n8n
-- Use n8n only for background jobs
-
----
-
-### 5. Calorie Balance — Incomplete Calculation
+### 4. Calorie Balance — Incomplete Calculation
 
 **Problem:** BMR (basal metabolic rate ~1500-2000 kcal/day) not included.
 
@@ -70,7 +60,7 @@ This document describes critical issues that must be resolved before project lau
 
 ---
 
-### 6. Telegram Mini App — WebView Limitations
+### 5. Telegram Mini App — WebView Limitations
 
 **Problems:**
 - Local storage unreliable
@@ -119,8 +109,7 @@ This document describes critical issues that must be resolved before project lau
 | 3 | Token encryption | 1 day | 🔴 P0 |
 | 4 | BMR in calorie balance | 4 hours | 🟠 P1 |
 | 5 | Error handling voice flow | 1 day | 🟠 P1 |
-| 6 | Fastify API layer | 2-3 days | 🟠 P1 |
-| 7 | Local UA food database | 3-5 days | 🟡 P2 |
+| 6 | Local UA food database | 3-5 days | 🟡 P2 |
 
 ---
 

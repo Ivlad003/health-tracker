@@ -139,36 +139,7 @@ CREATE TABLE custom_foods (
 
 ---
 
-### 4. n8n не підходить для Production API / n8n Not Suitable for Production API
-
-**Проблема / Problem:**
-```
-Telegram Web App → n8n → Database
-```
-- n8n не призначений для high-load API
-- Немає вбудованого rate limiting, authentication middleware
-- Складно масштабувати горизонтально
-- Cold start delays
-
-**Рішення / Solution:**
-Додати легкий API layer між Web App і n8n:
-
-```
-Telegram Web App → Fastify/Hono API → n8n (background jobs) → Database
-                         ↓
-                    Direct DB access (for reads)
-```
-
-**Рекомендований стек:**
-- **Fastify** або **Hono** — lightweight, fast API framework
-- **n8n** — тільки для background jobs (sync, notifications)
-- **BullMQ** — queue для async tasks
-
-**Пріоритет:** 🟠 P1 — До запуску MVP
-
----
-
-### 5. Calorie Balance — Неповний розрахунок / Incomplete Calculation
+### 4. Calorie Balance — Неповний розрахунок / Incomplete Calculation
 
 **Проблема / Problem:**
 ```sql
@@ -421,7 +392,7 @@ CREATE INDEX idx_users_not_deleted ON users(id) WHERE deleted_at IS NULL;
 | [kryoseu/whoops](https://github.com/kryoseu/whoops) | Python/Flask | 10+ | Active | Export to PostgreSQL/MySQL, Docker ready |
 | [whoop-mcp](https://github.com/topics/whoop) | TypeScript | - | New | MCP server for Claude integration |
 
-**Рекомендація:** Використовувати `whoopy` для Python або написати власний клієнт для n8n/Node.js.
+**Рекомендація:** Використовувати `whoopy` для Python або написати власний клієнт.
 
 ### FatSecret API Libraries
 
@@ -431,7 +402,7 @@ CREATE INDEX idx_users_not_deleted ON users(id) WHERE deleted_at IS NULL;
 | [fatsecret (npm)](https://github.com/OverFlow636/fatsecret) | Node.js | 20+ | Maintained | Promise-based |
 | [fatsecret4j](https://github.com/fatsecret/fatsecret4j) | Java | 30+ | Official | Android support |
 
-**Рекомендація:** Для n8n використовувати HTTP Request node з OAuth 2.0.
+**Рекомендація:** Використовувати httpx з OAuth 2.0.
 
 ### Telegram Mini App Templates
 
@@ -452,7 +423,7 @@ CREATE INDEX idx_users_not_deleted ON users(id) WHERE deleted_at IS NULL;
 | 🔴 P0 | Імплементувати шифрування токенів | 1 день | Production |
 | 🟠 P1 | Додати BMR до calorie balance | 4 години | UX |
 | 🟠 P1 | Error handling у voice flow | 1 день | Voice feature |
-| 🟠 P1 | API layer (Fastify) замість прямого n8n | 2-3 дні | Scale |
+| ✅ Done | Міграція з n8n на FastAPI Python | Done | Scale |
 | 🟠 P1 | Telegram Mini App тестування на devices | 2 дні | Launch |
 | 🟡 P2 | Локальна база українських продуктів | 3-5 днів | UA users |
 | 🟡 P2 | Fallback для non-WHOOP users | 2 дні | User acquisition |

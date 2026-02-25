@@ -83,8 +83,13 @@ health-tracker/
 ├── database/
 │   ├── init-db.sh        # DB initialization script (Docker psql fallback)
 │   └── migrations/       # SQL migrations
-├── n8n/
-│   └── workflows/        # n8n workflow JSON files
+├── app/                  # FastAPI Python application
+│   ├── routers/          # API route handlers
+│   ├── services/         # Business logic (WHOOP, FatSecret, AI, Telegram)
+│   ├── config.py         # Settings & environment variables
+│   ├── database.py       # PostgreSQL connection pool
+│   ├── main.py           # FastAPI app entrypoint
+│   └── scheduler.py      # APScheduler periodic jobs
 ├── spec/
 │   └── main.cs.md        # Landing page CodeSpeak specification
 ├── CLAUDE.md             # This file
@@ -97,12 +102,13 @@ health-tracker/
 ## 🛠 Tech Stack
 
 - **Bot Platform:** Telegram Web App
-- **Automation:** n8n (self-hosted)
-- **Database:** PostgreSQL 15+
+- **Backend:** FastAPI (Python 3.12+)
+- **Database:** PostgreSQL 15+ (asyncpg)
 - **APIs:**
-  - FatSecret API (food calories)
-  - WHOOP API (activity tracking)
-  - OpenAI Whisper (speech-to-text)
+  - FatSecret API (food calories, OAuth 1.0)
+  - WHOOP API v2 (activity tracking, OAuth 2.0)
+  - OpenAI GPT + Whisper (AI assistant, speech-to-text)
+- **Scheduler:** APScheduler (token refresh, data sync, briefings)
 - **Hosting:** Dokploy (Docker-based)
 
 ---
@@ -117,11 +123,11 @@ bash database/init-db.sh
 psql -d healthlog -f database/migrations/001_initial_schema.sql   # UUID-based (NOT applied to prod)
 psql -d healthlog -f database/migrations/002_health_tracker_schema.sql  # INTEGER-based (production)
 
-# Start n8n locally
-docker-compose up -d n8n
+# Run the app locally
+uvicorn app.main:app --reload
 
 # Run tests
-npm test
+pytest
 ```
 
 ---
@@ -167,8 +173,6 @@ Landing page spec (GitHub Pages): [`spec/main.cs.md`](spec/main.cs.md)
 | Design System | [`docs/design/README.md`](docs/design/README.md) |
 | Design Pages | [`docs/design/pages/`](docs/design/pages/) |
 | Landing Page Spec | [`spec/main.cs.md`](spec/main.cs.md) |
-| n8n Workflows | [`n8n/workflows/`](n8n/workflows/) |
-
 ---
 
 ## 🚨 Important Notes
@@ -179,5 +183,4 @@ Landing page spec (GitHub Pages): [`spec/main.cs.md`](spec/main.cs.md)
 4. **Keep sensitive data in .env** - Never commit secrets
 5. **DB uses INTEGER PKs, not UUID** - Production schema differs from `001_initial_schema.sql`; see [`session-knowledge.md`](docs/en/session-knowledge.md) for details
 6. **WHOOP API is v2 only** - All v1 endpoints return 404; confirmed working scopes: `read:workout read:recovery read:sleep read:body_measurement`
-7. **n8n v2.35.5 node version constraints** - Use exact `typeVersion` values documented in [`session-knowledge.md`](docs/en/session-knowledge.md) or workflow activation will fail silently
-8. **Read [`session-knowledge.md`](docs/en/session-knowledge.md) before any dev session** - Contains critical infrastructure facts, API discoveries, and common pitfalls
+7. **Read [`session-knowledge.md`](docs/en/session-knowledge.md) before any dev session** - Contains critical infrastructure facts, API discoveries, and common pitfalls

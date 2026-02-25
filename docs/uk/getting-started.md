@@ -13,9 +13,8 @@ Health & Wellness Tracker Bot допомагає відстежувати кал
 - (Опціонально) WHOOP пристрій для трекінгу активності
 
 ### Для розробників
-- Node.js 18+
+- Python 3.12+
 - PostgreSQL 15+
-- n8n (self-hosted або cloud)
 - API ключі (див. нижче)
 
 ## Встановлення
@@ -64,11 +63,11 @@ createdb healthlog
 psql -d healthlog -f database/migrations/001_initial_schema.sql
 ```
 
-### 4. Імпорт n8n workflows
+### 4. Запуск додатку
 
-1. Відкрийте n8n
-2. Імпортуйте файли з `n8n/workflows/`
-3. Налаштуйте credentials
+```bash
+uvicorn app.main:app --reload
+```
 
 ## Отримання API ключів
 
