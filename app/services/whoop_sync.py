@@ -226,71 +226,142 @@ async def store_sleep(pool, records: list[dict]) -> int:
     return len(records)
 
 
-async def fetch_body_measurement(access_token: str) -> dict:
-    """Fetch latest WHOOP body measurement (weight, height, max HR)."""
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            f"{WHOOP_API_BASE}/body_measurement",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"limit": "1"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+async def fetch_whoop_context(access_token: str) -> dict:
+    """Fetch ALL WHOOP data directly from API for real-time GPT context.
 
-    records = data.get("records", [])
-    if not records:
-        return {"weight_kg": 0, "height_m": 0, "max_heart_rate": 0}
-
-    latest = records[0]
-    return {
-        "weight_kg": round(latest.get("weight_kilogram", 0) or 0, 1),
-        "height_m": round(latest.get("height_meter", 0) or 0, 2),
-        "max_heart_rate": round(latest.get("max_heart_rate", 0) or 0),
-    }
-
-
-async def fetch_daily_cycle(access_token: str) -> dict:
-    """Fetch WHOOP cycle data: use latest SCORED cycle.
-
-    WHOOP cycles only have calorie/strain data when score_state is "SCORED"
-    (cycle completed). In-progress cycles have PENDING_SCORE with null score.
-    We fetch recent cycles and pick the last scored one.
+    Fetches cycle, body measurement, workouts, recovery, and sleep in parallel.
+    Returns pre-formatted context strings ready for GPT.
     """
     from datetime import timedelta
 
-    start = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    headers = {"Authorization": f"Bearer {access_token}"}
+    start_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            f"{WHOOP_API_BASE}/cycle",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"limit": "5", "start": start},
+        cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp = (
+            await asyncio.gather(
+                client.get(f"{WHOOP_API_BASE}/cycle", headers=headers,
+                           params={"limit": "5", "start": start_48h}),
+                client.get(f"{WHOOP_API_BASE}/body_measurement", headers=headers,
+                           params={"limit": "1"}),
+                client.get(f"{WHOOP_API_BASE}/activity/workout", headers=headers,
+                           params={"limit": "5", "start": start_48h}),
+                client.get(f"{WHOOP_API_BASE}/recovery", headers=headers,
+                           params={"limit": "5", "start": start_48h}),
+                client.get(f"{WHOOP_API_BASE}/activity/sleep", headers=headers,
+                           params={"limit": "5", "start": start_48h}),
+            )
         )
+
+    for resp in (cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp):
         resp.raise_for_status()
-        data = resp.json()
 
-    records = data.get("records", [])
-    empty = {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0, "score_state": "no_data"}
-    if not records:
-        return empty
+    # --- Cycle (calories + strain) ---
+    cycle_records = cycle_resp.json().get("records", [])
+    calories_out = 0
+    strain = 0.0
+    cycle_score_state = "no_data"
+    if cycle_records:
+        cycle_score_state = cycle_records[0].get("score_state", "PENDING_SCORE")
+        for c in cycle_records:
+            if c.get("score_state") == "SCORED":
+                score = c.get("score", {}) or {}
+                kj = score.get("kilojoule", 0) or 0
+                calories_out = round(kj / 4.184)
+                strain = round(score.get("strain", 0) or 0, 1)
+                break
 
-    latest_state = records[0].get("score_state", "PENDING_SCORE")
+    # --- Body measurement ---
+    body_records = body_resp.json().get("records", [])
+    body_info = ""
+    if body_records:
+        b = body_records[0]
+        weight = round(b.get("weight_kilogram", 0) or 0, 1)
+        height = round(b.get("height_meter", 0) or 0, 2)
+        max_hr = round(b.get("max_heart_rate", 0) or 0)
+        if weight:
+            body_info = f"Weight: {weight} kg"
+            if height:
+                body_info += f", height {height} m"
+            if max_hr:
+                body_info += f", max HR {max_hr} bpm"
 
-    # Find the most recent SCORED cycle
-    for record in records:
-        if record.get("score_state") == "SCORED":
-            score = record.get("score", {}) or {}
-            kilojoules = score.get("kilojoule", 0) or 0
-            return {
-                "strain": round(score.get("strain", 0) or 0, 1),
-                "calories": round(kilojoules / 4.184),
-                "avg_hr": round(score.get("average_heart_rate", 0) or 0),
-                "max_hr": round(score.get("max_heart_rate", 0) or 0),
-                "score_state": latest_state,
-            }
+    # --- Workouts ---
+    workout_records = workout_resp.json().get("records", [])
+    workout_count = len(workout_records)
+    activities_info = ""
+    if workout_records:
+        parts = []
+        for w in workout_records[:5]:
+            sport = w.get("sport_name", "unknown")
+            ws = w.get("score", {}) or {}
+            cal = round((ws.get("kilojoule", 0) or 0) / 4.184)
+            s = round(ws.get("strain", 0) or 0, 1)
+            avg_hr = round(ws.get("average_heart_rate", 0) or 0)
+            max_hr_w = round(ws.get("max_heart_rate", 0) or 0)
+            started = w.get("start", "")[:16].replace("T", " ")
+            parts.append(
+                f"{sport} ({cal} kcal, strain {s}, "
+                f"avg HR {avg_hr}, max HR {max_hr_w}, {started})"
+            )
+        activities_info = "Recent workouts: " + "; ".join(parts)
 
-    logger.info("WHOOP: no SCORED cycles in last 48h, all are %s", latest_state)
-    return {**empty, "score_state": latest_state}
+    # --- Recovery ---
+    recovery_records = recovery_resp.json().get("records", [])
+    recovery_info = ""
+    for r in recovery_records:
+        rs = r.get("score", {})
+        if rs and rs.get("recovery_score") is not None:
+            recovery_info = (
+                f"Recovery: {rs['recovery_score']}%, "
+                f"resting HR {rs.get('resting_heart_rate', 0)} bpm, "
+                f"HRV {round(rs.get('hrv_rmssd_milli', 0) or 0, 1)} ms"
+            )
+            if rs.get("spo2_percentage"):
+                recovery_info += f", SpO2 {rs['spo2_percentage']}%"
+            if rs.get("skin_temp_celsius"):
+                recovery_info += f", skin temp {rs['skin_temp_celsius']}°C"
+            break
+
+    # --- Sleep ---
+    sleep_records = sleep_resp.json().get("records", [])
+    sleep_info = ""
+    for s in sleep_records:
+        ss = s.get("score", {})
+        stages = (ss or {}).get("stage_summary", {})
+        if stages and stages.get("total_in_bed_time_milli"):
+            total_h = round(stages["total_in_bed_time_milli"] / 3600000, 1)
+            rem_h = round((stages.get("total_rem_sleep_time_milli", 0) or 0) / 3600000, 1)
+            deep_h = round((stages.get("total_slow_wave_sleep_time_milli", 0) or 0) / 3600000, 1)
+            light_h = round((stages.get("total_light_sleep_time_milli", 0) or 0) / 3600000, 1)
+            awake_min = round((stages.get("total_awake_time_milli", 0) or 0) / 60000)
+            perf = (ss.get("sleep_performance_percentage", 0) or 0)
+            consistency = (ss.get("sleep_consistency_percentage", 0) or 0)
+            efficiency = (ss.get("sleep_efficiency_percentage", 0) or 0)
+            resp_rate = round((ss.get("respiratory_rate", 0) or 0), 1)
+            sleep_info = (
+                f"Last sleep: {total_h}h total, performance {perf}%, "
+                f"consistency {consistency}%, efficiency {efficiency}%, "
+                f"REM {rem_h}h, deep {deep_h}h, light {light_h}h, "
+                f"awake {awake_min} min, respiratory rate {resp_rate} rpm"
+            )
+            break
+
+    logger.info(
+        "WHOOP context: cycle_state=%s calories=%s strain=%s workouts=%d",
+        cycle_score_state, calories_out, strain, workout_count,
+    )
+
+    return {
+        "calories_out": calories_out,
+        "strain": strain,
+        "workout_count": workout_count,
+        "cycle_score_state": cycle_score_state,
+        "sleep_info": sleep_info,
+        "recovery_info": recovery_info,
+        "activities_info": activities_info,
+        "body_info": body_info,
+    }
 
 
 async def _fetch_whoop_data(client: httpx.AsyncClient, access_token: str, lookback_hours: int):
