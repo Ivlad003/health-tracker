@@ -59,10 +59,15 @@ def _build_context_messages(
     calories_out = user_data.get("today_calories_out", 0)
     cycle_state = user_data.get("cycle_score_state", "no_data")
 
-    if cycle_state == "PENDING_SCORE" and calories_out > 0:
+    if cycle_state == "ESTIMATED" and calories_out > 0:
+        calories_label = (
+            f"Estimated calories burned today so far: ~{calories_out} kcal "
+            f"(real-time estimate based on your metabolism + today's workouts). "
+        )
+    elif cycle_state == "PENDING_SCORE" and calories_out > 0:
         calories_label = (
             f"Last completed WHOOP cycle calories burned: {calories_out} kcal "
-            f"(today's cycle still in progress — final number updating in WHOOP app). "
+            f"(today's cycle still in progress). "
         )
     elif calories_out > 0:
         calories_label = f"Today's calories burned (WHOOP): {calories_out} kcal. "

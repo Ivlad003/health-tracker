@@ -261,10 +261,12 @@ async def fetch_whoop_context(access_token: str) -> dict:
     calories_out = 0
     strain = 0.0
     cycle_score_state = "no_data"
+    scored_cycle = None
     if cycle_records:
         cycle_score_state = cycle_records[0].get("score_state", "PENDING_SCORE")
         for c in cycle_records:
             if c.get("score_state") == "SCORED":
+                scored_cycle = c
                 score = c.get("score", {}) or {}
                 kj = score.get("kilojoule", 0) or 0
                 calories_out = round(kj / 4.184)
@@ -346,6 +348,52 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 f"awake {awake_min} min, respiratory rate {resp_rate} rpm"
             )
             break
+
+    # --- Real-time calorie estimate for in-progress cycles ---
+    # When today's cycle is PENDING_SCORE (not yet completed), estimate calories
+    # using the last scored cycle's hourly burn rate + today's actual workouts.
+    if cycle_score_state == "PENDING_SCORE" and scored_cycle and calories_out > 0:
+        cycle_start = _parse_dt(scored_cycle["start"])
+        cycle_end = _parse_dt(scored_cycle["end"])
+        cycle_hours = max((cycle_end - cycle_start).total_seconds() / 3600, 1)
+
+        # Separate base metabolism from workout calories in the scored cycle
+        scored_total = calories_out
+        scored_workout_cals = 0
+        for w in workout_records:
+            w_start = _parse_dt(w["start"])
+            if cycle_start <= w_start <= cycle_end:
+                ws = w.get("score", {}) or {}
+                scored_workout_cals += round((ws.get("kilojoule", 0) or 0) / 4.184)
+
+        base_rate_per_hour = max(0, (scored_total - scored_workout_cals) / cycle_hours)
+
+        # Today's workout calories (after the scored cycle ended)
+        today_workout_cals = 0
+        for w in workout_records:
+            w_start = _parse_dt(w["start"])
+            if w_start > cycle_end:
+                ws = w.get("score", {}) or {}
+                today_workout_cals += round((ws.get("kilojoule", 0) or 0) / 4.184)
+
+        # Wake-up time from latest sleep
+        wake_time = None
+        for s in sleep_records:
+            if s.get("end"):
+                wake_time = _parse_dt(s["end"])
+                break
+
+        now = datetime.now(timezone.utc)
+        if wake_time and wake_time < now:
+            hours_since_wake = (now - wake_time).total_seconds() / 3600
+            calories_out = round(base_rate_per_hour * hours_since_wake) + today_workout_cals
+            cycle_score_state = "ESTIMATED"
+
+            logger.info(
+                "WHOOP estimated calories: base_rate=%.1f/h, hours_awake=%.1f, "
+                "workout_cals=%d, total=%d",
+                base_rate_per_hour, hours_since_wake, today_workout_cals, calories_out,
+            )
 
     logger.info(
         "WHOOP context: cycle_state=%s calories=%s strain=%s workouts=%d",
