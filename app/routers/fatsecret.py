@@ -22,6 +22,7 @@ FATSECRET_SUCCESS_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8"><me
 
 @router.get("/food/search")
 async def food_search(q: str = Query(..., min_length=1)):
+    logger.info("Food search request: q='%s'", q)
     try:
         return await search_food(q)
     except Exception as e:
@@ -31,6 +32,7 @@ async def food_search(q: str = Query(..., min_length=1)):
 @router.get("/fatsecret/connect")
 async def fatsecret_connect(state: int = Query(...)):
     """OAuth 1.0 Step 1: Get request token, store secret, redirect user to FatSecret."""
+    logger.info("FatSecret OAuth connect: telegram_user_id=%s", state)
     callback_url = f"{settings.app_base_url}/fatsecret/callback?state={state}"
     try:
         tokens = await get_request_token(callback_url)

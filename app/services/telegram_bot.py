@@ -253,6 +253,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = user["id"]
     daily_calorie_goal = user["daily_calorie_goal"] or 2000
 
+    logger.info("Incoming message from user_id=%s (tg=%s), type=%s",
+                user_id, telegram_user_id,
+                "voice" if update.message.voice else "text")
+
     # Extract text from voice or text message
     message_text = ""
     if update.message.voice:
@@ -279,6 +283,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await save_conversation_message(user_id, "user", message_text)
 
+    logger.info("Processing message for user_id=%s: '%s'",
+                user_id, message_text[:100])
+
     try:
         gpt_result = await classify_and_respond(user_id, daily_calorie_goal, message_text)
     except Exception:
@@ -290,6 +297,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     intent = gpt_result["intent"]
     response_text = gpt_result["response"]
+
+    logger.info("GPT result for user_id=%s: intent=%s, food_items=%d",
+                user_id, intent, len(gpt_result.get("food_items", [])))
 
     expired_services = []
 
@@ -339,6 +349,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await save_conversation_message(user_id, "assistant", response_text, intent)
     await update.message.reply_text(response_text)
+    logger.info("Reply sent to user_id=%s, intent=%s, len=%d",
+                user_id, intent, len(response_text))
 
 
 HELP_TEXT = (

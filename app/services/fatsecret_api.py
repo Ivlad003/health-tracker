@@ -44,6 +44,7 @@ async def get_oauth2_token() -> str:
 
 async def search_food(query: str, max_results: int = 5) -> dict:
     """Search FatSecret public food database. Returns formatted results."""
+    logger.info("FatSecret search: query='%s' max=%d", query, max_results)
     token = await get_oauth2_token()
 
     async with httpx.AsyncClient() as client:
@@ -74,11 +75,13 @@ async def search_food(query: str, max_results: int = 5) -> dict:
         for f in foods
     ]
 
+    logger.info("FatSecret search result: query='%s' found=%d", query, len(results))
     return {"query": query, "results_count": len(results), "results": results}
 
 
 async def get_food_servings(food_id: str) -> list[dict]:
     """Get serving options for a food item. Returns list of servings with serving_id."""
+    logger.info("FatSecret get_servings: food_id=%s", food_id)
     token = await get_oauth2_token()
 
     async with httpx.AsyncClient() as client:
@@ -267,6 +270,8 @@ async def fetch_food_diary(
     entries = data.get("food_entries", {}).get("food_entry", [])
     if not isinstance(entries, list):
         entries = [entries]
+
+    logger.info("FatSecret diary fetched: %d entries for date=%s", len(entries), date)
 
     total_calories = 0.0
     meals = []

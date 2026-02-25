@@ -72,6 +72,8 @@ async def refresh_token_if_needed(
         )
         resp.raise_for_status()
     tokens = resp.json()
+    logger.info("WHOOP token refreshed for user_id=%s, expires_in=%s",
+                user["id"], tokens.get("expires_in"))
 
     await pool.execute(
         """UPDATE users
@@ -244,6 +246,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
 
     headers = {"Authorization": f"Bearer {access_token}"}
 
+    logger.info("WHOOP API: fetching 5 endpoints (cycle, body, workout, recovery, sleep)")
     async with httpx.AsyncClient(timeout=15.0) as client:
         cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp = (
             await asyncio.gather(
@@ -262,6 +265,10 @@ async def fetch_whoop_context(access_token: str) -> dict:
 
     for resp in (cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp):
         resp.raise_for_status()
+
+    logger.info("WHOOP API responses: cycle=%d, body=%d, workout=%d, recovery=%d, sleep=%d",
+                cycle_resp.status_code, body_resp.status_code,
+                workout_resp.status_code, recovery_resp.status_code, sleep_resp.status_code)
 
     # --- Cycle (calories + strain) ---
     cycle_records = cycle_resp.json().get("records", [])
@@ -418,6 +425,7 @@ async def _fetch_whoop_data(client: httpx.AsyncClient, access_token: str, lookba
     """Fetch workout, recovery, and sleep data from WHOOP API."""
     from datetime import timedelta
 
+    logger.info("WHOOP sync fetch: lookback=%dh", lookback_hours)
     headers = {"Authorization": f"Bearer {access_token}"}
     start = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
 

@@ -27,6 +27,7 @@ async def whoop_callback(
     code: Optional[str] = Query(default=None),
     state: Optional[str] = Query(default=None),
 ):
+    logger.info("WHOOP OAuth callback: code=%s state=%s", bool(code), state)
     if not code or not state:
         return HTMLResponse(content=ERROR_HTML, status_code=400)
 

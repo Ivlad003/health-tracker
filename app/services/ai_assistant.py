@@ -124,6 +124,7 @@ def _build_context_messages(
 
 async def get_today_stats(user_id: int) -> dict:
     """Fetch today's stats: FatSecret diary (live) + WHOOP data (live). No DB reads."""
+    logger.info("Fetching today stats for user_id=%s", user_id)
     pool = await get_pool()
 
     # Calories eaten from FatSecret diary (live API, source of truth)
@@ -136,6 +137,7 @@ async def get_today_stats(user_id: int) -> dict:
         user_id,
     )
     if user_row and user_row["fatsecret_access_token"]:
+        logger.info("Fetching FatSecret diary for user_id=%s", user_id)
         try:
             from app.services.fatsecret_api import fetch_food_diary, FatSecretAuthError
             diary = await fetch_food_diary(
@@ -144,6 +146,8 @@ async def get_today_stats(user_id: int) -> dict:
             )
             fatsecret_calories = float(diary.get("total_calories", 0))
             fatsecret_ok = True
+            logger.info("FatSecret diary: %.0f kcal, %d entries",
+                        fatsecret_calories, len(diary.get("meals", [])))
             meals = diary.get("meals", [])
             if meals:
                 fatsecret_meals = "; ".join(
@@ -189,6 +193,7 @@ async def get_today_stats(user_id: int) -> dict:
         user_id,
     )
     if whoop_user:
+        logger.info("Fetching WHOOP data for user_id=%s", user_id)
         try:
             from app.services.whoop_sync import (
                 fetch_whoop_context, refresh_token_if_needed, TokenExpiredError,
@@ -217,6 +222,10 @@ async def get_today_stats(user_id: int) -> dict:
     # FatSecret is the sole source of truth for eaten calories (live API).
     total_in = round(fatsecret_calories) if fatsecret_ok else 0
     calories_source = "fatsecret" if fatsecret_ok else "none"
+
+    logger.info("Stats for user_id=%s: in=%d kcal (src=%s), out=%d kcal, strain=%.1f, workouts=%d",
+                user_id, total_in, calories_source,
+                whoop["calories_out"], whoop["strain"], whoop["workout_count"])
 
     return {
         "today_calories_in": total_in,
@@ -271,7 +280,9 @@ async def classify_and_respond(
     message_text: str,
 ) -> dict:
     """Single GPT call: classify intent + generate response."""
+    logger.info("GPT classify_and_respond for user_id=%s", user_id)
     conversation_history = await load_conversation_context(user_id)
+    logger.info("Loaded %d conversation messages for user_id=%s", len(conversation_history), user_id)
     today_stats = await get_today_stats(user_id)
 
     user_data = {
@@ -280,6 +291,7 @@ async def classify_and_respond(
     }
 
     messages = _build_context_messages(conversation_history, user_data, message_text)
+    logger.info("Calling GPT model=%s, messages=%d", settings.openai_model, len(messages))
 
     response = await client.chat.completions.create(
         model=settings.openai_model,
@@ -290,6 +302,8 @@ async def classify_and_respond(
     )
 
     raw = response.choices[0].message.content or "{}"
+    tokens_used = response.usage.total_tokens if response.usage else 0
+    logger.info("GPT response: %d tokens, %d chars", tokens_used, len(raw))
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -311,6 +325,7 @@ async def classify_and_respond(
 
 async def transcribe_voice(file_bytes: bytes, file_name: str = "voice.ogg") -> str:
     """Transcribe voice audio using OpenAI Whisper. Auto-detects language."""
+    logger.info("Whisper transcription: %d bytes", len(file_bytes))
     transcript = await client.audio.transcriptions.create(
         model="whisper-1",
         file=(file_name, file_bytes),
