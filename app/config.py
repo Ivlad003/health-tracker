@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
 
+    # New Relic
+    new_relic_license_key: str = ""
+
     # App
     app_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
