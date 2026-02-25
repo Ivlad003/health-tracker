@@ -34,8 +34,17 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # FatSecret token health check every 30 minutes
+    from app.services.fatsecret_api import check_fatsecret_tokens, sync_fatsecret_data
+    scheduler.add_job(
+        check_fatsecret_tokens,
+        trigger=IntervalTrigger(minutes=30),
+        id="fatsecret_token_check",
+        name="FatSecret Token Check (30min)",
+        replace_existing=True,
+    )
+
     # FatSecret diary sync every hour
-    from app.services.fatsecret_api import sync_fatsecret_data
     scheduler.add_job(
         sync_fatsecret_data,
         trigger=IntervalTrigger(hours=1),
@@ -77,7 +86,7 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started — WHOOP tokens 30min, WHOOP sync 1h, FatSecret sync 1h, "
+        "Scheduler started — tokens 30min (WHOOP+FatSecret), WHOOP sync 1h, FatSecret sync 1h, "
         "morning 08:00 Kyiv, evening 21:00 Kyiv, cleanup 03:00 UTC"
     )
 

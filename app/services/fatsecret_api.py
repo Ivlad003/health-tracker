@@ -291,6 +291,66 @@ async def fetch_food_diary(
     }
 
 
+async def check_fatsecret_tokens():
+    """Health check: verify FatSecret tokens are still valid every 30 min."""
+    from app.database import get_pool
+
+    logger.info("Starting FatSecret token check")
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, telegram_user_id, fatsecret_access_token, fatsecret_access_secret
+           FROM users
+           WHERE fatsecret_access_token IS NOT NULL
+                 AND fatsecret_access_token != ''
+                 AND fatsecret_access_secret IS NOT NULL
+                 AND fatsecret_access_secret != ''"""
+    )
+
+    if not rows:
+        return
+
+    valid = 0
+    for row in rows:
+        try:
+            await fetch_food_diary(
+                access_token=row["fatsecret_access_token"],
+                access_secret=row["fatsecret_access_secret"],
+            )
+            valid += 1
+        except (httpx.HTTPStatusError, FatSecretAuthError) as e:
+            is_auth = (
+                isinstance(e, FatSecretAuthError)
+                or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403))
+            )
+            if is_auth:
+                logger.warning("FatSecret token invalid for user_id=%s, clearing", row["id"])
+                await pool.execute(
+                    """UPDATE users
+                       SET fatsecret_access_token = NULL,
+                           fatsecret_access_secret = NULL,
+                           updated_at = NOW()
+                       WHERE id = $1""",
+                    row["id"],
+                )
+                try:
+                    from app.services.telegram_bot import send_message
+                    await send_message(
+                        row["telegram_user_id"],
+                        "🥗 FatSecret сесія закінчилась.\n"
+                        "\n"
+                        "🔑 Потрібно перепідключити → /connect_fatsecret",
+                    )
+                except Exception:
+                    logger.warning("Failed to notify user_id=%s about FatSecret expiry", row["id"])
+            else:
+                logger.warning("FatSecret check failed for user_id=%s: %s", row["id"], e)
+        except Exception:
+            logger.warning("FatSecret check failed for user_id=%s", row["id"])
+
+    logger.info("FatSecret token check complete: %d/%d valid", valid, len(rows))
+
+
 async def sync_fatsecret_data():
     """Sync job: runs hourly. Fetches FatSecret diary for all connected users (pre-warms cache)."""
     from app.database import get_pool
