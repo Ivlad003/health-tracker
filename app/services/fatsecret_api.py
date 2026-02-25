@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 FATSECRET_TOKEN_URL = "https://oauth.fatsecret.com/connect/token"
 FATSECRET_API_URL = "https://platform.fatsecret.com/rest/server.api"
 
+# FatSecret OAuth 1.0 error codes that mean the token is invalid/expired
+_FS_AUTH_ERROR_CODES = {2, 4, 8, 13, 14}  # Invalid key, signature, token, etc.
+
+
+class FatSecretAuthError(Exception):
+    """Raised when FatSecret returns an auth error (invalid/expired token)."""
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"FatSecret auth error {code}: {message}")
+
 
 async def get_oauth2_token() -> str:
     """Get FatSecret OAuth 2.0 access token (server-to-server, client_credentials)."""
@@ -171,8 +183,15 @@ async def create_food_diary_entry(
         try:
             data = resp.json()
             if "error" in data:
-                logger.error("FatSecret create entry error: %s", data["error"])
+                err = data["error"]
+                code = int(err.get("code", 0))
+                msg = err.get("message", "Unknown error")
+                logger.error("FatSecret create entry error: code=%s message=%s", code, msg)
+                if code in _FS_AUTH_ERROR_CODES:
+                    raise FatSecretAuthError(code, msg)
                 return False
+        except FatSecretAuthError:
+            raise
         except Exception:
             pass
 
@@ -236,6 +255,15 @@ async def fetch_food_diary(
         resp.raise_for_status()
         data = resp.json()
 
+    # FatSecret returns 200 OK with error body for auth failures
+    if "error" in data:
+        err = data["error"]
+        code = int(err.get("code", 0))
+        msg = err.get("message", "Unknown error")
+        logger.error("FatSecret diary error: code=%s message=%s", code, msg)
+        if code in _FS_AUTH_ERROR_CODES:
+            raise FatSecretAuthError(code, msg)
+
     entries = data.get("food_entries", {}).get("food_entry", [])
     if not isinstance(entries, list):
         entries = [entries]
@@ -293,8 +321,12 @@ async def sync_fatsecret_data():
                 "FatSecret sync user_id=%s: %d entries, %d kcal",
                 row["id"], diary["entries_count"], diary["total_calories"],
             )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
+        except (httpx.HTTPStatusError, FatSecretAuthError) as e:
+            is_auth = (
+                isinstance(e, FatSecretAuthError)
+                or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403))
+            )
+            if is_auth:
                 logger.warning(
                     "FatSecret auth expired for user_id=%s, clearing tokens", row["id"],
                 )

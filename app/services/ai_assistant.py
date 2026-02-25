@@ -113,7 +113,7 @@ async def get_today_stats(user_id: int) -> dict:
     )
     if user_row and user_row["fatsecret_access_token"]:
         try:
-            from app.services.fatsecret_api import fetch_food_diary
+            from app.services.fatsecret_api import fetch_food_diary, FatSecretAuthError
             diary = await fetch_food_diary(
                 access_token=user_row["fatsecret_access_token"],
                 access_secret=user_row["fatsecret_access_secret"],
@@ -125,9 +125,20 @@ async def get_today_stats(user_id: int) -> dict:
                 fatsecret_meals = "; ".join(
                     f"{m['food']} ({m['calories']} kcal)" for m in meals[:10]
                 )
+        except FatSecretAuthError:
+            logger.warning("FatSecret auth error for user_id=%s, clearing tokens", user_id)
+            await pool.execute(
+                """UPDATE users
+                   SET fatsecret_access_token = NULL,
+                       fatsecret_access_secret = NULL,
+                       updated_at = NOW()
+                   WHERE id = $1""",
+                user_id,
+            )
+            expired_services.append("fatsecret")
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
-                logger.warning("FatSecret auth failed for user_id=%s, clearing tokens", user_id)
+                logger.warning("FatSecret HTTP auth failed for user_id=%s, clearing tokens", user_id)
                 await pool.execute(
                     """UPDATE users
                        SET fatsecret_access_token = NULL,

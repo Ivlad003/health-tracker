@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+import httpx
+
 from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
@@ -447,8 +449,7 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if fs_row and fs_row["fatsecret_access_token"]:
         try:
-            from app.services.fatsecret_api import fetch_food_diary
-            import httpx
+            from app.services.fatsecret_api import fetch_food_diary, FatSecretAuthError
             diary = await fetch_food_diary(
                 access_token=fs_row["fatsecret_access_token"],
                 access_secret=fs_row["fatsecret_access_secret"],
@@ -456,8 +457,12 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             count = diary.get("entries_count", 0)
             cals = diary.get("total_calories", 0)
             results.append(f"🥗 FatSecret — ✅ {count} записів, {cals} kcal сьогодні")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
+        except (httpx.HTTPStatusError, FatSecretAuthError) as e:
+            is_auth = (
+                isinstance(e, FatSecretAuthError)
+                or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403))
+            )
+            if is_auth:
                 await pool.execute(
                     """UPDATE users
                        SET fatsecret_access_token = NULL,
