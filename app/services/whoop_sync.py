@@ -226,6 +226,29 @@ async def store_sleep(pool, records: list[dict]) -> int:
     return len(records)
 
 
+async def fetch_body_measurement(access_token: str) -> dict:
+    """Fetch latest WHOOP body measurement (weight, height, max HR)."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{WHOOP_API_BASE}/body_measurement",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"limit": "1"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    records = data.get("records", [])
+    if not records:
+        return {"weight_kg": 0, "height_m": 0, "max_heart_rate": 0}
+
+    latest = records[0]
+    return {
+        "weight_kg": round(latest.get("weight_kilogram", 0) or 0, 1),
+        "height_m": round(latest.get("height_meter", 0) or 0, 2),
+        "max_heart_rate": round(latest.get("max_heart_rate", 0) or 0),
+    }
+
+
 async def fetch_daily_cycle(access_token: str) -> dict:
     """Fetch today's WHOOP cycle (daily strain + total calories burned)."""
     from datetime import timedelta
@@ -378,7 +401,13 @@ async def sync_whoop_data():
 
 
 async def refresh_whoop_tokens():
-    """Proactively refresh WHOOP tokens every 30 min to keep them fresh."""
+    """Proactively refresh WHOOP tokens that expire within 10 minutes.
+
+    Only refreshes tokens close to expiry to avoid race conditions with
+    other jobs (sync_whoop_data, get_today_stats) that also refresh tokens.
+    Force-refreshing all tokens every 30min was causing the old refresh_token
+    to be invalidated before other jobs could use it — resulting in disconnects.
+    """
     logger.info("Starting WHOOP token refresh")
 
     pool = await get_pool()
@@ -388,10 +417,12 @@ async def refresh_whoop_tokens():
            FROM users
            WHERE whoop_access_token IS NOT NULL
                  AND whoop_refresh_token IS NOT NULL
-                 AND whoop_refresh_token != ''"""
+                 AND whoop_refresh_token != ''
+                 AND whoop_token_expires_at < NOW() + INTERVAL '10 minutes'"""
     )
 
     if not rows:
+        logger.info("WHOOP token refresh: no tokens expiring soon")
         return
 
     refreshed = 0

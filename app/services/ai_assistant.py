@@ -24,8 +24,9 @@ RULES:
 
 INTENT DEFINITIONS:
 - log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The bot automatically syncs entries to FatSecret if connected, so always log food when user asks.
-- query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to WHOOP data (sleep, recovery, strain, activities), FatSecret diary, and bot-logged food — use all available data when answering.
-  NOTE: WHOOP tracks steps in the app, but the WHOOP API does not provide step count data. If user asks about steps, explain that step data is only visible in the WHOOP app directly and cannot be accessed through the bot yet. Suggest they check the WHOOP app for step count.
+- query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to WHOOP data (sleep, recovery, strain, activities, weight, heart rate) and FatSecret diary — use all available data when answering.
+  WHOOP data available: sleep (duration, stages, performance), recovery (score, HRV, resting HR, SpO2, skin temp), strain, calories burned, workouts, weight, height, max HR.
+  WHOOP data NOT available via API (app-only): steps, HR zones, VO₂ max, stress monitor. If user asks about these, explain they're only visible in the WHOOP app directly.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - general: Everything else — greetings, setting calorie goal (extract number), health tips, questions about the bot.
 
@@ -74,6 +75,8 @@ def _build_context_messages(
         data_context += f" {user_data['whoop_recovery']}."
     if user_data.get("whoop_activities"):
         data_context += f" {user_data['whoop_activities']}."
+    if user_data.get("whoop_body"):
+        data_context += f" {user_data['whoop_body']}."
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -168,8 +171,9 @@ async def get_today_stats(user_id: int) -> dict:
     workout_strain = round(float(row2["today_strain"]) if row2 else 0, 1)
     workout_count = int(row2["workout_count"]) if row2 else 0
 
-    # Fetch WHOOP daily cycle (total daily calories + strain, not just workouts)
+    # Fetch WHOOP daily cycle (total daily calories + strain) and body measurements
     daily_cycle = {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0}
+    body_measurement = {"weight_kg": 0, "height_m": 0, "max_heart_rate": 0}
     whoop_user = await pool.fetchrow(
         """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
            FROM users WHERE id = $1 AND whoop_access_token IS NOT NULL""",
@@ -178,12 +182,14 @@ async def get_today_stats(user_id: int) -> dict:
     if whoop_user:
         try:
             from app.services.whoop_sync import (
-                fetch_daily_cycle, refresh_token_if_needed, TokenExpiredError,
+                fetch_daily_cycle, fetch_body_measurement,
+                refresh_token_if_needed, TokenExpiredError,
             )
             async with httpx.AsyncClient(timeout=15.0) as client:
                 token = await refresh_token_if_needed(dict(whoop_user), client, pool)
                 try:
                     daily_cycle = await fetch_daily_cycle(token)
+                    body_measurement = await fetch_body_measurement(token)
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code == 401:
                         logger.warning(
@@ -194,11 +200,13 @@ async def get_today_stats(user_id: int) -> dict:
                             dict(whoop_user), client, pool, force=True,
                         )
                         daily_cycle = await fetch_daily_cycle(token)
+                        body_measurement = await fetch_body_measurement(token)
                     else:
                         raise
             logger.info(
-                "WHOOP daily cycle for user_id=%s: calories=%s strain=%s",
+                "WHOOP daily cycle for user_id=%s: calories=%s strain=%s weight=%s",
                 user_id, daily_cycle["calories"], daily_cycle["strain"],
+                body_measurement["weight_kg"],
             )
         except TokenExpiredError:
             expired_services.append("whoop")
@@ -289,6 +297,15 @@ async def get_today_stats(user_id: int) -> dict:
     else:
         total_in = round(bot_calories)
 
+    # Body measurement info
+    body_info = ""
+    if body_measurement["weight_kg"]:
+        body_info = f"Weight: {body_measurement['weight_kg']} kg"
+        if body_measurement["height_m"]:
+            body_info += f", height {body_measurement['height_m']} m"
+        if body_measurement["max_heart_rate"]:
+            body_info += f", max HR {body_measurement['max_heart_rate']} bpm"
+
     return {
         "today_calories_in": total_in,
         "today_fatsecret_meals": fatsecret_meals,
@@ -298,6 +315,7 @@ async def get_today_stats(user_id: int) -> dict:
         "whoop_sleep": sleep_info,
         "whoop_recovery": recovery_info,
         "whoop_activities": activities_info,
+        "whoop_body": body_info,
         "expired_services": expired_services,
     }
 
