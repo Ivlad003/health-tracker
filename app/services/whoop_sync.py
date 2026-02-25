@@ -238,9 +238,8 @@ async def fetch_whoop_context(access_token: str) -> dict:
     user_tz = ZoneInfo("Europe/Kyiv")
     today_local = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
     today_utc = today_local.astimezone(timezone.utc).isoformat()
-    # Sleep started yesterday evening, need wider window
-    yesterday_evening = (today_local - timedelta(hours=12)).astimezone(timezone.utc).isoformat()
-    # Cycle needs 48h for calorie estimation from last SCORED cycle
+    # 48h window: cycle needs it for estimation, recovery/sleep need it because
+    # today's recovery is linked to yesterday's cycle (which started yesterday).
     start_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -255,9 +254,9 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 client.get(f"{WHOOP_API_BASE}/activity/workout", headers=headers,
                            params={"limit": "10", "start": today_utc}),
                 client.get(f"{WHOOP_API_BASE}/recovery", headers=headers,
-                           params={"limit": "5", "start": today_utc}),
+                           params={"limit": "5", "start": start_48h}),
                 client.get(f"{WHOOP_API_BASE}/activity/sleep", headers=headers,
-                           params={"limit": "3", "start": yesterday_evening}),
+                           params={"limit": "5", "start": start_48h}),
             )
         )
 
@@ -315,9 +314,14 @@ async def fetch_whoop_context(access_token: str) -> dict:
             )
         activities_info = "Today's workouts: " + "; ".join(parts)
 
-    # --- Recovery ---
+    # --- Recovery (most recent scored, API returns newest first) ---
     recovery_records = recovery_resp.json().get("records", [])
     recovery_info = ""
+    logger.info(
+        "WHOOP recovery records: %d total, created_at=%s",
+        len(recovery_records),
+        [r.get("created_at", "?")[:19] for r in recovery_records[:3]],
+    )
     for r in recovery_records:
         rs = r.get("score", {})
         if rs and rs.get("recovery_score") is not None:
@@ -336,6 +340,11 @@ async def fetch_whoop_context(access_token: str) -> dict:
     sleep_records = sleep_resp.json().get("records", [])
     sleep_info = ""
     today_start_utc = datetime.fromisoformat(today_utc)
+    logger.info(
+        "WHOOP sleep records: %d total, start/end=%s",
+        len(sleep_records),
+        [(s.get("start", "?")[:19], s.get("end", "?")[:19]) for s in sleep_records[:3]],
+    )
     for s in sleep_records:
         # Only use sleep that ended today (user woke up today)
         sleep_end = s.get("end")
