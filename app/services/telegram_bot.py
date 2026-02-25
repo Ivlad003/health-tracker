@@ -157,11 +157,17 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
             try:
                 servings = await get_food_servings(food_id)
                 if servings:
-                    # Find best serving: prefer metric grams, fallback to first
+                    # Find best serving for gram-based entry:
+                    # 1. "1g" serving → number_of_units = exact grams (FatSecret shows "200g")
+                    # 2. Any gram serving (e.g. "100g") → proportional units
+                    # 3. Fallback to first serving
+                    gram_servings = [
+                        s for s in servings
+                        if s["metric_serving_unit"] == "g" and s["metric_serving_amount"] > 0
+                    ]
                     serving = next(
-                        (s for s in servings
-                         if s["metric_serving_unit"] == "g" and s["metric_serving_amount"] > 0),
-                        servings[0],
+                        (s for s in gram_servings if s["metric_serving_amount"] == 1.0),
+                        gram_servings[0] if gram_servings else servings[0],
                     )
                     metric_amount = serving["metric_serving_amount"] or 100.0
                     units = quantity_g / metric_amount
