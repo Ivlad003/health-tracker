@@ -1,8 +1,8 @@
-# Session Knowledge Base - 2026-02-24
+# Session Knowledge Base - 2026-02-25
 
 [Ukrainian version](../uk/session-knowledge.md)
 
-> Practical knowledge gained from building and debugging the n8n WHOOP integration.
+> Practical knowledge gained from building the Health Tracker bot.
 > This file serves as a reference for future development sessions.
 
 ---
@@ -11,25 +11,35 @@
 
 | Resource | Value |
 |----------|-------|
-| n8n instance | See `.env` -> `N8N_HOST` (v2.35.5, Dokploy) |
+| App | FastAPI Python 3.12+ (Docker on Dokploy) |
 | PostgreSQL | See `.env` -> `DATABASE_URL` |
-| n8n PostgreSQL credential | name: `pet_pg_db` (ID in n8n credentials UI) |
-| n8n API key location | `.mcp.json` -> `mcpServers.n8n-mcp.env.N8N_API_KEY` |
 | Dokploy panel | See `.mcp.json` -> `mcpServers.dokploy-mcp.env.DOKPLOY_URL` |
 | WHOOP user ID | Stored in `users.whoop_user_id` column |
 | Telegram user ID | Stored in `users.telegram_user_id` column |
 
-### n8n Workflows Deployed
+### Application Services
 
-| Workflow | ID | Status |
-|----------|----|--------|
-| WHOOP OAuth Callback | `sWOs9ycgABYKCQ8g` | Active |
-| WHOOP Data Sync | `nAjGDfKdddSDH2MD` | Active (hourly) |
-| FatSecret Food Search | `qTHRcgiqFx9SqTNm` | Active (webhook: `/webhook/food/search?q=`) |
-| FatSecret OAuth Connect | `5W40Z9r0cn5Z5Nyx` | Inactive (crypto blocked) |
-| FatSecret OAuth Callback | `2kyFWt88FfOt14mw` | Inactive (crypto blocked) |
-| FatSecret Food Diary | `5HazDbwcUsZPvXzS` | Inactive (awaiting OAuth) |
-| IP Check | `g3IFs0z6mPYtwPI9` | Active (utility) |
+| Service | File | Purpose |
+|---------|------|---------|
+| Telegram Bot | `app/services/telegram_bot.py` | Message handling, commands (/start, /help, /sync, /connect_whoop, /connect_fatsecret) |
+| AI Assistant | `app/services/ai_assistant.py` | GPT intent classification + response, calorie stats |
+| WHOOP Sync | `app/services/whoop_sync.py` | OAuth 2.0, data sync, token refresh |
+| FatSecret API | `app/services/fatsecret_api.py` | OAuth 1.0, food search, diary sync, token check |
+| FatSecret Auth | `app/services/fatsecret_auth.py` | OAuth 1.0 HMAC-SHA1 signing |
+| Briefings | `app/services/briefings.py` | Morning (08:00) / evening (21:00) scheduled messages |
+| Scheduler | `app/scheduler.py` | APScheduler periodic jobs |
+
+### Scheduled Jobs
+
+| Job | Frequency | Purpose |
+|-----|-----------|---------|
+| WHOOP Data Sync | Every 1h | Sync workouts, sleep, recovery for all users |
+| WHOOP Token Refresh | Every 30min | Proactive token refresh (prevents expiry) |
+| FatSecret Data Sync | Every 1h | Sync food diary for all connected users |
+| FatSecret Token Check | Every 30min | Validate tokens, notify user + clear on expiry |
+| Morning Briefing | 08:00 Europe/Kyiv | Daily health summary |
+| Evening Summary | 21:00 Europe/Kyiv | End-of-day report |
+| Conversation Cleanup | 03:00 UTC | Remove old conversation history |
 
 ---
 
@@ -44,10 +54,9 @@
 | Workouts | `GET /developer/v2/activity/workout` |
 | Recovery | `GET /developer/v2/recovery` |
 | Sleep | `GET /developer/v2/activity/sleep` |
+| Daily Cycle | `GET /developer/v2/cycle` |
 | Token exchange | `POST /oauth/oauth2/token` |
 | Authorization | `GET /oauth/oauth2/auth` |
-
-> The existing `docs/en/api-integration.md` already has v2 URLs, which is correct.
 
 ### Available Scopes (tested and confirmed)
 
@@ -59,12 +68,17 @@ read:workout read:recovery read:sleep read:body_measurement
 - `read:cycles` - returns `invalid_scope` error
 - `read:profile` - not available for this app; v1 profile endpoint returns 401
 
+### Steps Data NOT Available via API
+
+WHOOP tracks steps in the app (added 2025), but the Developer API v2 does **not** expose step count data. There is no steps endpoint or field in any API response. The bot's system prompt guides users to check the WHOOP app directly.
+
 ### Token Lifecycle
 
 - Access token expires in **3600 seconds (1 hour)**
 - Refresh token is long-lived
 - Refresh via `POST /oauth/oauth2/token` with `grant_type=refresh_token`
 - Only `client_id` and `client_secret` needed for refresh (no `redirect_uri`)
+- **Token refresh can return 400 Bad Request** if token was revoked (e.g., user re-authorized). Handle by clearing tokens and raising `TokenExpiredError`.
 
 ### OAuth Flow - Working Authorization URL
 
@@ -81,6 +95,13 @@ Since the profile endpoint is unavailable, the user_id is extracted from the rec
 GET /developer/v2/recovery?limit=1 -> response.records[0].user_id
 ```
 
+### Token Refresh Error Handling
+
+`refresh_token_if_needed()` in `whoop_sync.py`:
+- Has `force` parameter for proactive refresh
+- On 400/401/403 from token endpoint: clears tokens from DB, raises `TokenExpiredError`
+- All WHOOP API callers have 401 retry logic (force-refresh + retry once)
+
 ---
 
 ## 3. FatSecret API - Critical Discoveries
@@ -96,57 +117,35 @@ FatSecret uses **different credentials** for OAuth 1.0 vs OAuth 2.0:
 | Values | Same key, **different secrets** | Same key, **different secrets** |
 | Use case | Public food database (search) | User's personal food diary |
 
-> The Consumer Key is the same as the Client ID, but the secrets are different.
-> Both are on the FatSecret account page: https://platform.fatsecret.com/my-account/api-key
-
 ### OAuth 2.0 (Server-to-Server) - WORKING
 
 - Token endpoint: `POST https://oauth.fatsecret.com/connect/token`
 - API endpoint: `POST https://platform.fatsecret.com/rest/server.api`
-- Scopes: `basic`, `premier`, `barcode`, `localization`, `nlp`, `image-recognition`
 - Used for: food search, food details (public database)
-- Token lifetime: 86400 seconds (24 hours)
 - **Requires IP whitelisting** on `platform.fatsecret.com`
 
-### OAuth 1.0 Three-Legged (User Data) - IN PROGRESS
+### OAuth 1.0 Three-Legged (User Data) - WORKING
 
-Required to access user's personal food diary (`food_entries.get`).
+Used for accessing user's personal food diary.
 
 **Endpoints:**
 - Request Token: `POST https://authentication.fatsecret.com/oauth/request_token`
 - User Authorization: `GET https://authentication.fatsecret.com/oauth/authorize?oauth_token={token}`
 - Access Token: `POST https://authentication.fatsecret.com/oauth/access_token`
 
-**Signing:** HMAC-SHA1 (all requests must be signed)
+**Signing:** HMAC-SHA1 via `app/services/fatsecret_auth.py`
 
-**n8n approach:** Use built-in `oAuth1Api` credential type (handles signing automatically).
-- Credential created: name `FatSecret OAuth1`, ID `VCx6xRbjDM47owI0`
-- User must click "Connect" in n8n Credentials UI to authorize
+**Token behavior:** OAuth 1.0 tokens are **permanent** — they don't expire unless revoked. There is no refresh mechanism. The 30-min health check validates tokens by calling the API.
 
-**BLOCKER:** n8n Code nodes **cannot use `require('crypto')`** - module is sandboxed.
-Custom OAuth 1.0 signing in Code nodes is impossible. Must use n8n's built-in OAuth1 credential.
+### FatSecret Returns HTTP 200 for Auth Errors
 
-**BLOCKER:** FatSecret OAuth1 "Connect" returns **400 error** - likely IP whitelist issue.
-- n8n server outbound IP: `84.54.23.99` (confirmed via ipify.org)
-- This IP must be whitelisted at https://platform.fatsecret.com/my-account/api-key
-- FatSecret warns: **IP changes can take up to 24 hours to take effect**
-- User added IP on 2026-02-24 - retry after 2026-02-25
+**CRITICAL:** FatSecret returns `HTTP 200 OK` with `{"error": {"code": X, "message": "..."}}` in the response body for auth failures — NOT HTTP 401/403. Standard `httpx.HTTPStatusError` catches won't detect this.
 
-### Food Diary API (`food_entries.get.v2`)
+**Solution:** Custom `FatSecretAuthError` exception + `_FS_AUTH_ERROR_CODES = {2, 4, 8, 13, 14}` in `fatsecret_api.py`. All API responses are checked for error body.
 
-Once OAuth 1.0 is connected, fetch diary entries with:
-- URL: `POST https://platform.fatsecret.com/rest/server.api`
-- Params: `method=food_entries.get.v2&format=json&date={days_since_epoch}`
-- `date` parameter: integer = days since Jan 1, 1970 (defaults to today)
-- Returns: food_entry_name, calories, protein, fat, carbohydrate, serving info, meal type
+### Calorie Source Priority
 
-### DB Columns Added for FatSecret
-
-```sql
-ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS fatsecret_access_token TEXT,
-    ADD COLUMN IF NOT EXISTS fatsecret_access_secret TEXT;
-```
+When FatSecret is connected and working, it's the **source of truth** for calories eaten (bot entries are synced there). Only use bot-logged calories as fallback when FatSecret is unavailable. See `get_today_stats()` in `ai_assistant.py`.
 
 ---
 
@@ -154,80 +153,42 @@ ALTER TABLE users
 
 ### CRITICAL: Existing DB uses INTEGER, not UUID
 
-The `docs/en/architecture.md` says "UUID for primary keys" but the **actual production database** uses:
-
 ```sql
--- Actual schema (pre-existing table):
+-- Actual schema:
 users.id          -> INTEGER (SERIAL), NOT UUID
-users.telegram_user_id -> BIGINT, NOT telegram_id
+users.telegram_user_id -> BIGINT
 ```
 
-Migration `001_initial_schema.sql` has UUID-based schema but was **never applied** to the existing database. Migration `002_health_tracker_schema.sql` was created to work with the existing INTEGER-based schema using `ALTER TABLE` and `IF NOT EXISTS`.
+Migration `001_initial_schema.sql` has UUID-based schema but was **never applied**. Migration `002_health_tracker_schema.sql` works with the existing INTEGER-based schema.
 
-### Column Name Differences
+### Tables in Production
 
-| Doc/Migration 001 says | Actual DB column |
-|------------------------|------------------|
-| `telegram_id` | `telegram_user_id` |
-| `id UUID` | `id INTEGER` |
-| `username` | `telegram_username` (added by migration 002) |
-
-### Tables in Production (9 total)
-
-`users`, `diary_entries` (pre-existing), `food_entries`, `mood_entries`, `whoop_activities`, `whoop_recovery`, `whoop_sleep`, `daily_summaries`, `sync_logs`
-
-### Confirmed User Record
-
-```sql
--- User with WHOOP tokens:
--- id: (integer), telegram_user_id: {TG_USER_ID}, whoop_user_id: '{WHOOP_USER_ID}'
--- Tokens stored and working
-```
+`users`, `diary_entries`, `food_entries`, `mood_entries`, `whoop_activities`, `whoop_recovery`, `whoop_sleep`, `daily_summaries`, `sync_logs`, `conversation_messages`
 
 ---
 
-## 5. n8n Node Version Compatibility (v2.35.5)
+## 5. GPT Context Engineering
 
-### CRITICAL: Use these exact typeVersions
+### Avoid Giving GPT Confusing Breakdowns
 
-The n8n instance (v2.35.5) does **NOT support** newer node versions. Using unsupported versions causes activation to fail silently with:
+**Bug found 2026-02-25:** When GPT context showed "total: 216 kcal (FatSecret: 216, bot: 40)", GPT added them to get 256 instead of using 216.
+
+**Fix:** Show only ONE total number with explicit instruction:
 ```
-"Cannot read properties of undefined (reading 'execute')"
-```
-
-| Node Type | Working Version | Broken Versions |
-|-----------|----------------|-----------------|
-| `scheduleTrigger` | **1.2** | 1.3 |
-| `httpRequest` | **4.2** | 4.4 |
-| `postgres` | **2.5** | 2.6 |
-| `code` | **1** | 2 |
-| `webhook` | **2** | - |
-| `if` | **2.3** | - |
-| `respondToWebhook` | **1.5** | - |
-
-### Code Node v1 Syntax
-
-In Code node v1:
-- "Run Once for All Items": use `items` array (not `$input.all()`)
-- "Run Once for Each Item": use `item` (not `$input.item`)
-- `$('Node Name').item.json` works in both versions
-- `$json` shorthand works in both versions
-- `$now`, `$env` work in both versions
-- **Return `[]` to drop items** - returning `item` when data is empty forwards raw data to downstream nodes, causing SQL errors. Use `return [];` to stop propagation
-
-### n8n Workflow Activation via API
-
-The MCP tools don't have a direct activate function. Use the REST API:
-
-```bash
-curl -X POST "{N8N_HOST}/api/v1/workflows/{WORKFLOW_ID}/activate" \
-  -H "X-N8N-API-KEY: {N8N_API_KEY}" \
-  -H "Content-Type: application/json"
+Today's calories eaten: {total} kcal.
+IMPORTANT: Use ONLY these exact numbers when answering about calories.
+Do NOT add or recalculate — these are already the correct totals.
 ```
 
-> `N8N_HOST` is in `.env`, `N8N_API_KEY` is in `.mcp.json`.
+### System Prompt Structure
 
-Deactivate: same URL but `/deactivate`.
+The `SYSTEM_PROMPT` in `ai_assistant.py` classifies every message into one intent:
+- `log_food` — extracts food items with name, weight, meal_type
+- `query_data` — answers about health data using provided context
+- `delete_entry` — removes last/specific food entry
+- `general` — greetings, calorie goal setting, help
+
+Response is always JSON with `intent`, `food_items`, `calorie_goal`, `response` fields.
 
 ---
 
@@ -235,20 +196,7 @@ Deactivate: same URL but `/deactivate`.
 
 ### .env Parsing in Bash
 
-`source <(grep ...)` and `export $(cat ... | xargs)` **fail** when password contains special characters (like the DB password). Use:
-
-```bash
-while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^#.*$ ]] && continue
-    [[ -z "$line" ]] && continue
-    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-        key="${BASH_REMATCH[1]}"
-        value="${BASH_REMATCH[2]}"
-        value="${value%\"}" && value="${value#\"}"
-        export "$key=$value"
-    fi
-done < "$ENV_FILE"
-```
+`source <(grep ...)` and `export $(cat ... | xargs)` **fail** when password contains special characters. Use `while IFS= read -r line` loop (see `database/init-db.sh`).
 
 ### PostgreSQL DATE() on TIMESTAMPTZ is NOT immutable
 
@@ -260,134 +208,77 @@ CREATE INDEX idx ON food_entries(user_id, DATE(logged_at));
 CREATE INDEX idx ON food_entries(user_id, logged_at);
 ```
 
-### n8n httpRequest Node - Authentication Conflict
+### Token Expiry Detection Patterns
 
-When using manual `Authorization: Bearer ...` header, set `authentication: "none"`. If `genericCredentialType` or `httpHeaderAuth` is set, it can **override** your Bearer token with stale/wrong credentials.
+**WHOOP (OAuth 2.0):** Token has known expiry time. `refresh_token_if_needed()` checks `whoop_token_expires_at`. On any 401 from API: force-refresh + retry once. On refresh failure (400/401/403): clear tokens, raise `TokenExpiredError`.
 
-### WHOOP_CLIENT_ID Truncation
+**FatSecret (OAuth 1.0):** Tokens are permanent but can be revoked. API returns HTTP 200 with error body. Check `_FS_AUTH_ERROR_CODES` in response. On auth error: clear tokens, raise `FatSecretAuthError`, notify user via Telegram.
 
-The WHOOP client ID in n8n environment variables was truncated (missing last 2 chars). Always verify the full `WHOOP_CLIENT_ID` value from `.env` matches what's configured in Dokploy/n8n environment settings.
+### Expired Token User Notification
 
-### n8n IF Node for DateTime Comparison
-
-- Use `"operation": "before"` (not `"beforeOrEqual"` - it doesn't exist)
-- Do NOT use `"singleValue": true` on binary operators like "exists"
-- Add `"version": 2` in conditions options for v2.3 IF nodes
-
-### n8n Code Node - Empty Records Cause SQL Syntax Errors
-
-**Bug found 2026-02-24:** When WHOOP API returns no records (`records: []`), Process nodes (Workouts/Recovery/Sleep) did `return item;` which passed the raw API response to Store nodes. The SQL template resolved `{{ $json.user_id }}` to empty, producing `VALUES (, '...'` — a syntax error near `,`.
-
-**Fix:** Change `return item;` to `return [];` when `!records.length`. Returning an empty array means no items flow to the Store node, so the SQL never executes.
-
-```javascript
-// WRONG - passes raw API response to next node
-if (!records.length) return item;
-
-// CORRECT - drops the item, Store node won't execute
-if (!records.length) return [];
+Both `handle_message` and `handle_sync` in `telegram_bot.py` check `expired_services` list from `get_today_stats()` and append reconnect hints:
 ```
-
-**Applied to:** `Process Workouts`, `Process Recovery`, `Process Sleep` in WHOOP Data Sync workflow (`nAjGDfKdddSDH2MD`).
-
----
-
-## 7. Workflow Architecture Notes
-
-### WHOOP OAuth Callback Flow
-
-```
-Webhook (GET /whoop/callback)
-  -> Validate Params (code exists?)
-    -> YES: Exchange Code for Token (POST /oauth/oauth2/token)
-      -> Fetch Recovery for User ID (GET /developer/v2/recovery?limit=1)
-        -> Store Tokens in DB (UPDATE users SET ... WHERE telegram_user_id = state)
-          -> Respond Success (HTML page)
-    -> NO: Respond Error (HTML page)
-```
-
-Key: The `state` parameter in OAuth URL carries the Telegram user ID, used to match the DB record.
-
-### WHOOP Data Sync Flow
-
-```
-Schedule Trigger (every 1 hour)
-  -> Get WHOOP Users (SELECT users with tokens)
-    -> Token Expired? (whoop_token_expires_at < now)
-      -> YES: Refresh Token -> Update Tokens in DB -> Merge Token Data
-      -> NO: Merge Token Data
-        -> Parallel: Fetch Workouts / Fetch Recovery / Fetch Sleep
-          -> Process (Code nodes) -> Store (PostgreSQL UPSERT with ON CONFLICT)
+🔑 Сесія закінчилась, потрібно перепідключити:
+  ⌚ WHOOP → /connect_whoop
+  🥗 FatSecret → /connect_fatsecret
 ```
 
 ---
 
-## 8. Files Reference
+## 7. Files Reference
 
 | File | Purpose |
 |------|---------|
-| `database/init-db.sh` | DB initialization script (Docker psql fallback) |
-| `database/migrations/001_initial_schema.sql` | UUID-based schema (NOT applied to prod) |
-| `database/migrations/002_health_tracker_schema.sql` | ALTER TABLE migration (applied to prod) |
-| `n8n/workflows/whoop-oauth-callback.json` | Local copy of OAuth workflow (may be outdated) |
-| `.env` | Environment variables (DB, WHOOP, Telegram, OpenAI) |
-| `.mcp.json` | MCP server configs (n8n, Dokploy, Chrome DevTools) |
+| `app/main.py` | FastAPI app entrypoint, lifespan management |
+| `app/config.py` | Settings from environment variables |
+| `app/database.py` | asyncpg PostgreSQL connection pool |
+| `app/scheduler.py` | APScheduler periodic job configuration |
+| `app/services/telegram_bot.py` | All bot handlers and user-facing messages |
+| `app/services/ai_assistant.py` | GPT integration, calorie stats, conversation context |
+| `app/services/whoop_sync.py` | WHOOP OAuth 2.0, data sync, token management |
+| `app/services/fatsecret_api.py` | FatSecret API, diary sync, token health check |
+| `app/services/fatsecret_auth.py` | OAuth 1.0 HMAC-SHA1 request signing |
+| `app/services/briefings.py` | Morning/evening scheduled messages |
+| `app/routers/whoop.py` | `/whoop/callback` OAuth flow |
+| `app/routers/fatsecret.py` | `/fatsecret/connect`, `/fatsecret/callback` |
+| `app/routers/utils.py` | `/ip` health check |
+| `database/init-db.sh` | DB initialization script |
+| `database/migrations/002_health_tracker_schema.sql` | Production schema migration |
+| `.env` | Environment variables (DB, WHOOP, FatSecret, Telegram, OpenAI) |
 
 ---
 
-## 9. TODO / Known Issues
-
-### IMMEDIATE - Next Session (after 24h IP whitelist propagation)
-
-- [ ] **Retry FatSecret OAuth1 Connect** - Go to n8n Credentials -> "FatSecret OAuth1" -> click "Connect". IP `84.54.23.99` should be whitelisted by then
-- [ ] **Test food diary fetch** - Once OAuth1 connected, activate `FatSecret Food Diary` workflow (`5HazDbwcUsZPvXzS`) and test via `/webhook/fatsecret/diary`
-- [ ] **Build FatSecret diary sync to DB** - After OAuth works, create scheduled workflow to sync food diary into `food_entries` table
-- [ ] **Cleanup unused workflows** - Delete or archive `FatSecret OAuth Connect` (`5W40Z9r0cn5Z5Nyx`) and `FatSecret OAuth Callback` (`2kyFWt88FfOt14mw`) - they use `require('crypto')` which is blocked
+## 8. TODO / Known Issues
 
 ### BACKLOG
 
-- [ ] **Update local JSON workflow files** in `n8n/workflows/` to match deployed n8n versions
-- [ ] **Fix `docs/en/architecture.md`** - says "UUID for primary keys" but actual DB uses INTEGER
-- [ ] **Fix `docs/en/api-integration.md`** - remove `read:cycles` from scopes list (invalid), add FatSecret OAuth 1.0 vs 2.0 distinction
-- [ ] **WHOOP OAuth uses webhook-test URL** (`/webhook-test/whoop/callback`) - for production, change to `/webhook/whoop/callback`
-- [ ] **SQL injection risk** in n8n Store Tokens query - uses string interpolation for tokens
-- [ ] **Verify WHOOP_CLIENT_ID** in n8n/Dokploy environment is not truncated
-- [ ] **WHOOP Data Sync hourly interval** vs 1-hour token expiry - race condition
-- [ ] **n8n Code nodes cannot `require('crypto')`** - any future HMAC/signing must use n8n built-in credential types or Execute Command node
+- [ ] **Token encryption** — WHOOP/FatSecret tokens stored as plain text in DB
+- [ ] **BMR in calorie balance** — Add Mifflin-St Jeor formula for basal metabolic rate
+- [ ] **Fix `docs/en/api-integration.md`** — remove `read:cycles` from scopes, add FatSecret OAuth 1.0 vs 2.0 distinction
+- [ ] **WHOOP steps via API** — Monitor WHOOP Developer API for steps endpoint (not available as of 2026-02-25)
+- [ ] **Local Ukrainian food database** — Fallback for when FatSecret doesn't have Ukrainian foods
 
 ---
 
-## 10. n8n to Python Migration (2026-02-24)
+## 9. Migration History (2026-02-24)
 
-The n8n workflows have been replaced by a single FastAPI Python application.
+All 7 n8n workflows were migrated to a single FastAPI Python application and the n8n workflows were deleted from the server.
 
-### Workflow to Endpoint Mapping
+### Workflow to Python Mapping
 
-| n8n Workflow | n8n ID | Python Equivalent |
-|---|---|---|
-| WHOOP Data Sync | nAjGDfKdddSDH2MD | `app/services/whoop_sync.py` (APScheduler hourly) |
-| WHOOP OAuth Callback | sWOs9ycgABYKCQ8g | `GET /whoop/callback` |
-| FatSecret Food Search | qTHRcgiqFx9SqTNm | `GET /food/search?q=` |
-| FatSecret OAuth Connect | 5W40Z9r0cn5Z5Nyx | `GET /fatsecret/connect?state=` (FIXED) |
-| FatSecret OAuth Callback | 2kyFWt88FfOt14mw | `GET /fatsecret/callback` (FIXED) |
-| FatSecret Food Diary | 5HazDbwcUsZPvXzS | `GET /fatsecret/diary?user_id=` (IMPLEMENTED) |
-| IP Check | g3IFs0z6mPYtwPI9 | `GET /ip-check` |
-
-### New Endpoints
-
-| Endpoint | Purpose |
+| Former n8n Workflow | Python Equivalent |
 |---|---|
-| `GET /health` | Dokploy health check |
-| `GET /food/search?q=` | FatSecret public food search |
-| `GET /fatsecret/connect?state=` | FatSecret OAuth 1.0 initiation |
-| `GET /fatsecret/callback` | FatSecret OAuth 1.0 completion |
-| `GET /fatsecret/diary?user_id=` | FatSecret user food diary |
-| `GET /whoop/callback` | WHOOP OAuth 2.0 callback |
-| `GET /ip-check` | Server public IP check |
+| WHOOP Data Sync | `app/services/whoop_sync.py` (APScheduler hourly) |
+| WHOOP OAuth Callback | `app/routers/whoop.py` → `GET /whoop/callback` |
+| FatSecret Food Search | `app/services/fatsecret_api.py` → `search_food()` |
+| FatSecret OAuth Connect | `app/routers/fatsecret.py` → `GET /fatsecret/connect` |
+| FatSecret OAuth Callback | `app/routers/fatsecret.py` → `GET /fatsecret/callback` |
+| FatSecret Food Diary | `app/services/fatsecret_api.py` → `fetch_food_diary()` |
+| IP Check | `app/routers/utils.py` → `GET /ip` |
 
 ### Deployment
 
-Docker image: `health-tracker`, deployed on Dokploy replacing n8n container.
+Docker image: `health-tracker`, deployed on Dokploy.
 
 ```bash
 docker build -t health-tracker .
