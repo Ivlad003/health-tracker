@@ -375,3 +375,45 @@ async def sync_whoop_data():
             continue
 
     logger.info("WHOOP data sync complete")
+
+
+async def refresh_whoop_tokens():
+    """Proactively refresh WHOOP tokens every 30 min to keep them fresh."""
+    logger.info("Starting WHOOP token refresh")
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, telegram_user_id, whoop_access_token,
+                  whoop_refresh_token, whoop_token_expires_at
+           FROM users
+           WHERE whoop_access_token IS NOT NULL
+                 AND whoop_refresh_token IS NOT NULL
+                 AND whoop_refresh_token != ''"""
+    )
+
+    if not rows:
+        return
+
+    refreshed = 0
+    for row in rows:
+        user = dict(row)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                await refresh_token_if_needed(user, client, pool, force=True)
+            refreshed += 1
+        except TokenExpiredError:
+            logger.warning("WHOOP token expired for user_id=%s during refresh", user["id"])
+            try:
+                from app.services.telegram_bot import send_message
+                await send_message(
+                    user["telegram_user_id"],
+                    "⌚ WHOOP сесія закінчилась.\n"
+                    "\n"
+                    "🔑 Потрібно перепідключити → /connect_whoop",
+                )
+            except Exception:
+                logger.warning("Failed to notify user_id=%s about WHOOP expiry", user["id"])
+        except Exception:
+            logger.exception("Failed to refresh WHOOP token for user_id=%s", user["id"])
+
+    logger.info("WHOOP token refresh complete: %d/%d refreshed", refreshed, len(rows))
