@@ -230,12 +230,20 @@ async def fetch_whoop_context(access_token: str) -> dict:
     """Fetch ALL WHOOP data directly from API for real-time GPT context.
 
     Fetches cycle, body measurement, workouts, recovery, and sleep in parallel.
-    Returns pre-formatted context strings ready for GPT.
+    Uses timezone-aware "today" filtering so data matches user's current day.
     """
     from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    user_tz = ZoneInfo("Europe/Kyiv")
+    today_local = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc = today_local.astimezone(timezone.utc).isoformat()
+    # Sleep started yesterday evening, need wider window
+    yesterday_evening = (today_local - timedelta(hours=12)).astimezone(timezone.utc).isoformat()
+    # Cycle needs 48h for calorie estimation from last SCORED cycle
+    start_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 
     headers = {"Authorization": f"Bearer {access_token}"}
-    start_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp = (
@@ -245,11 +253,11 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 client.get(f"{WHOOP_API_BASE}/body_measurement", headers=headers,
                            params={"limit": "1"}),
                 client.get(f"{WHOOP_API_BASE}/activity/workout", headers=headers,
-                           params={"limit": "5", "start": start_48h}),
+                           params={"limit": "10", "start": today_utc}),
                 client.get(f"{WHOOP_API_BASE}/recovery", headers=headers,
-                           params={"limit": "5", "start": start_48h}),
+                           params={"limit": "5", "start": today_utc}),
                 client.get(f"{WHOOP_API_BASE}/activity/sleep", headers=headers,
-                           params={"limit": "5", "start": start_48h}),
+                           params={"limit": "3", "start": yesterday_evening}),
             )
         )
 
@@ -288,7 +296,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
             if max_hr:
                 body_info += f", max HR {max_hr} bpm"
 
-    # --- Workouts ---
+    # --- Workouts (today only — filtered by API start=today_utc) ---
     workout_records = workout_resp.json().get("records", [])
     workout_count = len(workout_records)
     activities_info = ""
@@ -301,12 +309,11 @@ async def fetch_whoop_context(access_token: str) -> dict:
             s = round(ws.get("strain", 0) or 0, 1)
             avg_hr = round(ws.get("average_heart_rate", 0) or 0)
             max_hr_w = round(ws.get("max_heart_rate", 0) or 0)
-            started = w.get("start", "")[:16].replace("T", " ")
             parts.append(
                 f"{sport} ({cal} kcal, strain {s}, "
-                f"avg HR {avg_hr}, max HR {max_hr_w}, {started})"
+                f"avg HR {avg_hr}, max HR {max_hr_w})"
             )
-        activities_info = "Recent workouts: " + "; ".join(parts)
+        activities_info = "Today's workouts: " + "; ".join(parts)
 
     # --- Recovery ---
     recovery_records = recovery_resp.json().get("records", [])
@@ -325,74 +332,60 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 recovery_info += f", skin temp {rs['skin_temp_celsius']}°C"
             break
 
-    # --- Sleep ---
+    # --- Sleep (pick the sleep that ended today = woke up today) ---
     sleep_records = sleep_resp.json().get("records", [])
     sleep_info = ""
+    today_start_utc = datetime.fromisoformat(today_utc)
     for s in sleep_records:
-        ss = s.get("score", {})
-        stages = (ss or {}).get("stage_summary", {})
-        if stages and stages.get("total_in_bed_time_milli"):
-            total_h = round(stages["total_in_bed_time_milli"] / 3600000, 1)
-            rem_h = round((stages.get("total_rem_sleep_time_milli", 0) or 0) / 3600000, 1)
-            deep_h = round((stages.get("total_slow_wave_sleep_time_milli", 0) or 0) / 3600000, 1)
-            light_h = round((stages.get("total_light_sleep_time_milli", 0) or 0) / 3600000, 1)
-            awake_min = round((stages.get("total_awake_time_milli", 0) or 0) / 60000)
-            perf = (ss.get("sleep_performance_percentage", 0) or 0)
-            consistency = (ss.get("sleep_consistency_percentage", 0) or 0)
-            efficiency = (ss.get("sleep_efficiency_percentage", 0) or 0)
-            resp_rate = round((ss.get("respiratory_rate", 0) or 0), 1)
-            sleep_info = (
-                f"Last sleep: {total_h}h total, performance {perf}%, "
-                f"consistency {consistency}%, efficiency {efficiency}%, "
-                f"REM {rem_h}h, deep {deep_h}h, light {light_h}h, "
-                f"awake {awake_min} min, respiratory rate {resp_rate} rpm"
-            )
-            break
+        # Only use sleep that ended today (user woke up today)
+        sleep_end = s.get("end")
+        if sleep_end and _parse_dt(sleep_end) >= today_start_utc:
+            ss = s.get("score", {})
+            stages = (ss or {}).get("stage_summary", {})
+            if stages and stages.get("total_in_bed_time_milli"):
+                total_h = round(stages["total_in_bed_time_milli"] / 3600000, 1)
+                rem_h = round((stages.get("total_rem_sleep_time_milli", 0) or 0) / 3600000, 1)
+                deep_h = round((stages.get("total_slow_wave_sleep_time_milli", 0) or 0) / 3600000, 1)
+                light_h = round((stages.get("total_light_sleep_time_milli", 0) or 0) / 3600000, 1)
+                awake_min = round((stages.get("total_awake_time_milli", 0) or 0) / 60000)
+                perf = (ss.get("sleep_performance_percentage", 0) or 0)
+                consistency = (ss.get("sleep_consistency_percentage", 0) or 0)
+                efficiency = (ss.get("sleep_efficiency_percentage", 0) or 0)
+                resp_rate = round((ss.get("respiratory_rate", 0) or 0), 1)
+                sleep_info = (
+                    f"Last sleep: {total_h}h total, performance {perf}%, "
+                    f"consistency {consistency}%, efficiency {efficiency}%, "
+                    f"REM {rem_h}h, deep {deep_h}h, light {light_h}h, "
+                    f"awake {awake_min} min, respiratory rate {resp_rate} rpm"
+                )
+                break
 
     # --- Real-time calorie estimate for in-progress cycles ---
-    # When today's cycle is PENDING_SCORE (not yet completed), estimate calories
-    # using the last scored cycle's hourly burn rate + today's actual workouts.
+    # When today's cycle is PENDING_SCORE, estimate calories using the last
+    # scored cycle's hourly burn rate * hours since wake-up.
     if cycle_score_state == "PENDING_SCORE" and scored_cycle and calories_out > 0:
         cycle_start = _parse_dt(scored_cycle["start"])
         cycle_end = _parse_dt(scored_cycle["end"])
         cycle_hours = max((cycle_end - cycle_start).total_seconds() / 3600, 1)
+        hourly_rate = calories_out / cycle_hours
 
-        # Separate base metabolism from workout calories in the scored cycle
-        scored_total = calories_out
-        scored_workout_cals = 0
-        for w in workout_records:
-            w_start = _parse_dt(w["start"])
-            if cycle_start <= w_start <= cycle_end:
-                ws = w.get("score", {}) or {}
-                scored_workout_cals += round((ws.get("kilojoule", 0) or 0) / 4.184)
-
-        base_rate_per_hour = max(0, (scored_total - scored_workout_cals) / cycle_hours)
-
-        # Today's workout calories (after the scored cycle ended)
-        today_workout_cals = 0
-        for w in workout_records:
-            w_start = _parse_dt(w["start"])
-            if w_start > cycle_end:
-                ws = w.get("score", {}) or {}
-                today_workout_cals += round((ws.get("kilojoule", 0) or 0) / 4.184)
-
-        # Wake-up time from latest sleep
+        # Wake-up time from today's sleep (ended today)
         wake_time = None
         for s in sleep_records:
-            if s.get("end"):
-                wake_time = _parse_dt(s["end"])
+            sleep_end = s.get("end")
+            if sleep_end and _parse_dt(sleep_end) >= today_start_utc:
+                wake_time = _parse_dt(sleep_end)
                 break
 
         now = datetime.now(timezone.utc)
         if wake_time and wake_time < now:
             hours_since_wake = (now - wake_time).total_seconds() / 3600
-            calories_out = round(base_rate_per_hour * hours_since_wake) + today_workout_cals
+            calories_out = round(hourly_rate * hours_since_wake)
             cycle_score_state = "ESTIMATED"
 
             logger.info(
-                "WHOOP estimated calories: base_rate=%.1f/h, hours_awake=%.1f, "
-                "workout_cals=%d, total=%d",
-                base_rate_per_hour, hours_since_wake, today_workout_cals, calories_out,
+                "WHOOP estimated calories: rate=%.1f/h, hours_awake=%.1f, total=%d",
+                hourly_rate, hours_since_wake, calories_out,
             )
 
     logger.info(
