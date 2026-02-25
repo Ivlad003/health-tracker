@@ -51,7 +51,11 @@ async def whoop_callback(
             )
             token_resp.raise_for_status()
             tokens = token_resp.json()
-            logger.info("WHOOP token response keys: %s", list(tokens.keys()))
+            logger.info(
+                "WHOOP token response: keys=%s expires_in=%s has_refresh=%s",
+                list(tokens.keys()), tokens.get("expires_in"),
+                bool(tokens.get("refresh_token")),
+            )
 
             # Fetch recovery to get whoop_user_id (profile endpoint unavailable)
             recovery_resp = await client.get(
