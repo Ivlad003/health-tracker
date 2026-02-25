@@ -57,13 +57,28 @@ def _build_context_messages(
     fs_meals = user_data.get("today_fatsecret_meals", "")
     calories_in = user_data.get("today_calories_in", 0)
     calories_out = user_data.get("today_calories_out", 0)
+    cycle_state = user_data.get("cycle_score_state", "no_data")
+
+    if cycle_state == "PENDING_SCORE" and calories_out > 0:
+        calories_label = (
+            f"Last completed WHOOP cycle calories burned: {calories_out} kcal "
+            f"(today's cycle still in progress — final number updating in WHOOP app). "
+        )
+    elif calories_out > 0:
+        calories_label = f"Today's calories burned (WHOOP): {calories_out} kcal. "
+    else:
+        calories_label = (
+            "WHOOP calorie data: today's cycle is still in progress, "
+            "no completed cycle data available yet. "
+        )
+
     data_context = (
         f"Current local time (Europe/Kyiv): {local_now.strftime('%Y-%m-%d %H:%M')}. "
         f"User calorie goal: {calorie_goal} kcal. "
         f"Today's calories eaten: {calories_in} kcal. "
-        f"Today's calories burned (WHOOP): {calories_out} kcal "
-        f"(daily strain: {user_data.get('today_strain', 0)}, "
-        f"{user_data.get('today_workout_count', 0)} tracked workouts). "
+        f"{calories_label}"
+        f"Daily strain: {user_data.get('today_strain', 0)}, "
+        f"{user_data.get('today_workout_count', 0)} tracked workouts. "
         f"IMPORTANT: Use ONLY these exact numbers when answering about calories. "
         f"Do NOT add or recalculate — these are already the correct totals."
     )
@@ -214,6 +229,7 @@ async def get_today_stats(user_id: int) -> dict:
             logger.exception("Failed to fetch WHOOP daily cycle for user_id=%s", user_id)
 
     # Use cycle data for total daily calories/strain, fall back to workout data
+    cycle_score_state = daily_cycle.get("score_state", "no_data")
     calories_out = daily_cycle["calories"] or round(workout_calories)
     today_strain = daily_cycle["strain"] or workout_strain
 
@@ -312,6 +328,7 @@ async def get_today_stats(user_id: int) -> dict:
         "today_calories_out": round(calories_out),
         "today_strain": today_strain,
         "today_workout_count": workout_count,
+        "cycle_score_state": cycle_score_state,
         "whoop_sleep": sleep_info,
         "whoop_recovery": recovery_info,
         "whoop_activities": activities_info,

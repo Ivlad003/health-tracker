@@ -250,34 +250,47 @@ async def fetch_body_measurement(access_token: str) -> dict:
 
 
 async def fetch_daily_cycle(access_token: str) -> dict:
-    """Fetch today's WHOOP cycle (daily strain + total calories burned)."""
+    """Fetch WHOOP cycle data: use latest SCORED cycle.
+
+    WHOOP cycles only have calorie/strain data when score_state is "SCORED"
+    (cycle completed). In-progress cycles have PENDING_SCORE with null score.
+    We fetch recent cycles and pick the last scored one.
+    """
     from datetime import timedelta
 
-    start = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
             f"{WHOOP_API_BASE}/cycle",
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"limit": "1", "start": start},
+            params={"limit": "5", "start": start},
         )
         resp.raise_for_status()
         data = resp.json()
 
     records = data.get("records", [])
+    empty = {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0, "score_state": "no_data"}
     if not records:
-        return {"strain": 0, "calories": 0, "avg_hr": 0, "max_hr": 0}
+        return empty
 
-    latest = records[0]
-    score = latest.get("score", {}) or {}
-    kilojoules = score.get("kilojoule", 0) or 0
+    latest_state = records[0].get("score_state", "PENDING_SCORE")
 
-    return {
-        "strain": round(score.get("strain", 0) or 0, 1),
-        "calories": round(kilojoules / 4.184),
-        "avg_hr": round(score.get("average_heart_rate", 0) or 0),
-        "max_hr": round(score.get("max_heart_rate", 0) or 0),
-    }
+    # Find the most recent SCORED cycle
+    for record in records:
+        if record.get("score_state") == "SCORED":
+            score = record.get("score", {}) or {}
+            kilojoules = score.get("kilojoule", 0) or 0
+            return {
+                "strain": round(score.get("strain", 0) or 0, 1),
+                "calories": round(kilojoules / 4.184),
+                "avg_hr": round(score.get("average_heart_rate", 0) or 0),
+                "max_hr": round(score.get("max_heart_rate", 0) or 0),
+                "score_state": latest_state,
+            }
+
+    logger.info("WHOOP: no SCORED cycles in last 48h, all are %s", latest_state)
+    return {**empty, "score_state": latest_state}
 
 
 async def _fetch_whoop_data(client: httpx.AsyncClient, access_token: str, lookback_hours: int):
