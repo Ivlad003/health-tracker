@@ -57,35 +57,47 @@ def _build_context_messages(
     fs_meals = user_data.get("today_fatsecret_meals", "")
     calories_in = user_data.get("today_calories_in", 0)
     calories_out = user_data.get("today_calories_out", 0)
+    calories_source = user_data.get("calories_source", "bot")
     cycle_state = user_data.get("cycle_score_state", "no_data")
 
+    # Eaten calories label with source
+    source_label = "FatSecret" if calories_source == "fatsecret" else "bot entries"
+    eaten_label = f"Today's calories eaten (source: {source_label}): {calories_in} kcal. "
+
+    # Burned calories label
     if cycle_state == "ESTIMATED" and calories_out > 0:
-        calories_label = (
-            f"Estimated calories burned today so far: ~{calories_out} kcal "
-            f"(real-time estimate based on your metabolism + today's workouts). "
+        burned_label = (
+            f"Estimated calories burned today so far (WHOOP): ~{calories_out} kcal "
+            f"(real-time estimate based on metabolism + workouts). "
         )
     elif cycle_state == "PENDING_SCORE" and calories_out > 0:
-        calories_label = (
+        burned_label = (
             f"Last completed WHOOP cycle calories burned: {calories_out} kcal "
             f"(today's cycle still in progress). "
         )
     elif calories_out > 0:
-        calories_label = f"Today's calories burned (WHOOP): {calories_out} kcal. "
+        burned_label = f"Today's calories burned (WHOOP): {calories_out} kcal. "
     else:
-        calories_label = (
-            "WHOOP calorie data: today's cycle is still in progress, "
-            "no completed cycle data available yet. "
+        burned_label = (
+            "WHOOP calorie burn data: today's cycle still in progress, "
+            "no completed data yet. "
         )
+
+    # Calorie balance
+    balance = calories_in - calories_out
+    balance_label = f"Calorie balance: {calories_in} eaten - {calories_out} burned = {balance} net. "
 
     data_context = (
         f"Current local time (Europe/Kyiv): {local_now.strftime('%Y-%m-%d %H:%M')}. "
         f"User calorie goal: {calorie_goal} kcal. "
-        f"Today's calories eaten: {calories_in} kcal. "
-        f"{calories_label}"
+        f"{eaten_label}"
+        f"{burned_label}"
+        f"{balance_label}"
         f"Daily strain: {user_data.get('today_strain', 0)}, "
         f"{user_data.get('today_workout_count', 0)} tracked workouts. "
         f"IMPORTANT: Use ONLY these exact numbers when answering about calories. "
-        f"Do NOT add or recalculate — these are already the correct totals."
+        f"Do NOT add or recalculate — these are already the correct totals. "
+        f"When user asks about calories, ALWAYS mention both eaten AND burned."
     )
     if fs_meals:
         data_context += f" FatSecret meals today: {fs_meals}."
@@ -111,21 +123,10 @@ def _build_context_messages(
 
 
 async def get_today_stats(user_id: int) -> dict:
-    """Fetch today's calorie stats: bot-logged food + FatSecret diary + WHOOP activity."""
+    """Fetch today's stats: FatSecret diary (live) + WHOOP data (live). No DB reads."""
     pool = await get_pool()
 
-    # Calories from bot-logged food_entries
-    row = await pool.fetchrow(
-        """SELECT COALESCE(SUM(fe.calories), 0) AS today_calories_in
-           FROM food_entries fe
-           WHERE fe.user_id = $1
-             AND fe.logged_at >= CURRENT_DATE
-             AND fe.logged_at < CURRENT_DATE + INTERVAL '1 day'""",
-        user_id,
-    )
-    bot_calories = float(row["today_calories_in"]) if row else 0
-
-    # Calories from FatSecret diary (if connected)
+    # Calories eaten from FatSecret diary (live API, source of truth)
     fatsecret_calories = 0.0
     fatsecret_meals = ""
     fatsecret_ok = False
@@ -213,16 +214,13 @@ async def get_today_stats(user_id: int) -> dict:
         except Exception:
             logger.exception("Failed to fetch WHOOP data for user_id=%s", user_id)
 
-    # When FatSecret is connected and working, it's the source of truth
-    # (bot entries are synced there, so don't double-count).
-    # Only use bot_calories as fallback when FatSecret is unavailable.
-    if fatsecret_ok:
-        total_in = round(fatsecret_calories)
-    else:
-        total_in = round(bot_calories)
+    # FatSecret is the sole source of truth for eaten calories (live API).
+    total_in = round(fatsecret_calories) if fatsecret_ok else 0
+    calories_source = "fatsecret" if fatsecret_ok else "none"
 
     return {
         "today_calories_in": total_in,
+        "calories_source": calories_source,
         "today_fatsecret_meals": fatsecret_meals,
         "today_calories_out": whoop["calories_out"],
         "today_strain": whoop["strain"],
