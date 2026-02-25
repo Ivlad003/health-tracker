@@ -324,14 +324,17 @@ async def fetch_whoop_context(access_token: str) -> dict:
     # --- Recovery (most recent scored, API returns newest first) ---
     recovery_records = recovery_resp.json().get("records", [])
     recovery_info = ""
-    logger.info(
-        "WHOOP recovery records: %d total, created_at=%s",
-        len(recovery_records),
-        [r.get("created_at", "?")[:19] for r in recovery_records[:3]],
-    )
-    for r in recovery_records:
-        rs = r.get("score", {})
-        if rs and rs.get("recovery_score") is not None:
+    for i, r in enumerate(recovery_records):
+        rs = r.get("score")
+        score_state = r.get("score_state", "?")
+        rec_score = rs.get("recovery_score") if rs else None
+        logger.info(
+            "WHOOP recovery[%d]: cycle_id=%s score_state=%s recovery=%s created=%s",
+            i, r.get("cycle_id", "?"), score_state, rec_score,
+            r.get("created_at", "?")[:19],
+        )
+        if rs and rec_score is not None:
+            logger.info("WHOOP recovery selected: [%d] recovery=%s%%", i, rec_score)
             recovery_info = (
                 f"Recovery: {rs['recovery_score']}%, "
                 f"resting HR {rs.get('resting_heart_rate', 0)} bpm, "
@@ -347,11 +350,18 @@ async def fetch_whoop_context(access_token: str) -> dict:
     sleep_records = sleep_resp.json().get("records", [])
     sleep_info = ""
     today_start_utc = datetime.fromisoformat(today_utc)
-    logger.info(
-        "WHOOP sleep records: %d total, start/end=%s",
-        len(sleep_records),
-        [(s.get("start", "?")[:19], s.get("end", "?")[:19]) for s in sleep_records[:3]],
-    )
+    for i, s in enumerate(sleep_records):
+        ss_state = s.get("score_state", "?")
+        ss = s.get("score", {}) or {}
+        perf = ss.get("sleep_performance_percentage", "?")
+        stages = ss.get("stage_summary", {}) or {}
+        total_ms = stages.get("total_in_bed_time_milli", 0) or 0
+        total_h = round(total_ms / 3600000, 1) if total_ms else 0
+        logger.info(
+            "WHOOP sleep[%d]: id=%s state=%s perf=%s total=%.1fh start=%s end=%s",
+            i, s.get("id", "?"), ss_state, perf, total_h,
+            s.get("start", "?")[:19], s.get("end", "?")[:19],
+        )
     for s in sleep_records:
         # Only use sleep that ended today (user woke up today)
         sleep_end = s.get("end")
@@ -374,6 +384,8 @@ async def fetch_whoop_context(access_token: str) -> dict:
                     f"REM {rem_h}h, deep {deep_h}h, light {light_h}h, "
                     f"awake {awake_min} min, respiratory rate {resp_rate} rpm"
                 )
+                logger.info("WHOOP sleep selected: id=%s %.1fh perf=%s%% end=%s",
+                            s.get("id", "?"), total_h, perf, sleep_end[:19])
                 break
 
     # --- Real-time calorie estimate for in-progress cycles ---
