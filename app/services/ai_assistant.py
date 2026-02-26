@@ -278,7 +278,25 @@ async def get_today_stats(user_id: int) -> dict:
                         token = await refresh_token_if_needed(
                             dict(fresh_user), client, pool, force=True,
                         )
-                        whoop = await fetch_whoop_context(token)
+                        try:
+                            whoop = await fetch_whoop_context(token)
+                        except httpx.HTTPStatusError as e2:
+                            if e2.response.status_code == 401:
+                                logger.warning(
+                                    "WHOOP API 401 after refresh for user_id=%s, "
+                                    "clearing tokens", user_id,
+                                )
+                                await pool.execute(
+                                    """UPDATE users
+                                       SET whoop_access_token = NULL,
+                                           whoop_refresh_token = NULL,
+                                           whoop_token_expires_at = NULL,
+                                           updated_at = NOW()
+                                       WHERE id = $1""",
+                                    user_id,
+                                )
+                                raise TokenExpiredError("whoop")
+                            raise
                     else:
                         raise
         except TokenExpiredError:

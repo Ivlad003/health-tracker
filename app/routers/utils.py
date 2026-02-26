@@ -71,11 +71,25 @@ async def debug_whoop_raw(
                         user["id"],
                     )
                     if not fresh_user:
-                        return {"error": "WHOOP token expired, reconnect required"}
+                        return {"error": "WHOOP token expired, reconnect via /connect_whoop"}
                     token = await refresh_token_if_needed(
                         dict(fresh_user), client, pool, force=True,
                     )
-                    whoop = await fetch_whoop_context(token)
+                    try:
+                        whoop = await fetch_whoop_context(token)
+                    except httpx.HTTPStatusError as e2:
+                        if e2.response.status_code == 401:
+                            await pool.execute(
+                                """UPDATE users
+                                   SET whoop_access_token = NULL,
+                                       whoop_refresh_token = NULL,
+                                       whoop_token_expires_at = NULL,
+                                       updated_at = NOW()
+                                   WHERE id = $1""",
+                                user["id"],
+                            )
+                            return {"error": "WHOOP token expired after refresh, reconnect via /connect_whoop"}
+                        return {"error": f"WHOOP API error: {e2.response.status_code}"}
                 else:
                     return {"error": f"WHOOP API error: {e.response.status_code}"}
         return {"user_id": user["id"], **whoop}
