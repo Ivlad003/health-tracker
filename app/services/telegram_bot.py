@@ -41,6 +41,18 @@ async def send_message(telegram_user_id: int, text: str) -> None:
     )
 
 
+def _is_pure_gram_serving(desc: str) -> bool:
+    """Check if serving description is a pure gram amount like '100g' or '1 g'."""
+    d = desc.strip().lower()
+    if not d.endswith("g"):
+        return False
+    try:
+        float(d[:-1].strip())
+        return True
+    except ValueError:
+        return False
+
+
 def _parse_fatsecret_description(description: str) -> dict:
     """Parse FatSecret food_description string into numeric values.
 
@@ -140,8 +152,8 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                 food_id = foods[0].get("food_id", "")
                 food_name_fs = foods[0].get("name", name_en)
                 nutrients = _parse_fatsecret_description(foods[0].get("description", ""))
-                serving = nutrients.get("serving_size", 100.0) or 100.0
-                factor = quantity_g / serving
+                desc_serving_size = nutrients.get("serving_size", 100.0) or 100.0
+                factor = quantity_g / desc_serving_size
                 calories = round(nutrients["calories"] * factor, 1)
                 protein = round(nutrients["protein"] * factor, 1)
                 fat = round(nutrients["fat"] * factor, 1)
@@ -155,18 +167,32 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
             try:
                 servings = await get_food_servings(food_id)
                 if servings:
-                    # Find best serving for gram-based entry:
-                    # 1. "1g" serving → number_of_units = exact grams (FatSecret shows "200g")
-                    # 2. Any gram serving (e.g. "100g") → proportional units
-                    # 3. Fallback to first serving
-                    gram_servings = [
+                    # Only use pure gram servings (description like "1g", "100g").
+                    # Never fall back to cups/pieces/oz.
+                    pure_gram = [
                         s for s in servings
-                        if s["metric_serving_unit"] == "g" and s["metric_serving_amount"] > 0
+                        if s["metric_serving_unit"] == "g"
+                        and s["metric_serving_amount"] > 0
+                        and _is_pure_gram_serving(s["description"])
                     ]
-                    serving = next(
-                        (s for s in gram_servings if s["metric_serving_amount"] == 1.0),
-                        gram_servings[0] if gram_servings else servings[0],
+                    # Prefer pure gram servings; fall back to any serving
+                    one_g = next(
+                        (s for s in pure_gram if s["metric_serving_amount"] == 1.0),
+                        None,
                     )
+                    hundred_g = next(
+                        (s for s in pure_gram if s["metric_serving_amount"] == 100.0),
+                        None,
+                    )
+                    if one_g:
+                        serving = one_g
+                    elif hundred_g:
+                        serving = hundred_g
+                    elif pure_gram:
+                        serving = min(pure_gram, key=lambda s: s["metric_serving_amount"])
+                    else:
+                        # No gram serving — use first available, recalc via metric
+                        serving = servings[0]
                     metric_amount = serving["metric_serving_amount"] or 100.0
                     units = quantity_g / metric_amount
                     logger.info(
