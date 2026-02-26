@@ -141,15 +141,23 @@ async def fetch_whoop_context(access_token: str) -> dict:
             )
         )
 
-    for resp in (cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp):
-        resp.raise_for_status()
-
     logger.info("WHOOP API responses: cycle=%d, body=%d, workout=%d, recovery=%d, sleep=%d",
                 cycle_resp.status_code, body_resp.status_code,
                 workout_resp.status_code, recovery_resp.status_code, sleep_resp.status_code)
 
+    # Check if ALL critical endpoints fail with 401 — token is truly invalid
+    critical_statuses = [workout_resp.status_code, recovery_resp.status_code, sleep_resp.status_code]
+    if all(s == 401 for s in critical_statuses):
+        # All endpoints 401 — raise so caller can handle token refresh
+        workout_resp.raise_for_status()
+
+    # Handle individual endpoint failures gracefully
+    for name, resp in [("cycle", cycle_resp), ("body", body_resp)]:
+        if resp.status_code != 200:
+            logger.warning("WHOOP %s endpoint returned %d, skipping", name, resp.status_code)
+
     # --- Cycle (calories + strain) ---
-    cycle_records = cycle_resp.json().get("records", [])
+    cycle_records = cycle_resp.json().get("records", []) if cycle_resp.status_code == 200 else []
     calories_out = 0
     strain = 0.0
     cycle_score_state = "no_data"
@@ -166,7 +174,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 break
 
     # --- Body measurement ---
-    body_records = body_resp.json().get("records", [])
+    body_records = body_resp.json().get("records", []) if body_resp.status_code == 200 else []
     body_info = ""
     if body_records:
         b = body_records[0]
@@ -181,7 +189,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
                 body_info += f", max HR {max_hr} bpm"
 
     # --- Workouts (today only — filtered by API start=today_utc) ---
-    workout_records = workout_resp.json().get("records", [])
+    workout_records = workout_resp.json().get("records", []) if workout_resp.status_code == 200 else []
     workout_count = len(workout_records)
     activities_info = ""
     if workout_records:
@@ -200,7 +208,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
         activities_info = "Today's workouts: " + "; ".join(parts)
 
     # --- Recovery (most recent scored, API returns newest first) ---
-    recovery_records = recovery_resp.json().get("records", [])
+    recovery_records = recovery_resp.json().get("records", []) if recovery_resp.status_code == 200 else []
     recovery_info = ""
     for i, r in enumerate(recovery_records):
         rs = r.get("score")
@@ -225,7 +233,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
             break
 
     # --- Sleep (pick the sleep that ended today = woke up today) ---
-    sleep_records = sleep_resp.json().get("records", [])
+    sleep_records = sleep_resp.json().get("records", []) if sleep_resp.status_code == 200 else []
     sleep_info = ""
     today_start_utc = datetime.fromisoformat(today_utc)
     for i, s in enumerate(sleep_records):
