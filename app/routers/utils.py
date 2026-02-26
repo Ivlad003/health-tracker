@@ -37,6 +37,60 @@ async def debug_stats(
     }
 
 
+@router.get("/debug/whoop-token", summary="Check WHOOP token state without clearing")
+async def debug_whoop_token(
+    telegram_user_id: int = Query(..., description="Telegram user ID"),
+):
+    """Check WHOOP token validity — does NOT clear tokens on failure."""
+    from app.database import get_pool
+
+    pool = await get_pool()
+    user = await pool.fetchrow(
+        """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
+           FROM users WHERE telegram_user_id = $1""",
+        telegram_user_id,
+    )
+    if not user:
+        return {"error": "User not found"}
+
+    has_access = bool(user["whoop_access_token"])
+    has_refresh = bool(user["whoop_refresh_token"])
+    expires = str(user["whoop_token_expires_at"]) if user["whoop_token_expires_at"] else None
+
+    result = {
+        "user_id": user["id"],
+        "has_access_token": has_access,
+        "has_refresh_token": has_refresh,
+        "token_expires_at": expires,
+        "access_token_prefix": user["whoop_access_token"][:20] + "..." if has_access else None,
+    }
+
+    if not has_access:
+        result["status"] = "NO_TOKEN"
+        return result
+
+    # Try one simple API call without clearing
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.prod.whoop.com/developer/v2/body_measurement",
+                headers={"Authorization": f"Bearer {user['whoop_access_token']}"},
+                params={"limit": "1"},
+            )
+            result["api_status"] = resp.status_code
+            if resp.status_code == 200:
+                result["status"] = "OK"
+                result["body_data"] = resp.json()
+            else:
+                result["status"] = "API_ERROR"
+                result["api_body"] = resp.text[:500]
+    except Exception as e:
+        result["status"] = "NETWORK_ERROR"
+        result["error"] = str(e)
+
+    return result
+
+
 @router.get("/debug/whoop-raw", summary="Raw WHOOP API response for a user")
 async def debug_whoop_raw(
     telegram_user_id: int = Query(..., description="Telegram user ID"),
