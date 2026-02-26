@@ -205,11 +205,22 @@ async def get_today_stats(user_id: int) -> dict:
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code == 401:
                         logger.warning(
-                            "WHOOP API 401 for user_id=%s, force-refreshing token",
+                            "WHOOP API 401 for user_id=%s, re-reading tokens from DB",
                             user_id,
                         )
+                        # Re-fetch fresh tokens from DB (may have been refreshed
+                        # by background job since our initial query)
+                        fresh_user = await pool.fetchrow(
+                            """SELECT id, whoop_access_token, whoop_refresh_token,
+                                      whoop_token_expires_at
+                               FROM users WHERE id = $1
+                                     AND whoop_access_token IS NOT NULL""",
+                            user_id,
+                        )
+                        if not fresh_user:
+                            raise TokenExpiredError("whoop")
                         token = await refresh_token_if_needed(
-                            dict(whoop_user), client, pool, force=True,
+                            dict(fresh_user), client, pool, force=True,
                         )
                         whoop = await fetch_whoop_context(token)
                     else:
