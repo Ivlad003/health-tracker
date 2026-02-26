@@ -556,7 +556,7 @@ HELP_TEXT = (
     "  🥗 FatSecret → /connect_fatsecret\n"
     "  🔄 Синхронізувати → /sync\n"
     "  🏋️ Gym промпт → /gym_prompt\n"
-    "  📓 Щоденник → /journal_time, /journal_off, /journal_on\n"
+    "  📓 Щоденник → /journal, /journal_time, /journal_off, /journal_on\n"
     "\n"
     "⏰ Авто-зведення: 08:00 🌅 та 21:00 🌙 (Київ)\n"
     "\n"
@@ -689,6 +689,32 @@ async def handle_journal_on(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(f"✅ Нагадування увімкнено: 🌅 {t1}  🌙 {t2}")
 
 
+async def handle_journal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /journal command — show recent journal entries."""
+    if not update.message or not update.effective_user:
+        return
+
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    entries = await get_journal_history(user["id"], days=7)
+
+    if not entries:
+        await update.message.reply_text("📓 Щоденник порожній. Просто напиши як справи!")
+        return
+
+    lines = []
+    for e in entries:
+        date_str = e["created_at"].strftime("%d.%m %H:%M")
+        text = e["content"][:100]
+        mood = f" 😊{e['mood_score']}" if e["mood_score"] else ""
+        energy = f" ⚡{e['energy_level']}" if e["energy_level"] else ""
+        tags = ""
+        if e.get("tags"):
+            tags = " " + " ".join(f"#{t}" for t in e["tags"])
+        lines.append(f"  {date_str}{mood}{energy}{tags}\n    {text}")
+
+    await update.message.reply_text("📓 Щоденник (7 днів):\n\n" + "\n\n".join(lines))
+
+
 async def handle_gym_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /gym_prompt command — set persistent gym coaching profile."""
     if not update.message or not update.effective_user:
@@ -785,6 +811,7 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
     _application.add_handler(CommandHandler("gym_prompt", handle_gym_prompt))
+    _application.add_handler(CommandHandler("journal", handle_journal))
     _application.add_handler(CommandHandler("journal_time", handle_journal_time))
     _application.add_handler(CommandHandler("journal_off", handle_journal_off))
     _application.add_handler(CommandHandler("journal_on", handle_journal_on))
@@ -804,6 +831,7 @@ async def start_bot() -> None:
         BotCommand("connect_fatsecret", "Підключити FatSecret"),
         BotCommand("sync", "Синхронізувати дані"),
         BotCommand("gym_prompt", "Налаштувати gym профіль"),
+        BotCommand("journal", "Записи щоденника"),
         BotCommand("journal_time", "Час нагадувань щоденника"),
         BotCommand("journal_off", "Вимкнути нагадування"),
         BotCommand("journal_on", "Увімкнути нагадування"),
