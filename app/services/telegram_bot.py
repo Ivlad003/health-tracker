@@ -600,7 +600,7 @@ async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYP
         f"client_id={settings.whoop_client_id}"
         f"&redirect_uri={settings.whoop_redirect_uri}"
         f"&response_type=code"
-        f"&scope=offline%20read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
+        f"&scope=offline%20read%3Acycles%20read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
         f"&state={telegram_id}"
     )
     await update.message.reply_text(
