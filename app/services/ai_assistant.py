@@ -42,6 +42,15 @@ INTENT DEFINITIONS:
 
 For log_food, also extract:
 - food_items: array of objects with name_en (English), name_original (user's language), quantity_g (grams, estimate if not specified), meal_type.
+- CRITICAL for name_en: This field is used to search FatSecret database. Use the simplest, most generic English food name. Translate the INGREDIENT, not the dish name or cooking method.
+  Examples of CORRECT translations:
+  - "рання картопля" / "піра картоплі" → "potato" (NOT "mashed potato" or "early potato")
+  - "варена курка" → "chicken breast" (NOT "boiled chicken")
+  - "гречка" → "buckwheat" (NOT "buckwheat groats")
+  - "сирники" → "cottage cheese pancakes"
+  - "борщ" → "borscht"
+  - "вівсянка" → "oatmeal"
+  When in doubt, use the base ingredient name (potato, rice, chicken, egg, etc.)
 - IMPORTANT: For log_food response, just confirm what was added (e.g. "Додано 100г рису"). Do NOT include calorie totals or daily summary — the system appends an accurate balance line automatically.
 
 For gym with log action, extract:
