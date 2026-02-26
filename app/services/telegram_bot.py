@@ -177,17 +177,21 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
             try:
                 servings = await get_food_servings(food_id)
                 if servings:
-                    # Only use pure gram servings (description like "1g", "100g").
-                    # Never fall back to cups/pieces/oz.
-                    pure_gram = [
+                    # All gram-based servings (any description)
+                    all_gram = [
                         s for s in servings
                         if s["metric_serving_unit"] == "g"
                         and s["metric_serving_amount"] > 0
-                        and _is_pure_gram_serving(s["description"])
                     ]
-                    # Prefer pure gram servings; fall back to any serving
+                    # Pure gram servings (description like "1g", "100g")
+                    pure_gram = [
+                        s for s in all_gram
+                        if _is_pure_gram_serving(s["description"])
+                    ]
+                    # 1g serving: search ALL gram servings (description irrelevant,
+                    # units = exact grams regardless of what it's called)
                     one_g = next(
-                        (s for s in pure_gram if s["metric_serving_amount"] == 1.0),
+                        (s for s in all_gram if s["metric_serving_amount"] == 1.0),
                         None,
                     )
                     hundred_g = next(
@@ -201,8 +205,18 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                     elif pure_gram:
                         serving = min(pure_gram, key=lambda s: s["metric_serving_amount"])
                     else:
-                        # No gram serving — use first available, recalc via metric
-                        serving = servings[0]
+                        serving = all_gram[0] if all_gram else servings[0]
+                    if not one_g:
+                        logger.warning(
+                            "No 1g serving for food_id=%s, using %s (%.1fg). "
+                            "Available: %s",
+                            food_id, serving["description"],
+                            serving["metric_serving_amount"],
+                            ", ".join(
+                                f"{s['description']}({s['metric_serving_amount']}g)"
+                                for s in servings[:10]
+                            ),
+                        )
                     metric_amount = serving["metric_serving_amount"] or 100.0
                     units = quantity_g / metric_amount
                     logger.info(
