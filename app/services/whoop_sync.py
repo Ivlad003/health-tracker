@@ -218,8 +218,9 @@ async def fetch_whoop_context(access_token: str) -> dict:
         ss = s.get("score", {}) or {}
         perf = ss.get("sleep_performance_percentage", "?")
         stages = ss.get("stage_summary", {}) or {}
-        total_ms = stages.get("total_in_bed_time_milli", 0) or 0
-        total_h = round(total_ms / 3600000, 1) if total_ms else 0
+        in_bed_ms = stages.get("total_in_bed_time_milli", 0) or 0
+        awake_ms_dbg = stages.get("total_awake_time_milli", 0) or 0
+        total_h = round((in_bed_ms - awake_ms_dbg) / 3600000, 1) if in_bed_ms else 0
         logger.info(
             "WHOOP sleep[%d]: id=%s state=%s perf=%s total=%.1fh start=%s end=%s",
             i, s.get("id", "?"), ss_state, perf, total_h,
@@ -232,11 +233,14 @@ async def fetch_whoop_context(access_token: str) -> dict:
             ss = s.get("score", {})
             stages = (ss or {}).get("stage_summary", {})
             if stages and stages.get("total_in_bed_time_milli"):
-                total_h = round(stages["total_in_bed_time_milli"] / 3600000, 1)
+                in_bed_ms = stages["total_in_bed_time_milli"]
+                awake_ms = stages.get("total_awake_time_milli", 0) or 0
+                sleep_ms = in_bed_ms - awake_ms
+                total_h = round(sleep_ms / 3600000, 1)
                 rem_h = round((stages.get("total_rem_sleep_time_milli", 0) or 0) / 3600000, 1)
                 deep_h = round((stages.get("total_slow_wave_sleep_time_milli", 0) or 0) / 3600000, 1)
                 light_h = round((stages.get("total_light_sleep_time_milli", 0) or 0) / 3600000, 1)
-                awake_min = round((stages.get("total_awake_time_milli", 0) or 0) / 60000)
+                awake_min = round(awake_ms / 60000)
                 perf = (ss.get("sleep_performance_percentage", 0) or 0)
                 consistency = (ss.get("sleep_consistency_percentage", 0) or 0)
                 efficiency = (ss.get("sleep_efficiency_percentage", 0) or 0)
