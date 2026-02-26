@@ -125,8 +125,11 @@ async def _ensure_user(telegram_user_id: int, username: str | None) -> dict:
     return {"id": row["id"], "daily_calorie_goal": row["daily_calorie_goal"]}
 
 
-async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
-    """Look up each food item in FatSecret, store in food_entries, sync to FatSecret diary."""
+async def _handle_log_food(user_id: int, food_items: list[dict]) -> dict:
+    """Look up each food item in FatSecret, store in food_entries, sync to FatSecret diary.
+
+    Returns dict with 'items' list and 'fs_connected' flag.
+    """
     pool = await get_pool()
     logged = []
 
@@ -273,9 +276,13 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                 name_en,
             )
 
-        logged.append({"name": name_original, "calories": round(calories)})
+        logged.append({
+            "name": name_original,
+            "calories": round(calories),
+            "synced_to_fs": synced_to_fs,
+        })
 
-    return logged
+    return {"items": logged, "fs_connected": fs_connected}
 
 
 async def _handle_delete_entry(user_id: int) -> str | None:
@@ -328,20 +335,20 @@ async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
     elif action == "last":
         key = gpt_result.get("exercise_key", "")
         if not key:
-            return None
+            return "🏋️ Вкажи вправу. Наприклад: «що робив на жимі?»"
         ex = await get_last_exercise(user_id, key)
         if not ex:
-            return None
+            return f"🏋️ Немає записів для «{key}». Запиши тренування — тоді покажу."
         # GPT already has recent gym context and generated a response
         return None
 
     elif action == "progress":
         key = gpt_result.get("exercise_key", "")
         if not key:
-            return None
+            return "🏋️ Вкажи вправу. Наприклад: «прогрес присідань»"
         history = await get_exercise_progress(user_id, key)
         if not history:
-            return None
+            return f"🏋️ Немає записів для «{key}». Потрібно мінімум 2 тренування для прогресу."
         lines = []
         for entry in history:
             date_str = entry["created_at"].strftime("%d.%m")
@@ -476,7 +483,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if intent == "log_food" and gpt_result["food_items"]:
-            logged = await _handle_log_food(user_id, gpt_result["food_items"])
+            log_result = await _handle_log_food(user_id, gpt_result["food_items"])
+            logged = log_result["items"]
             just_logged_cals = sum(item["calories"] for item in logged)
             stats = await get_today_stats(user_id)
             expired_services = stats.get("expired_services", [])
@@ -484,10 +492,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Add logged calories to compensate.
             total_in = stats["today_calories_in"] + just_logged_cals
             total_out = stats["today_calories_out"]
-            balance_line = f"\n\n📊 {total_in} / {daily_calorie_goal} kcal"
+            src = stats.get("calories_source", "none")
+            src_label = " (FatSecret)" if src == "fatsecret" else ""
+            balance_line = f"\n\n📊 {total_in} / {daily_calorie_goal} kcal{src_label}"
             if total_out > 0:
                 balance_line += f"  🔥 {total_out} спалено"
             response_text += balance_line
+            # Warn if any items failed to sync to FatSecret
+            failed_sync = [i["name"] for i in logged if not i["synced_to_fs"]]
+            if failed_sync and log_result["fs_connected"]:
+                response_text += (
+                    "\n⚠️ Не синхронізовано з FatSecret: "
+                    + ", ".join(failed_sync)
+                )
 
         elif intent == "delete_entry":
             deleted = await _handle_delete_entry(user_id)

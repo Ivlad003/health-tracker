@@ -192,8 +192,19 @@ async def journal_reminders() -> None:
             if not t1_match and not t2_match:
                 continue
 
-            is_morning = t1_match
+            # Prevent duplicate reminders — check if we sent one in last 30 min
             user_id = row["id"]
+            recent = await pool.fetchval(
+                """SELECT COUNT(*) FROM conversation_messages
+                   WHERE user_id = $1 AND role = 'assistant'
+                     AND intent = 'journal_reminder'
+                     AND created_at > NOW() - INTERVAL '30 minutes'""",
+                user_id,
+            )
+            if recent and recent > 0:
+                continue
+
+            is_morning = t1_match
             stats = await get_today_stats(user_id)
 
             if is_morning:
@@ -224,6 +235,12 @@ async def journal_reminders() -> None:
                 text = "\n".join(parts)
 
             await _send_telegram_message(row["telegram_user_id"], text)
+            # Record reminder to prevent duplicates
+            await pool.execute(
+                """INSERT INTO conversation_messages (user_id, role, content, intent)
+                   VALUES ($1, 'assistant', $2, 'journal_reminder')""",
+                user_id, text,
+            )
             sent += 1
             logger.info("Journal reminder sent to user_id=%s (%s)",
                         user_id, "morning" if is_morning else "evening")

@@ -58,7 +58,19 @@ For gym with log action, extract:
 - IMPORTANT: For gym log response, just confirm what was recorded. The system appends previous workout comparison automatically.
 
 For gym with last/progress action, extract:
-- exercise_key: the canonical snake_case name to look up
+- exercise_key: the canonical snake_case name to look up. MUST match the same key used when logging.
+
+CRITICAL: exercise_key must be CONSISTENT. Always map to these canonical forms:
+- "жим" / "жим лежачи" / "bench" → bench_press
+- "жим на похилій" / "incline bench" → incline_bench_press
+- "присідання" / "squat" / "присід" → squat
+- "станова тяга" / "тяга" / "deadlift" → deadlift
+- "жим стоячи" / "армійський жим" / "overhead press" → overhead_press
+- "тяга в нахилі" / "barbell row" → barbell_row
+- "підтягування" / "pull-up" → pull_up
+- "біцепс" / "curls" → bicep_curl
+- "трицепс" / "dips" → tricep_dips
+Use snake_case English. If exercise not in this list, create a logical snake_case key.
 
 For journal with entry action, extract:
 - journal_entry: object with mood_score (1-10, 10=best), energy_level (1-10, 10=highest), tags (array from: stress, energy, social, work, health, gratitude, achievement)
@@ -409,13 +421,29 @@ async def classify_and_respond(
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        logger.error("GPT returned invalid JSON: %s", raw)
-        parsed = {
-            "intent": "general",
-            "food_items": [],
-            "calorie_goal": None,
-            "response": raw,
-        }
+        logger.warning("GPT returned invalid JSON, retrying: %s", raw[:200])
+        # Retry once — ask GPT to fix its own output
+        try:
+            fix_response = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "Fix the following into valid JSON. Return ONLY valid JSON, no explanation."},
+                    {"role": "user", "content": raw},
+                ],
+                temperature=0,
+                max_tokens=1024,
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(fix_response.choices[0].message.content or "{}")
+            logger.info("GPT JSON retry succeeded")
+        except Exception:
+            logger.error("GPT JSON retry also failed: %s", raw[:200])
+            parsed = {
+                "intent": "general",
+                "food_items": [],
+                "calorie_goal": None,
+                "response": "Щось пішло не так з обробкою. Спробуй ще раз.",
+            }
 
     parsed.setdefault("intent", "general")
     parsed.setdefault("food_items", [])
@@ -437,10 +465,13 @@ async def transcribe_voice(file_bytes: bytes, file_name: str = "voice.ogg") -> s
         model="whisper-1",
         file=(file_name, file_bytes),
         prompt=(
-            "Їжа, калорії, грам, грамів, сніданок, обід, вечеря. "
-            "Food logging: grams, breakfast, lunch, dinner, chicken, rice, salad. "
-            "Gym: жим лежачи, присідання, станова тяга, підходи, повторення, кілограм. "
-            "Journal: настрій, самопочуття, енергія, втома, стрес, вдячність."
+            "Їжа: картопля, курка, м'ясо, рис, гречка, вівсянка, яйця, молоко, хліб, "
+            "сирники, борщ, салат, макарони, каша, сир, масло, риба, овочі, фрукти. "
+            "Калорії, грам, грамів, кілограм, сніданок, обід, вечеря, перекус. "
+            "Food: chicken, rice, potato, oatmeal, eggs, bread, pasta, salad, fish. "
+            "Gym: жим лежачи, присідання, станова тяга, підтягування, "
+            "підходи, повторення, кілограм, розминка, тренування. "
+            "Journal: настрій, самопочуття, енергія, втома, стрес, вдячність, сон."
         ),
     )
     return transcript.text

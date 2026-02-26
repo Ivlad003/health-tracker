@@ -40,15 +40,30 @@ async def refresh_token_if_needed(
         return user["whoop_access_token"]
 
     logger.info("Refreshing WHOOP token for user_id=%s", user["id"])
-    resp = await client.post(
-        WHOOP_TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": user["whoop_refresh_token"],
-            "client_id": settings.whoop_client_id,
-            "client_secret": settings.whoop_client_secret,
-        },
-    )
+    resp = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = await client.post(
+                WHOOP_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": user["whoop_refresh_token"],
+                    "client_id": settings.whoop_client_id,
+                    "client_secret": settings.whoop_client_secret,
+                },
+            )
+            break
+        except (httpx.ConnectError, httpx.ReadTimeout) as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(1 * (attempt + 1))
+                logger.warning("WHOOP token refresh retry %d for user_id=%s: %s",
+                               attempt + 1, user["id"], e)
+    if resp is None:
+        logger.error("WHOOP token refresh failed after 3 retries for user_id=%s: %s",
+                      user["id"], last_err)
+        raise last_err
     if resp.status_code in (400, 401, 403):
         logger.error(
             "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
