@@ -150,6 +150,90 @@ async def evening_summary() -> None:
     logger.info("Evening summary complete")
 
 
+async def journal_reminders() -> None:
+    """Send journal reminders to users whose reminder time matches now (±5 min)."""
+    if not settings.telegram_bot_token:
+        return
+
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    logger.info("Starting journal reminders check")
+
+    now_kyiv = datetime.now(ZoneInfo("Europe/Kyiv"))
+    current_time = now_kyiv.time()
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, telegram_user_id, journal_time_1, journal_time_2,
+                  daily_calorie_goal, language
+           FROM users
+           WHERE telegram_user_id IS NOT NULL
+             AND journal_enabled = true"""
+    )
+
+    from app.services.ai_assistant import get_today_stats
+
+    def _time_matches(t, now_t) -> bool:
+        """Check if time t is within ±5 minutes of now_t."""
+        if t is None:
+            return False
+        # Compare as minutes since midnight
+        t_min = t.hour * 60 + t.minute
+        now_min = now_t.hour * 60 + now_t.minute
+        return abs(t_min - now_min) <= 5
+
+    sent = 0
+    for row in rows:
+        try:
+            t1_match = _time_matches(row["journal_time_1"], current_time)
+            t2_match = _time_matches(row["journal_time_2"], current_time)
+
+            if not t1_match and not t2_match:
+                continue
+
+            is_morning = t1_match
+            user_id = row["id"]
+            stats = await get_today_stats(user_id)
+
+            if is_morning:
+                # Morning: sleep + recovery context
+                parts = ["🌅 Доброго ранку!"]
+                if stats.get("whoop_sleep"):
+                    sleep_short = stats["whoop_sleep"].split(",")[0] if stats["whoop_sleep"] else ""
+                    parts.append(f"😴 {sleep_short}")
+                if stats.get("whoop_recovery"):
+                    rec_short = stats["whoop_recovery"].split(",")[0] if stats["whoop_recovery"] else ""
+                    parts.append(f"💚 {rec_short}")
+                parts.append("\nЯк настрій? Які плани на день?")
+                text = "\n".join(parts)
+            else:
+                # Evening: calorie + strain context
+                goal = row["daily_calorie_goal"] or 2000
+                parts = ["🌙 Як пройшов день?"]
+                cal_in = stats.get("today_calories_in", 0)
+                cal_out = stats.get("today_calories_out", 0)
+                if cal_in > 0 or cal_out > 0:
+                    parts.append(f"📊 {cal_in}/{goal} kcal")
+                    if cal_out > 0:
+                        parts[-1] += f", 🔥 {cal_out} спалено"
+                strain = stats.get("today_strain", 0)
+                if strain > 0:
+                    parts.append(f"💪 Strain: {strain}")
+                parts.append("\nОпиши як себе почуваєш.")
+                text = "\n".join(parts)
+
+            await _send_telegram_message(row["telegram_user_id"], text)
+            sent += 1
+            logger.info("Journal reminder sent to user_id=%s (%s)",
+                        user_id, "morning" if is_morning else "evening")
+
+        except Exception:
+            logger.exception("Journal reminder failed for user_id=%s", row.get("id"))
+
+    logger.info("Journal reminders complete: %d sent", sent)
+
+
 async def cleanup_old_conversations() -> None:
     """Delete conversation messages older than 7 days."""
     pool = await get_pool()

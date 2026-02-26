@@ -18,7 +18,7 @@ client = AsyncOpenAI(api_key=settings.openai_api_key)
 SYSTEM_PROMPT = """You are a personal health assistant Telegram bot. You help users track food, monitor activity, and stay healthy.
 
 RULES:
-1. Classify every user message into exactly one intent: log_food, query_data, delete_entry, or general.
+1. Classify every user message into exactly one intent: log_food, query_data, delete_entry, gym, journal, or general.
 2. Respond in the SAME language the user writes in (Ukrainian, English, or mixed).
 3. Be concise, friendly, and use emoji sparingly.
 
@@ -28,20 +28,49 @@ INTENT DEFINITIONS:
   WHOOP data available: sleep (duration, stages, performance), recovery (score, HRV, resting HR, SpO2, skin temp), strain, calories burned, workouts, weight, height, max HR.
   WHOOP data NOT available via API (app-only): steps, HR zones, VO₂ max, stress monitor. If user asks about these, explain they're only visible in the WHOOP app directly.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
+- gym: User describes gym exercises, asks about previous workouts, or asks for exercise progression.
+  gym_action values:
+  - log: User describes exercises done (e.g. "жим лежачи 80кг 3 по 8", "bench press 100kg 4x6 felt heavy")
+  - last: User asks what they did last time for an exercise (e.g. "що робив на жимі?", "last bench press?")
+  - progress: User asks for progression history (e.g. "прогрес присідань", "show deadlift progress")
+- journal: User describes their emotional state, mood, how their day is going, or asks to see journal history/summary.
+  journal_action values:
+  - entry: User writes about their state/mood/day (e.g. "втомився після зустрічей", "чудовий день, все вдалось")
+  - history: User asks to see recent entries (e.g. "покажи щоденник", "що я писав вчора?")
+  - summary: User asks for patterns/analysis (e.g. "як я себе почував цього тижня?", "аналіз настрою")
 - general: Everything else — greetings, setting calorie goal (extract number), health tips, questions about the bot.
 
 For log_food, also extract:
 - food_items: array of objects with name_en (English), name_original (user's language), quantity_g (grams, estimate if not specified), meal_type.
 - IMPORTANT: For log_food response, just confirm what was added (e.g. "Додано 100г рису"). Do NOT include calorie totals or daily summary — the system appends an accurate balance line automatically.
 
+For gym with log action, extract:
+- exercises: array of objects with name_original (user's language), name_en (English), exercise_key (snake_case canonical, e.g. "bench_press", "squat", "deadlift"), weight_kg (number or null), sets (number or null), reps (number or null), rpe (1-10 or null), notes (string or null), set_details (array of {"set": 1, "weight_kg": 80, "reps": 8, "rpe": 8} if user gave per-set detail, else null)
+- IMPORTANT: For gym log response, just confirm what was recorded. The system appends previous workout comparison automatically.
+
+For gym with last/progress action, extract:
+- exercise_key: the canonical snake_case name to look up
+
+For journal with entry action, extract:
+- journal_entry: object with mood_score (1-10, 10=best), energy_level (1-10, 10=highest), tags (array from: stress, energy, social, work, health, gratitude, achievement)
+- IMPORTANT: Respond with empathy. If WHOOP recovery/sleep data is available and relevant, weave it into your response naturally. Keep it short if everything is fine, more detailed if there's a problem.
+
+For journal with history/summary action:
+- No extra fields needed, the system handles data retrieval.
+
 For general, if user wants to set calorie goal, extract:
 - calorie_goal: integer (e.g., 2500)
 
 ALWAYS respond with valid JSON (no markdown fences):
 {
-  "intent": "log_food|query_data|delete_entry|general",
+  "intent": "log_food|query_data|delete_entry|general|gym|journal",
   "food_items": [{"name_en": "...", "name_original": "...", "quantity_g": 100, "meal_type": "lunch"}],
   "calorie_goal": null,
+  "gym_action": null,
+  "exercises": [],
+  "exercise_key": null,
+  "journal_action": null,
+  "journal_entry": null,
   "response": "Your friendly response text here"
 }"""
 
@@ -109,6 +138,12 @@ def _build_context_messages(
         data_context += f" {user_data['whoop_activities']}."
     if user_data.get("whoop_body"):
         data_context += f" {user_data['whoop_body']}."
+    if user_data.get("gym_prompt"):
+        data_context += f" User gym profile: {user_data['gym_prompt']}."
+    if user_data.get("recent_gym_exercises"):
+        data_context += f" Recent gym exercises: {user_data['recent_gym_exercises']}."
+    if user_data.get("recent_journal"):
+        data_context += f" Recent journal entries: {user_data['recent_journal']}."
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -296,8 +331,55 @@ async def classify_and_respond(
     logger.info("Loaded %d conversation messages for user_id=%s", len(conversation_history), user_id)
     today_stats = await get_today_stats(user_id)
 
+    # Fetch gym context: user prompt + recent exercises
+    pool = await get_pool()
+    gym_row = await pool.fetchrow("SELECT gym_prompt FROM users WHERE id = $1", user_id)
+    gym_prompt = gym_row["gym_prompt"] if gym_row and gym_row["gym_prompt"] else ""
+
+    gym_rows = await pool.fetch(
+        """SELECT exercise_name, exercise_key, weight_kg, sets, reps, rpe, created_at
+           FROM gym_exercises WHERE user_id = $1
+           ORDER BY created_at DESC LIMIT 5""",
+        user_id,
+    )
+    recent_gym = ""
+    if gym_rows:
+        parts = []
+        for r in gym_rows:
+            p = f"{r['exercise_name']}"
+            if r["weight_kg"]:
+                p += f" {r['weight_kg']}kg"
+            if r["sets"] and r["reps"]:
+                p += f" {r['sets']}x{r['reps']}"
+            p += f" ({r['created_at'].strftime('%d.%m')})"
+            parts.append(p)
+        recent_gym = "; ".join(parts)
+
+    # Fetch recent journal entries for context
+    journal_rows = await pool.fetch(
+        """SELECT content, mood_score, energy_level, created_at
+           FROM journal_entries WHERE user_id = $1
+           ORDER BY created_at DESC LIMIT 3""",
+        user_id,
+    )
+    recent_journal = ""
+    if journal_rows:
+        parts = []
+        for r in journal_rows:
+            p = f"\"{r['content'][:80]}\""
+            if r["mood_score"]:
+                p += f" mood:{r['mood_score']}/10"
+            if r["energy_level"]:
+                p += f" energy:{r['energy_level']}/10"
+            p += f" ({r['created_at'].strftime('%d.%m %H:%M')})"
+            parts.append(p)
+        recent_journal = "; ".join(parts)
+
     user_data = {
         "daily_calorie_goal": daily_calorie_goal,
+        "gym_prompt": gym_prompt,
+        "recent_gym_exercises": recent_gym,
+        "recent_journal": recent_journal,
         **today_stats,
     }
 
@@ -329,6 +411,11 @@ async def classify_and_respond(
     parsed.setdefault("intent", "general")
     parsed.setdefault("food_items", [])
     parsed.setdefault("calorie_goal", None)
+    parsed.setdefault("gym_action", None)
+    parsed.setdefault("exercises", [])
+    parsed.setdefault("exercise_key", None)
+    parsed.setdefault("journal_action", None)
+    parsed.setdefault("journal_entry", None)
     parsed.setdefault("response", "")
 
     return parsed
@@ -342,7 +429,9 @@ async def transcribe_voice(file_bytes: bytes, file_name: str = "voice.ogg") -> s
         file=(file_name, file_bytes),
         prompt=(
             "Їжа, калорії, грам, грамів, сніданок, обід, вечеря. "
-            "Food logging: grams, breakfast, lunch, dinner, chicken, rice, salad."
+            "Food logging: grams, breakfast, lunch, dinner, chicken, rice, salad. "
+            "Gym: жим лежачи, присідання, станова тяга, підходи, повторення, кілограм. "
+            "Journal: настрій, самопочуття, енергія, втома, стрес, вдячність."
         ),
     )
     return transcript.text

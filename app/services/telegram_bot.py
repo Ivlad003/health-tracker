@@ -25,6 +25,16 @@ from app.services.fatsecret_api import (
     get_food_servings,
     create_food_diary_entry,
 )
+from app.services.gym_service import (
+    log_exercises,
+    get_last_exercise,
+    get_exercise_progress,
+)
+from app.services.journal_service import (
+    save_journal_entry,
+    get_journal_history,
+    get_journal_summary_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +265,72 @@ async def _handle_delete_entry(user_id: int) -> str | None:
     return None
 
 
+async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
+    """Handle gym intent: log exercises, show last workout, show progress."""
+    action = gpt_result.get("gym_action", "log")
+
+    if action == "log" and gpt_result.get("exercises"):
+        logged = await log_exercises(user_id, gpt_result["exercises"])
+        lines = []
+        for ex in logged:
+            line = f"  {ex['name']}"
+            parts = []
+            if ex.get("weight_kg"):
+                parts.append(f"{ex['weight_kg']}кг")
+            if ex.get("sets") and ex.get("reps"):
+                parts.append(f"{ex['sets']}×{ex['reps']}")
+            if parts:
+                line += f" — {', '.join(parts)}"
+            if ex.get("prev"):
+                p = ex["prev"]
+                prev_parts = []
+                if p.get("weight_kg"):
+                    prev_parts.append(f"{p['weight_kg']}кг")
+                if p.get("sets") and p.get("reps"):
+                    prev_parts.append(f"{p['sets']}×{p['reps']}")
+                if prev_parts:
+                    line += f"\n    ↩️ Минулого разу ({p['date']}): {', '.join(prev_parts)}"
+            lines.append(line)
+        return "✅ Записано:\n" + "\n".join(lines)
+
+    elif action == "last":
+        key = gpt_result.get("exercise_key", "")
+        if not key:
+            return None
+        ex = await get_last_exercise(user_id, key)
+        if not ex:
+            return None
+        # GPT already has recent gym context and generated a response
+        return None
+
+    elif action == "progress":
+        key = gpt_result.get("exercise_key", "")
+        if not key:
+            return None
+        history = await get_exercise_progress(user_id, key)
+        if not history:
+            return None
+        lines = []
+        for entry in history:
+            date_str = entry["created_at"].strftime("%d.%m")
+            parts = []
+            if entry.get("weight_kg"):
+                parts.append(f"{entry['weight_kg']}кг")
+            if entry.get("sets") and entry.get("reps"):
+                parts.append(f"{entry['sets']}×{entry['reps']}")
+            lines.append(f"  {date_str} — {', '.join(parts)}")
+        if len(history) >= 2 and history[0].get("weight_kg") and history[-1].get("weight_kg"):
+            first_w = history[0]["weight_kg"]
+            last_w = history[-1]["weight_kg"]
+            diff = last_w - first_w
+            pct = round(diff / first_w * 100, 1) if first_w else 0
+            sign = "+" if diff >= 0 else ""
+            lines.append(f"\n  📈 {sign}{diff}кг ({sign}{pct}%)")
+        return "🏋️ Прогрес:\n" + "\n".join(lines)
+
+    return None
+
+
 async def _handle_calorie_goal(user_id: int, calorie_goal: int) -> None:
     """Update user's daily calorie goal."""
     pool = await get_pool()
@@ -263,6 +339,45 @@ async def _handle_calorie_goal(user_id: int, calorie_goal: int) -> None:
         calorie_goal,
         user_id,
     )
+
+
+async def _handle_journal(user_id: int, gpt_result: dict, message_text: str) -> str | None:
+    """Handle journal intent: save entry, show history, show summary."""
+    action = gpt_result.get("journal_action", "entry")
+
+    if action == "entry":
+        je = gpt_result.get("journal_entry") or {}
+        await save_journal_entry(
+            user_id=user_id,
+            content=message_text,
+            mood_score=je.get("mood_score"),
+            energy_level=je.get("energy_level"),
+            tags=je.get("tags"),
+        )
+        # GPT already generated a context-aware empathetic response
+        return None
+
+    elif action == "history":
+        entries = await get_journal_history(user_id, days=7)
+        if not entries:
+            return "📓 Щоденник порожній. Просто напиши як справи!"
+        lines = []
+        for e in entries:
+            date_str = e["created_at"].strftime("%d.%m %H:%M")
+            text = e["content"][:100]
+            mood = f" 😊{e['mood_score']}" if e["mood_score"] else ""
+            energy = f" ⚡{e['energy_level']}" if e["energy_level"] else ""
+            lines.append(f"  {date_str}{mood}{energy}\n    {text}")
+        return "📓 Щоденник (7 днів):\n\n" + "\n\n".join(lines)
+
+    elif action == "summary":
+        data = await get_journal_summary_data(user_id, days=7)
+        if data["entries_count"] == 0:
+            return "📓 Немає записів за останній тиждень."
+        # GPT has recent journal context and will generate a natural summary
+        return None
+
+    return None
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -347,6 +462,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not deleted:
                 response_text = "🤷 Немає записів для видалення."
 
+        elif intent == "gym":
+            gym_response = await _handle_gym(user_id, gpt_result)
+            if gym_response:
+                response_text = gym_response
+
+        elif intent == "journal":
+            journal_response = await _handle_journal(user_id, gpt_result, message_text)
+            if journal_response:
+                response_text = journal_response
+
         elif intent == "general" and gpt_result.get("calorie_goal"):
             try:
                 goal = int(float(gpt_result["calorie_goal"]))
@@ -383,7 +508,12 @@ HELP_TEXT = (
     "🍎 Що я вмію:\n"
     "  ▸ Записувати їжу — просто напиши що з'їв\n"
     "     Наприклад: «200г курячої грудки з рисом»\n"
-    "  ▸ 🎙 Голосові — скажи що з'їв голосом\n"
+    "  ▸ 🏋️ Записувати тренування — «жим 80кг 3×8»\n"
+    "  ▸ 📊 Що робив минулого разу — «що робив на жимі?»\n"
+    "  ▸ 📈 Прогрес — «прогрес присідань»\n"
+    "  ▸ 📓 Щоденник — просто опиши свій стан\n"
+    "  ▸ 📓 Історія — «покажи щоденник»\n"
+    "  ▸ 🎙 Голосові — скажи що з'їв або зробив голосом\n"
     "  ▸ 📊 Калорії за день з FatSecret + WHOOP\n"
     "  ▸ 😴 Дані WHOOP — сон, відновлення, тренування\n"
     "  ▸ 🗑 Видалити останній запис — «видали останнє»\n"
@@ -393,6 +523,8 @@ HELP_TEXT = (
     "  ⌚ WHOOP → /connect_whoop\n"
     "  🥗 FatSecret → /connect_fatsecret\n"
     "  🔄 Синхронізувати → /sync\n"
+    "  🏋️ Gym промпт → /gym_prompt\n"
+    "  📓 Щоденник → /journal_time, /journal_off, /journal_on\n"
     "\n"
     "⏰ Авто-зведення: 08:00 🌅 та 21:00 🌙 (Київ)\n"
     "\n"
@@ -447,6 +579,108 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
         f"👉 {url}",
         disable_web_page_preview=True,
     )
+
+
+async def handle_journal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /journal_time command — set reminder times."""
+    if not update.message or not update.effective_user:
+        return
+
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    text = (update.message.text or "").replace("/journal_time", "", 1).strip()
+
+    if not text:
+        pool = await get_pool()
+        row = await pool.fetchrow(
+            "SELECT journal_time_1, journal_time_2, journal_enabled FROM users WHERE id = $1",
+            user["id"],
+        )
+        t1 = row["journal_time_1"].strftime("%H:%M") if row and row["journal_time_1"] else "10:00"
+        t2 = row["journal_time_2"].strftime("%H:%M") if row and row["journal_time_2"] else "20:00"
+        enabled = row["journal_enabled"] if row else True
+        status = "увімкнено" if enabled else "вимкнено"
+        await update.message.reply_text(
+            f"📓 Нагадування щоденника: {status}\n"
+            f"  🌅 {t1}  🌙 {t2}\n\n"
+            f"Змінити: /journal_time 09:00 21:00\n"
+            f"Вимкнути: /journal_off\n"
+            f"Увімкнути: /journal_on"
+        )
+        return
+
+    import re
+    times = re.findall(r'\d{1,2}:\d{2}', text)
+    if len(times) < 2:
+        await update.message.reply_text("Вкажи два часи: /journal_time 10:00 20:00")
+        return
+
+    from datetime import time as dt_time
+    try:
+        h1, m1 = map(int, times[0].split(":"))
+        h2, m2 = map(int, times[1].split(":"))
+        t1 = dt_time(h1, m1)
+        t2 = dt_time(h2, m2)
+    except (ValueError, IndexError):
+        await update.message.reply_text("Невірний формат часу. Приклад: /journal_time 10:00 20:00")
+        return
+
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE users SET journal_time_1 = $1, journal_time_2 = $2, journal_enabled = true WHERE id = $3",
+        t1, t2, user["id"],
+    )
+    await update.message.reply_text(f"✅ Нагадування: 🌅 {times[0]}  🌙 {times[1]}")
+
+
+async def handle_journal_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /journal_off — disable journal reminders."""
+    if not update.message or not update.effective_user:
+        return
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    pool = await get_pool()
+    await pool.execute("UPDATE users SET journal_enabled = false WHERE id = $1", user["id"])
+    await update.message.reply_text("📓 Нагадування щоденника вимкнено.\nУвімкнути: /journal_on")
+
+
+async def handle_journal_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /journal_on — enable journal reminders."""
+    if not update.message or not update.effective_user:
+        return
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    pool = await get_pool()
+    await pool.execute("UPDATE users SET journal_enabled = true WHERE id = $1", user["id"])
+    row = await pool.fetchrow(
+        "SELECT journal_time_1, journal_time_2 FROM users WHERE id = $1", user["id"],
+    )
+    t1 = row["journal_time_1"].strftime("%H:%M") if row and row["journal_time_1"] else "10:00"
+    t2 = row["journal_time_2"].strftime("%H:%M") if row and row["journal_time_2"] else "20:00"
+    await update.message.reply_text(f"✅ Нагадування увімкнено: 🌅 {t1}  🌙 {t2}")
+
+
+async def handle_gym_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /gym_prompt command — set persistent gym coaching profile."""
+    if not update.message or not update.effective_user:
+        return
+
+    telegram_user_id = update.effective_user.id
+    user = await _ensure_user(telegram_user_id, update.effective_user.username)
+
+    text = update.message.text or ""
+    prompt_text = text.replace("/gym_prompt", "", 1).strip()
+
+    pool = await get_pool()
+    if not prompt_text:
+        row = await pool.fetchrow("SELECT gym_prompt FROM users WHERE id = $1", user["id"])
+        current = row["gym_prompt"] if row and row["gym_prompt"] else "не встановлено"
+        await update.message.reply_text(
+            f"🏋️ Поточний gym промпт:\n{current}\n\n"
+            f"Щоб змінити: /gym_prompt <текст>\n"
+            f"Приклад: /gym_prompt Я тренуюсь для пауерліфтингу, фокус на базових вправах"
+        )
+        return
+
+    await pool.execute("UPDATE users SET gym_prompt = $1 WHERE id = $2", prompt_text, user["id"])
+    await update.message.reply_text(f"✅ Gym промпт встановлено:\n{prompt_text}")
 
 
 async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -518,6 +752,10 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("connect_whoop", handle_connect_whoop))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
+    _application.add_handler(CommandHandler("gym_prompt", handle_gym_prompt))
+    _application.add_handler(CommandHandler("journal_time", handle_journal_time))
+    _application.add_handler(CommandHandler("journal_off", handle_journal_off))
+    _application.add_handler(CommandHandler("journal_on", handle_journal_on))
     _application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
@@ -533,6 +771,10 @@ async def start_bot() -> None:
         BotCommand("connect_whoop", "Підключити WHOOP"),
         BotCommand("connect_fatsecret", "Підключити FatSecret"),
         BotCommand("sync", "Синхронізувати дані"),
+        BotCommand("gym_prompt", "Налаштувати gym профіль"),
+        BotCommand("journal_time", "Час нагадувань щоденника"),
+        BotCommand("journal_off", "Вимкнути нагадування"),
+        BotCommand("journal_on", "Увімкнути нагадування"),
     ])
 
     await _application.start()

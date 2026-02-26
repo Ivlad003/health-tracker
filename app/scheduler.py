@@ -54,6 +54,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Journal reminders every 10 minutes (checks user-configured times ±5 min)
+    from app.services.briefings import journal_reminders
+    scheduler.add_job(
+        journal_reminders,
+        trigger=IntervalTrigger(minutes=10),
+        id="journal_reminders",
+        name="Journal Reminders (10min check)",
+        replace_existing=True,
+    )
+
     # Conversation cleanup daily at 03:00 UTC
     from app.services.briefings import cleanup_old_conversations
     scheduler.add_job(
@@ -67,7 +77,7 @@ def start_scheduler():
     scheduler.start()
     logger.info(
         "Scheduler started — tokens 30min (WHOOP+FatSecret), "
-        "morning 08:00 Kyiv, evening 21:00 Kyiv, cleanup 03:00 UTC"
+        "morning 08:00 Kyiv, evening 21:00 Kyiv, journal 10min, cleanup 03:00 UTC"
     )
 
 
