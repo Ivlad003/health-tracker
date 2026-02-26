@@ -69,21 +69,37 @@ async def debug_whoop_token(
         result["status"] = "NO_TOKEN"
         return result
 
-    # Try one simple API call without clearing
+    # Try all WHOOP API endpoints without clearing tokens
+    endpoints = {
+        "cycle": "cycle?limit=1",
+        "body": "body_measurement?limit=1",
+        "workout": "activity/workout?limit=1",
+        "recovery": "recovery?limit=1",
+        "sleep": "activity/sleep?limit=1",
+    }
+    api_base = "https://api.prod.whoop.com/developer/v2"
+    headers = {"Authorization": f"Bearer {user['whoop_access_token']}"}
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                "https://api.prod.whoop.com/developer/v2/body_measurement",
-                headers={"Authorization": f"Bearer {user['whoop_access_token']}"},
-                params={"limit": "1"},
-            )
-            result["api_status"] = resp.status_code
-            if resp.status_code == 200:
-                result["status"] = "OK"
-                result["body_data"] = resp.json()
-            else:
-                result["status"] = "API_ERROR"
-                result["api_body"] = resp.text[:500]
+            api_results = {}
+            for name, path in endpoints.items():
+                resp = await client.get(f"{api_base}/{path}", headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    records = data.get("records", [])
+                    api_results[name] = {
+                        "status": 200,
+                        "records_count": len(records),
+                    }
+                else:
+                    api_results[name] = {
+                        "status": resp.status_code,
+                        "body": resp.text[:200],
+                    }
+            result["endpoints"] = api_results
+            all_ok = all(r["status"] == 200 for r in api_results.values())
+            result["status"] = "OK" if all_ok else "PARTIAL_ERROR"
     except Exception as e:
         result["status"] = "NETWORK_ERROR"
         result["error"] = str(e)
