@@ -107,6 +107,7 @@ async def get_food_servings(food_id: str) -> list[dict]:
             "description": s.get("serving_description", ""),
             "metric_serving_amount": float(s.get("metric_serving_amount", 0) or 0),
             "metric_serving_unit": s.get("metric_serving_unit", "g"),
+            "number_of_units": float(s.get("number_of_units", 1) or 1),
             "calories": float(s.get("calories", 0) or 0),
         }
         for s in servings

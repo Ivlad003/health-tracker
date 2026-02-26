@@ -177,9 +177,18 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
             try:
                 servings = await get_food_servings(food_id)
                 if servings:
-                    # All gram-based servings (any description)
-                    all_gram = [
+                    # Filter out derived servings (serving_id=0) — they
+                    # cannot be used with food_entry.create
+                    real_servings = [
                         s for s in servings
+                        if str(s["serving_id"]) != "0"
+                    ]
+                    if not real_servings:
+                        real_servings = servings  # fallback if all derived
+
+                    # All gram-based real servings
+                    all_gram = [
+                        s for s in real_servings
                         if s["metric_serving_unit"] == "g"
                         and s["metric_serving_amount"] > 0
                     ]
@@ -188,8 +197,7 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                         s for s in all_gram
                         if _is_pure_gram_serving(s["description"])
                     ]
-                    # 1g serving: search ALL gram servings (description irrelevant,
-                    # units = exact grams regardless of what it's called)
+                    # 1g serving: search ALL gram servings
                     one_g = next(
                         (s for s in all_gram if s["metric_serving_amount"] == 1.0),
                         None,
@@ -204,8 +212,10 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                         serving = hundred_g
                     elif pure_gram:
                         serving = min(pure_gram, key=lambda s: s["metric_serving_amount"])
+                    elif all_gram:
+                        serving = all_gram[0]
                     else:
-                        serving = all_gram[0] if all_gram else servings[0]
+                        serving = real_servings[0]
                     if not one_g:
                         logger.warning(
                             "No 1g serving for food_id=%s, using %s (%.1fg). "
@@ -213,15 +223,23 @@ async def _handle_log_food(user_id: int, food_items: list[dict]) -> list[dict]:
                             food_id, serving["description"],
                             serving["metric_serving_amount"],
                             ", ".join(
-                                f"{s['description']}({s['metric_serving_amount']}g)"
+                                f"{s['description']}(id={s['serving_id']}, "
+                                f"{s['metric_serving_amount']}g, "
+                                f"units={s['number_of_units']})"
                                 for s in servings[:10]
                             ),
                         )
+                    # FatSecret number_of_units = base units in the serving.
+                    # E.g. "100 g" → number_of_units=100 (100 units of 1g).
+                    # To log X grams: send (X / metric_serving_amount) * number_of_units.
                     metric_amount = serving["metric_serving_amount"] or 100.0
-                    units = quantity_g / metric_amount
+                    serving_units = serving.get("number_of_units", 1.0) or 1.0
+                    units = (quantity_g / metric_amount) * serving_units
                     logger.info(
-                        "FatSecret sync: food_id=%s serving=%s metric=%sg units=%.2f for %dg",
-                        food_id, serving["description"], metric_amount, units, quantity_g,
+                        "FatSecret sync: food_id=%s serving=%s metric=%sg "
+                        "serving_units=%.1f units=%.2f for %dg",
+                        food_id, serving["description"], metric_amount,
+                        serving_units, units, quantity_g,
                     )
                     await create_food_diary_entry(
                         access_token=fs_token,
