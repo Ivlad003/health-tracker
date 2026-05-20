@@ -658,11 +658,11 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
         "Налаштуй Shortcut, який кожні 4-6 годин робить POST на цей URL:\n"
         f"{shortcut_url}\n"
         "\n"
-        "Header потрібен лише один:\n"
-        "Content-Type: application/json\n"
+        "Header: Content-Type: application/json\n"
         "\n"
-        f"userId: {update.effective_user.id}\n"
-        "Payload може містити тільки `sourceType`, `dataType` та `metrics` з Apple Health.",
+        "URL вже містить твій userId та token — у тіло (Request Body) клади "
+        "лише `sourceType`, `dataType` та `metrics`. "
+        "Поля userId/token у тілі додавати НЕ треба.",
         disable_web_page_preview=True,
     )
 

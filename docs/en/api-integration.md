@@ -223,10 +223,12 @@ Content-Type: application/json
 
 The generated URL already contains the Telegram user ID (`users.telegram_user_id`)
 and per-user token, so the Shortcut only needs the URL, `Content-Type:
-application/json`, and the metrics payload. The webhook also accepts the legacy
-`X-Apple-Health-Token` header and `userId` body field. Metrics older than 30 days
-are rejected. Apple Health records are stored in the unified `health_data` table
-with `source = 'apple_health'`.
+application/json`, and the metrics payload. **Do not add `userId` or `token`
+fields to the Request Body** — they are already in the URL, and duplicating them
+in the body is a common Shortcut-setup mistake. The webhook still accepts the
+legacy `X-Apple-Health-Token` header and `userId` body field for backward
+compatibility. Metrics older than 30 days are rejected. Apple Health records are
+stored in the unified `health_data` table with `source = 'apple_health'`.
 
 ---
 
