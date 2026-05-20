@@ -249,6 +249,28 @@ application/json` і payload з метриками. **Не додавай пол
 Метрики старші за 30 днів відхиляються. Дані Apple Health зберігаються в
 уніфікованій таблиці `health_data` із `source = 'apple_health'`.
 
+### Health Auto Export iOS app (без власного Shortcut)
+
+Той самий endpoint `/api/v1/health/apple-health/sync` також приймає JSON у
+форматі застосунку *Health Auto Export — JSON+CSV*. Коли тіло запиту має
+форму (`{"data": {"metrics": [{"name", "units", "data": [...]}]}}`), сервер
+розгортає кожну точку `data[]` в окрему внутрішню метрику й пропускає її через
+ту саму пайплайн-обробку.
+
+Налаштування:
+
+1. У Telegram виконай `/connect_apple_health` і скопіюй URL.
+2. Встанови **Health Auto Export — JSON+CSV** з App Store.
+3. Додай нову автоматизацію в застосунку:
+   - Output: **JSON (REST API)**
+   - URL: встав URL з кроку 1
+   - Aggregation: наприклад, hourly або daily
+   - Metrics: обери будь-які (або **All**)
+4. Запусти один раз для перевірки. Сервер поверне `{"records_received": N,
+   "records_processed": M, ...}`.
+
+iOS Shortcut не потрібен.
+
 ---
 
 ## OpenAI API

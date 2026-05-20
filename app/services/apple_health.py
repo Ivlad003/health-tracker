@@ -110,6 +110,90 @@ async def _is_duplicate_metric(
     return row is not None
 
 
+def _normalize_hae_timestamp(raw: str) -> str:
+    """Convert Health Auto Export date format to ISO 8601.
+
+    HAE typically emits ``"2026-05-20 14:30:00 +0300"``; convert to
+    ``"2026-05-20T14:30:00+03:00"`` so ``datetime.fromisoformat`` accepts it.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return s
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T", 1)
+    if " +" in s or " -" in s:
+        time_part, _, tz = s.rpartition(" ")
+        if (
+            len(tz) == 5
+            and tz[0] in "+-"
+            and tz[1:].isdigit()
+        ):
+            tz = f"{tz[:3]}:{tz[3:]}"
+        s = f"{time_part}{tz}"
+    return s
+
+
+def is_health_auto_export_payload(payload: Any) -> bool:
+    """Detect the Health Auto Export iOS app JSON shape."""
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    metrics = data.get("metrics")
+    return isinstance(metrics, list)
+
+
+def convert_health_auto_export(
+    payload: dict[str, Any],
+    *,
+    telegram_user_id: int,
+) -> dict[str, Any]:
+    """Flatten Health Auto Export JSON into our internal ingestion shape.
+
+    HAE shape:
+        {"data": {"metrics": [{"name", "units", "data": [{"date","qty",...}]}]}}
+    Returns:
+        {"sourceType":"apple_health", "dataType":"auto_export",
+         "userId": <telegram>, "metrics": [{type,value,unit,timestamp}, ...]}
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    hae_metrics = data.get("metrics", []) if isinstance(data, dict) else []
+    flat: list[dict[str, Any]] = []
+    for hae_metric in hae_metrics:
+        if not isinstance(hae_metric, dict):
+            continue
+        name = str(hae_metric.get("name") or "").strip()
+        units = str(hae_metric.get("units") or "").strip() or "unknown"
+        for point in hae_metric.get("data") or []:
+            if not isinstance(point, dict):
+                continue
+            raw_ts = point.get("date") or point.get("startDate") or ""
+            value = (
+                point.get("qty")
+                if point.get("qty") is not None
+                else point.get("Avg")
+                if point.get("Avg") is not None
+                else point.get("Min")
+                if point.get("Min") is not None
+                else point.get("Max")
+            )
+            if value is None or not name or not raw_ts:
+                continue
+            flat.append({
+                "type": name,
+                "value": value,
+                "unit": units,
+                "timestamp": _normalize_hae_timestamp(str(raw_ts)),
+            })
+    return {
+        "sourceType": "apple_health",
+        "dataType": "auto_export",
+        "userId": telegram_user_id,
+        "metrics": flat,
+    }
+
+
 def _validate_payload(payload: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
     if payload.get("sourceType") != "apple_health":
         raise AppleHealthIngestionError("sourceType must be apple_health")

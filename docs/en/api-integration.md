@@ -230,6 +230,28 @@ legacy `X-Apple-Health-Token` header and `userId` body field for backward
 compatibility. Metrics older than 30 days are rejected. Apple Health records are
 stored in the unified `health_data` table with `source = 'apple_health'`.
 
+### Health Auto Export iOS app (zero-Shortcut path)
+
+The same `/api/v1/health/apple-health/sync` endpoint also accepts the JSON
+schema produced by the *Health Auto Export — JSON+CSV* iOS app. When the body
+matches that shape (`{"data": {"metrics": [{"name", "units", "data": [...]}]}}`),
+the server flattens each `data[]` point into one internal metric and ingests it
+through the same pipeline.
+
+Setup:
+
+1. In Telegram, run `/connect_apple_health` and copy the URL.
+2. Install **Health Auto Export — JSON+CSV** from the App Store.
+3. Add a new automation in the app:
+   - Output: **JSON (REST API)**
+   - URL: paste the URL from step 1
+   - Aggregation: e.g. hourly or daily
+   - Metrics: select whichever you want (or **All**)
+4. Run once to verify. The server will return `{"records_received": N,
+   "records_processed": M, ...}`.
+
+No iOS Shortcut required.
+
 ---
 
 ## OpenAI API

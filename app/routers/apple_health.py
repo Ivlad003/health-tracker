@@ -10,7 +10,9 @@ from app.database import get_pool
 from app.services.apple_health import (
     AppleHealthIngestionError,
     _get_active_sync,
+    convert_health_auto_export,
     ingest_apple_health_payload,
+    is_health_auto_export_payload,
     verify_apple_health_token,
 )
 
@@ -32,7 +34,11 @@ async def sync_apple_health(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
-    payload_user_id = payload.get("userId")
+    # Health Auto Export iOS app uses {"data": {"metrics": [...]}}; it has no
+    # userId in the body, so URL userId is mandatory for that shape.
+    is_hae = is_health_auto_export_payload(payload)
+
+    payload_user_id = None if is_hae else payload.get("userId") if isinstance(payload, dict) else None
     try:
         telegram_user_id = int(payload_user_id if payload_user_id is not None else query_user_id)
     except (TypeError, ValueError) as exc:
@@ -50,8 +56,12 @@ async def sync_apple_health(
     if not verify_apple_health_token(provided_token, sync["secret_key"]):
         raise HTTPException(status_code=401, detail="Invalid Apple Health token")
 
-    try:
+    if is_hae:
+        payload = convert_health_auto_export(payload, telegram_user_id=telegram_user_id)
+    else:
         payload["userId"] = telegram_user_id
+
+    try:
         return await ingest_apple_health_payload(pool, payload)
     except AppleHealthIngestionError as exc:
         logger.warning("Apple Health payload rejected for user_id=%s: %s", sync["user_id"], exc)

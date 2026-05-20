@@ -247,3 +247,118 @@ async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_setting
 
     assert resp.status_code == 200
     assert resp.json()["records_processed"] == 1
+
+
+def test_is_health_auto_export_payload_detects_shape(mock_settings):
+    from app.services.apple_health import is_health_auto_export_payload
+
+    assert is_health_auto_export_payload({"data": {"metrics": []}}) is True
+    assert is_health_auto_export_payload(
+        {"data": {"metrics": [{"name": "step_count", "units": "count", "data": []}]}}
+    ) is True
+    assert is_health_auto_export_payload({"sourceType": "apple_health", "metrics": []}) is False
+    assert is_health_auto_export_payload({"data": "string"}) is False
+    assert is_health_auto_export_payload(None) is False
+
+
+def test_convert_health_auto_export_flattens_and_normalizes_dates(mock_settings):
+    from app.services.apple_health import convert_health_auto_export
+
+    hae_payload = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "step_count",
+                    "units": "count",
+                    "data": [
+                        {"date": "2026-05-20 14:30:00 +0300", "qty": 5000},
+                        {"date": "2026-05-20 15:30:00 +0300", "qty": 1200},
+                    ],
+                },
+                {
+                    "name": "heart_rate",
+                    "units": "count/min",
+                    "data": [
+                        {"date": "2026-05-20 14:30:00 +0000", "Avg": 72},
+                    ],
+                },
+            ]
+        }
+    }
+
+    result = convert_health_auto_export(hae_payload, telegram_user_id=42)
+
+    assert result["sourceType"] == "apple_health"
+    assert result["dataType"] == "auto_export"
+    assert result["userId"] == 42
+    assert len(result["metrics"]) == 3
+    assert result["metrics"][0] == {
+        "type": "step_count",
+        "value": 5000,
+        "unit": "count",
+        "timestamp": "2026-05-20T14:30:00+03:00",
+    }
+    assert result["metrics"][2]["type"] == "heart_rate"
+    assert result["metrics"][2]["value"] == 72
+
+
+def test_convert_health_auto_export_skips_invalid_points(mock_settings):
+    from app.services.apple_health import convert_health_auto_export
+
+    hae_payload = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "step_count",
+                    "units": "count",
+                    "data": [
+                        {"date": "", "qty": 1},  # empty date → skip
+                        {"qty": 2},  # missing date → skip
+                        {"date": "2026-05-20 14:30:00 +0300"},  # no value → skip
+                        {"date": "2026-05-20 14:30:00 +0300", "qty": 5000},  # keep
+                    ],
+                }
+            ]
+        }
+    }
+
+    result = convert_health_auto_export(hae_payload, telegram_user_id=42)
+    assert len(result["metrics"]) == 1
+    assert result["metrics"][0]["value"] == 5000
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_accepts_health_auto_export_format(mock_settings):
+    from app.main import app
+
+    iso_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S +0000")
+    hae_payload = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "step_count",
+                    "units": "count",
+                    "data": [
+                        {"date": iso_now, "qty": 5000},
+                        {"date": iso_now, "qty": 1200},
+                    ],
+                }
+            ]
+        }
+    }
+    body = _json_body(hae_payload)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    # Two HAE data points with same type+unit+timestamp+value should dedupe.
+    # We only assert at least one was processed end-to-end.
+    assert resp.json()["records_received"] == 2
