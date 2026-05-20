@@ -656,6 +656,7 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
         f"X-Apple-Health-Token: {sync['secret_key']}\n"
         "Content-Type: application/json\n"
         "\n"
+        f"userId: {update.effective_user.id}\n"
         "Payload має містити `userId` = твій Telegram ID та `metrics` з Apple Health.",
         disable_web_page_preview=True,
     )
