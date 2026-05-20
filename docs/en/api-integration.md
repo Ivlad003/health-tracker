@@ -4,9 +4,10 @@
 
 ## Overview
 
-The system integrates with three external APIs:
+The system integrates with four external data sources/APIs:
 - **FatSecret** - food database and calorie information
 - **WHOOP** - physical activity data
+- **Apple Health** - iOS health metrics via user-configured Shortcut webhook
 - **OpenAI** - speech recognition and text analysis
 
 ---
@@ -190,6 +191,42 @@ Authorization: Bearer {access_token}
 ```
 Calories (kcal) = Kilojoules / 4.184
 ```
+
+---
+
+## Apple Health Shortcut Webhook
+
+Apple Health does not provide a backend Web API. Users connect it through
+`/connect_apple_health`, which generates a per-user token and webhook URL for an
+iOS Shortcut.
+
+```bash
+POST /api/v1/health/apple-health/sync
+Content-Type: application/json
+X-Apple-Health-Token: {per_user_token}
+```
+
+```json
+{
+  "userId": 123456789,
+  "sourceType": "apple_health",
+  "dataType": "activity",
+  "metrics": [
+    {
+      "type": "step_count",
+      "value": 5000,
+      "unit": "count",
+      "timestamp": "2026-05-20T10:00:00Z",
+      "duration": 3600
+    }
+  ]
+}
+```
+
+The `userId` field is the Telegram user ID (`users.telegram_user_id`), not the
+internal integer `users.id` and not a UUID. Metrics older than 30 days are
+rejected. Apple Health records are stored in the unified `health_data` table with
+`source = 'apple_health'`.
 
 ---
 

@@ -27,6 +27,45 @@ def _parse_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def process_workouts(data: dict, user_id: int) -> list[dict]:
+    """Normalize WHOOP workout records for persistence."""
+    workouts = []
+    for record in data.get("records", []):
+        score = record.get("score", {}) or {}
+        kilojoules = score.get("kilojoule")
+        workouts.append(
+            {
+                "user_id": user_id,
+                "whoop_workout_id": str(record["id"]),
+                "sport_id": record.get("sport_id"),
+                "sport_name": record.get("sport_name", "Unknown"),
+                "score_state": record.get("score_state", "PENDING_SCORE"),
+                "kilojoules": kilojoules,
+                "calories": (kilojoules / 4.184) if kilojoules is not None else None,
+                "strain": score.get("strain"),
+                "avg_heart_rate": score.get("average_heart_rate"),
+                "max_heart_rate": score.get("max_heart_rate"),
+                "percent_recorded": score.get("percent_recorded"),
+                "distance_meter": score.get("distance_meter"),
+                "altitude_gain_meter": score.get("altitude_gain_meter"),
+                "zone_zero_seconds": score.get("zone_zero_milli", 0) // 1000,
+                "zone_one_seconds": score.get("zone_one_milli", 0) // 1000,
+                "zone_two_seconds": score.get("zone_two_milli", 0) // 1000,
+                "zone_three_seconds": score.get("zone_three_milli", 0) // 1000,
+                "zone_four_seconds": score.get("zone_four_milli", 0) // 1000,
+                "zone_five_seconds": score.get("zone_five_milli", 0) // 1000,
+                "started_at": _parse_dt(record["start"]),
+                "ended_at": _parse_dt(record["end"]),
+                "timezone_offset": record.get("timezone_offset"),
+                "whoop_created_at": _parse_dt(record["created_at"])
+                if record.get("created_at") else None,
+                "whoop_updated_at": _parse_dt(record["updated_at"])
+                if record.get("updated_at") else None,
+            }
+        )
+    return workouts
+
+
 async def refresh_token_if_needed(
     user: dict, client: httpx.AsyncClient, pool, *, force: bool = False,
 ) -> str:

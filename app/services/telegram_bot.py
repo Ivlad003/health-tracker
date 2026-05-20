@@ -35,6 +35,7 @@ from app.services.journal_service import (
     get_journal_history,
     get_journal_summary_data,
 )
+from app.services.apple_health import ensure_apple_health_sync
 
 logger = logging.getLogger(__name__)
 
@@ -570,6 +571,7 @@ HELP_TEXT = (
     "\n"
     "🔗 Підключення сервісів:\n"
     "  ⌚ WHOOP → /connect_whoop\n"
+    "  ❤️ Apple Health → /connect_apple_health\n"
     "  🥗 FatSecret → /connect_fatsecret\n"
     "  🔄 Синхронізувати → /sync\n"
     "  🏋️ Gym промпт → /gym_prompt\n"
@@ -626,6 +628,35 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
         f"Щоденник їжі — синхронізується автоматично.\n"
         f"\n"
         f"👉 {url}",
+        disable_web_page_preview=True,
+    )
+
+
+async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /connect_apple_health command."""
+    if not update.message or not update.effective_user:
+        return
+
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    pool = await get_pool()
+    sync = await ensure_apple_health_sync(
+        pool,
+        user_id=user["id"],
+        sync_frequency_hours=settings.apple_health_sync_hours,
+    )
+    webhook_url = f"{settings.app_base_url}/api/v1/health/apple-health/sync"
+    await update.message.reply_text(
+        "❤️ Apple Health\n"
+        "\n"
+        "Apple Health не має backend API, тому дані надсилаються з iOS Shortcut.\n"
+        "Налаштуй Shortcut, який кожні 4-6 годин робить POST на webhook:\n"
+        f"{webhook_url}\n"
+        "\n"
+        "Headers:\n"
+        f"X-Apple-Health-Token: {sync['secret_key']}\n"
+        "Content-Type: application/json\n"
+        "\n"
+        "Payload має містити `userId` = твій Telegram ID та `metrics` з Apple Health.",
         disable_web_page_preview=True,
     )
 
@@ -795,6 +826,21 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         results.append("⌚ WHOOP — ⚠️ не підключено")
 
+    apple_health_row = await pool.fetchrow(
+        """SELECT last_sync_at
+           FROM apple_health_sync
+           WHERE user_id = $1 AND is_active = TRUE""",
+        user_id,
+    )
+    if apple_health_row:
+        last_sync = apple_health_row["last_sync_at"]
+        if last_sync:
+            results.append(f"❤️ Apple Health — ✅ остання синхронізація {last_sync:%d.%m %H:%M}")
+        else:
+            results.append("❤️ Apple Health — ✅ підключено, очікую перший sync")
+    else:
+        results.append("❤️ Apple Health — ⚠️ не підключено")
+
     # FatSecret status
     fs_row = await pool.fetchrow(
         "SELECT fatsecret_access_token FROM users WHERE id = $1 AND fatsecret_access_token IS NOT NULL",
@@ -825,6 +871,7 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("start", handle_help))
     _application.add_handler(CommandHandler("help", handle_help))
     _application.add_handler(CommandHandler("connect_whoop", handle_connect_whoop))
+    _application.add_handler(CommandHandler("connect_apple_health", handle_connect_apple_health))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
     _application.add_handler(CommandHandler("gym_prompt", handle_gym_prompt))
@@ -845,6 +892,7 @@ async def start_bot() -> None:
         BotCommand("start", "Почати / Інструкція"),
         BotCommand("help", "Допомога"),
         BotCommand("connect_whoop", "Підключити WHOOP"),
+        BotCommand("connect_apple_health", "Підключити Apple Health"),
         BotCommand("connect_fatsecret", "Підключити FatSecret"),
         BotCommand("sync", "Синхронізувати дані"),
         BotCommand("gym_prompt", "Налаштувати gym профіль"),

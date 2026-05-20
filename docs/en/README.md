@@ -15,7 +15,7 @@ Welcome to Health & Wellness Tracker Bot documentation!
 
 1. Find the bot in Telegram: `@HealthTrackerBot`
 2. Press `/start` to begin
-3. Connect WHOOP (optional)
+3. Connect WHOOP or Apple Health (optional)
 4. Start logging food with voice messages!
 
 ## 🔗 Useful Links

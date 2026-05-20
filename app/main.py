@@ -157,7 +157,9 @@ async def health():
 from app.routers.utils import router as utils_router
 from app.routers.fatsecret import router as fatsecret_router
 from app.routers.whoop import router as whoop_router
+from app.routers.apple_health import router as apple_health_router
 
 app.include_router(utils_router)
 app.include_router(fatsecret_router)
 app.include_router(whoop_router)
+app.include_router(apple_health_router)

@@ -4,9 +4,10 @@
 
 ## Огляд
 
-Система інтегрується з трьома зовнішніми API:
+Система інтегрується з чотирма зовнішніми джерелами/API:
 - **FatSecret** - база даних продуктів та калорійності
 - **WHOOP** - дані про фізичну активність
+- **Apple Health** - iOS health-метрики через webhook з Shortcut
 - **OpenAI** - розпізнавання мови та аналіз тексту
 
 ---
@@ -209,6 +210,41 @@ Authorization: Bearer {access_token}
 ```
 Калорії (kcal) = Кілоджоулі / 4.184
 ```
+
+---
+
+## Apple Health Shortcut Webhook
+
+Apple Health не має backend Web API. Користувач підключає його через
+`/connect_apple_health`: бот генерує персональний токен і webhook URL для iOS
+Shortcut.
+
+```bash
+POST /api/v1/health/apple-health/sync
+Content-Type: application/json
+X-Apple-Health-Token: {per_user_token}
+```
+
+```json
+{
+  "userId": 123456789,
+  "sourceType": "apple_health",
+  "dataType": "activity",
+  "metrics": [
+    {
+      "type": "step_count",
+      "value": 5000,
+      "unit": "count",
+      "timestamp": "2026-05-20T10:00:00Z",
+      "duration": 3600
+    }
+  ]
+}
+```
+
+Поле `userId` - це Telegram user ID (`users.telegram_user_id`), а не внутрішній
+`users.id` і не UUID. Метрики старші за 30 днів відхиляються. Дані Apple Health
+зберігаються в уніфікованій таблиці `health_data` із `source = 'apple_health'`.
 
 ---
 

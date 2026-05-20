@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     fatsecret_client_secret: str
     fatsecret_shared_secret: str = ""
 
+    # Apple Health
+    apple_health_sync_hours: int = 6
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
