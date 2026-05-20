@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from telegram import BotCommand, Update
 from telegram.ext import (
@@ -645,19 +646,23 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
         sync_frequency_hours=settings.apple_health_sync_hours,
     )
     webhook_url = f"{settings.app_base_url}/api/v1/health/apple-health/sync"
+    shortcut_params = urlencode({
+        'userId': update.effective_user.id,
+        'token': sync['secret_key'],
+    })
+    shortcut_url = f"{webhook_url}?{shortcut_params}"
     await update.message.reply_text(
         "❤️ Apple Health\n"
         "\n"
         "Apple Health не має backend API, тому дані надсилаються з iOS Shortcut.\n"
-        "Налаштуй Shortcut, який кожні 4-6 годин робить POST на webhook:\n"
-        f"{webhook_url}\n"
+        "Налаштуй Shortcut, який кожні 4-6 годин робить POST на цей URL:\n"
+        f"{shortcut_url}\n"
         "\n"
-        "Headers:\n"
-        f"X-Apple-Health-Token: {sync['secret_key']}\n"
+        "Header потрібен лише один:\n"
         "Content-Type: application/json\n"
         "\n"
         f"userId: {update.effective_user.id}\n"
-        "Payload має містити `userId` = твій Telegram ID та `metrics` з Apple Health.",
+        "Payload може містити тільки `sourceType`, `dataType` та `metrics` з Apple Health.",
         disable_web_page_preview=True,
     )
 

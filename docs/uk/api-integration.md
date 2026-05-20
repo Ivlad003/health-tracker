@@ -220,14 +220,12 @@ Apple Health не має backend Web API. Користувач підключа�
 Shortcut.
 
 ```bash
-POST /api/v1/health/apple-health/sync
+POST /api/v1/health/apple-health/sync?userId={telegram_user_id}&token={per_user_token}
 Content-Type: application/json
-X-Apple-Health-Token: {per_user_token}
 ```
 
 ```json
 {
-  "userId": 123456789,
   "sourceType": "apple_health",
   "dataType": "activity",
   "metrics": [
@@ -242,9 +240,12 @@ X-Apple-Health-Token: {per_user_token}
 }
 ```
 
-Поле `userId` - це Telegram user ID (`users.telegram_user_id`), а не внутрішній
-`users.id` і не UUID. Метрики старші за 30 днів відхиляються. Дані Apple Health
-зберігаються в уніфікованій таблиці `health_data` із `source = 'apple_health'`.
+Згенерований URL вже містить Telegram user ID (`users.telegram_user_id`) і
+персональний token, тому в Shortcut достатньо вказати URL, `Content-Type:
+application/json` і payload з метриками. Webhook також підтримує старий варіант:
+`X-Apple-Health-Token` header і поле `userId` у body. Метрики старші за 30 днів
+відхиляються. Дані Apple Health зберігаються в уніфікованій таблиці
+`health_data` із `source = 'apple_health'`.
 
 ---
 

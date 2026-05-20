@@ -215,3 +215,35 @@ async def test_apple_health_webhook_ingests_valid_payload(mock_settings):
 
     assert resp.status_code == 200
     assert resp.json()["records_processed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_settings):
+    from app.main import app
+
+    payload = {
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": 5000,
+                "unit": "count",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+    body = _json_body(payload)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["records_processed"] == 1

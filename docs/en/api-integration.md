@@ -201,14 +201,12 @@ Apple Health does not provide a backend Web API. Users connect it through
 iOS Shortcut.
 
 ```bash
-POST /api/v1/health/apple-health/sync
+POST /api/v1/health/apple-health/sync?userId={telegram_user_id}&token={per_user_token}
 Content-Type: application/json
-X-Apple-Health-Token: {per_user_token}
 ```
 
 ```json
 {
-  "userId": 123456789,
   "sourceType": "apple_health",
   "dataType": "activity",
   "metrics": [
@@ -223,10 +221,12 @@ X-Apple-Health-Token: {per_user_token}
 }
 ```
 
-The `userId` field is the Telegram user ID (`users.telegram_user_id`), not the
-internal integer `users.id` and not a UUID. Metrics older than 30 days are
-rejected. Apple Health records are stored in the unified `health_data` table with
-`source = 'apple_health'`.
+The generated URL already contains the Telegram user ID (`users.telegram_user_id`)
+and per-user token, so the Shortcut only needs the URL, `Content-Type:
+application/json`, and the metrics payload. The webhook also accepts the legacy
+`X-Apple-Health-Token` header and `userId` body field. Metrics older than 30 days
+are rejected. Apple Health records are stored in the unified `health_data` table
+with `source = 'apple_health'`.
 
 ---
 
