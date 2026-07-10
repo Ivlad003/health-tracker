@@ -148,3 +148,45 @@ async def test_connect_apple_health_reply_explains_reconnect_rotates_old_url(moc
     reply = message.reply_text.call_args.args[0]
     assert "/connect_apple_health" in reply
     assert "старий URL перестане працювати" in reply
+
+
+@pytest.mark.asyncio
+async def test_apple_health_help_reply_explains_shortcuts_setup_in_ukrainian(mock_settings):
+    from app.services.telegram_bot import handle_apple_health_help
+
+    message = AsyncMock()
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=123456789, username="tester"),
+    )
+
+    await handle_apple_health_help(update, None)
+
+    reply = message.reply_text.call_args.args[0]
+    assert "Як підключити Apple Health" in reply
+    assert "Apple Shortcuts" in reply
+    assert "нічого додатково встановлювати не треба" in reply
+    assert "/connect_apple_health" in reply
+    assert "Get Health Samples" in reply
+    assert "Get Contents of URL" in reply
+    assert "Method: POST" in reply
+    assert "Content-Type = application/json" in reply
+    assert "/sync" in reply
+
+
+@pytest.mark.asyncio
+async def test_apple_health_help_keeps_token_and_user_id_out_of_body(mock_settings):
+    from app.services.telegram_bot import handle_apple_health_help
+
+    message = AsyncMock()
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=123456789, username="tester"),
+    )
+
+    await handle_apple_health_help(update, None)
+
+    reply = message.reply_text.call_args.args[0]
+    assert "userId і token не додавай у Body" in reply
+    assert "userId =" not in reply
+    assert "token =" not in reply
