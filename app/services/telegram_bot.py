@@ -575,6 +575,7 @@ HELP_TEXT = (
     "🔗 Підключення сервісів:\n"
     "  ⌚ WHOOP → /connect_whoop\n"
     "  ❤️ Apple Health → /connect_apple_health\n"
+    "  🧭 Інструкція Apple Health → /apple_health_help\n"
     "  🥗 FatSecret → /connect_fatsecret\n"
     "  🔄 Синхронізувати → /sync\n"
     "  🏋️ Gym промпт → /gym_prompt\n"
@@ -586,12 +587,47 @@ HELP_TEXT = (
 )
 
 
+APPLE_HEALTH_HELP_TEXT = (
+    "🧭 Як підключити Apple Health\n"
+    "\n"
+    "Найпростіший спосіб — через Apple Shortcuts на iPhone. "
+    "Це вбудований додаток Apple, нічого додатково встановлювати не треба.\n"
+    "\n"
+    "1. У Telegram натисни /connect_apple_health.\n"
+    "2. Скопіюй URL, який надішле бот.\n"
+    "3. На iPhone відкрий Shortcuts → Automation.\n"
+    "4. Створи автоматизацію Time of Day, наприклад кожні 6 годин.\n"
+    "5. Додай дію Get Health Samples і вибери потрібні дані: steps, heart rate, sleep або active energy.\n"
+    "6. Додай дію Get Contents of URL.\n"
+    "7. Встав URL з бота, обери Method: POST.\n"
+    "8. Додай Header: Content-Type = application/json.\n"
+    "9. У Request Body додай тільки:\n"
+    "   sourceType = apple_health\n"
+    "   dataType = activity\n"
+    "   metrics = список health samples\n"
+    "10. userId і token не додавай у Body — вони вже є в URL.\n"
+    "\n"
+    "Після першого запуску перевір статус командою /sync.\n"
+    "\n"
+    "Якщо випадково переслав URL або хочеш скинути доступ, запусти "
+    "/connect_apple_health ще раз. Бот створить новий URL, а старий перестане працювати."
+)
+
+
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start and /help commands."""
     if not update.message or not update.effective_user:
         return
 
     await update.message.reply_text(HELP_TEXT, disable_web_page_preview=True)
+
+
+async def handle_apple_health_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /apple_health_help command."""
+    if not update.message or not update.effective_user:
+        return
+
+    await update.message.reply_text(APPLE_HEALTH_HELP_TEXT, disable_web_page_preview=True)
 
 
 async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -911,6 +947,7 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("help", handle_help))
     _application.add_handler(CommandHandler("connect_whoop", handle_connect_whoop))
     _application.add_handler(CommandHandler("connect_apple_health", handle_connect_apple_health))
+    _application.add_handler(CommandHandler("apple_health_help", handle_apple_health_help))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
     _application.add_handler(CommandHandler("gym_prompt", handle_gym_prompt))
@@ -932,6 +969,7 @@ async def start_bot() -> None:
         BotCommand("help", "Допомога"),
         BotCommand("connect_whoop", "Підключити WHOOP"),
         BotCommand("connect_apple_health", "Підключити Apple Health"),
+        BotCommand("apple_health_help", "Інструкція Apple Health"),
         BotCommand("connect_fatsecret", "Підключити FatSecret"),
         BotCommand("sync", "Синхронізувати дані"),
         BotCommand("gym_prompt", "Налаштувати gym профіль"),
