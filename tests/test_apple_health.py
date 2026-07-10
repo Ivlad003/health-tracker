@@ -1,6 +1,8 @@
 import json
 import logging
+import plistlib
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +33,63 @@ async def test_apple_health_shortcut_download_serves_signed_artifact(mock_settin
     assert "apple-health-sync.shortcut" in response.headers["content-disposition"]
     assert response.content.startswith(b"AEA1")
     assert b"bplist00" in response.content[:32]
+
+
+def _shortcut_text_value(field: dict) -> str | None:
+    value = field.get("WFValue", {}).get("Value", {})
+    return value.get("string")
+
+
+def _shortcut_key(field: dict) -> str:
+    return field["WFKey"]["Value"]["string"]
+
+
+def test_apple_health_shortcut_template_posts_required_metrics_payload():
+    shortcut_source = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "shortcuts"
+        / "apple-health-sync.shortcut.plist"
+    )
+    workflow = plistlib.loads(shortcut_source.read_bytes())
+
+    actions = workflow["WFWorkflowActions"]
+    health_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.filter.health.quantity"
+    )
+    health_action_uuid = health_action["WFWorkflowActionParameters"]["UUID"]
+    post_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
+    )
+
+    payload_items = post_action["WFWorkflowActionParameters"]["WFJSONValues"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    payload_by_key = {_shortcut_key(item): item for item in payload_items}
+
+    assert _shortcut_text_value(payload_by_key["sourceType"]) == "apple_health"
+    assert _shortcut_text_value(payload_by_key["dataType"]) == "activity"
+
+    metrics = payload_by_key["metrics"]
+    assert metrics["WFItemType"] == 2
+    metric_items = metrics["WFValue"]["Value"][0]["Value"]["WFDictionaryFieldValueItems"]
+    metric_by_key = {_shortcut_key(item): item for item in metric_items}
+
+    assert _shortcut_text_value(metric_by_key["type"]) == "step_count"
+    assert _shortcut_text_value(metric_by_key["unit"]) == "count"
+    timestamp_value = metric_by_key["timestamp"]["WFValue"]["Value"]
+    assert timestamp_value["attachmentsByRange"]["{0, 1}"] == {"Type": "CurrentDate"}
+
+    value_reference = metric_by_key["value"]["WFValue"]["Value"]
+    assert value_reference == {
+        "OutputName": "Health Samples",
+        "OutputUUID": health_action_uuid,
+        "Type": "ActionOutput",
+    }
 
 
 class FakePool:
