@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -24,9 +24,10 @@ RULES:
 
 INTENT DEFINITIONS:
 - log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The bot automatically syncs entries to FatSecret if connected, so always log food when user asks.
-- query_data: User asks about their health data (sleep, recovery, calories, workouts, mood, history, stats). You have access to WHOOP data (sleep, recovery, strain, activities, weight, heart rate) and FatSecret diary — use all available data when answering.
+- query_data: User asks about their health data (sleep, recovery, calories, workouts, steps, heart rate, mood, history, stats). You have access to WHOOP data, Apple Health samples, and FatSecret diary — use all available data when answering.
   WHOOP data available: sleep (duration, stages, performance), recovery (score, HRV, resting HR, SpO2, skin temp), strain, calories burned, workouts, weight, height, max HR.
-  WHOOP data NOT available via API (app-only): steps, HR zones, VO₂ max, stress monitor. If user asks about these, explain they're only visible in the WHOOP app directly.
+  Apple Health data available when synced: steps, active energy, heart rate, and sleep samples.
+  WHOOP data NOT available via API (app-only): HR zones, VO₂ max, stress monitor. If user asks about these and Apple Health did not sync them, explain they're only visible in the source app directly.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - gym: User describes gym exercises, asks about previous workouts, or asks for exercise progression.
   gym_action values:
@@ -108,6 +109,7 @@ def _build_context_messages(
     calories_in = user_data.get("today_calories_in", 0)
     calories_out = user_data.get("today_calories_out", 0)
     calories_source = user_data.get("calories_source", "bot")
+    burned_source = user_data.get("calories_burned_source", "none")
     cycle_state = user_data.get("cycle_score_state", "no_data")
 
     # Eaten calories label with source
@@ -115,7 +117,9 @@ def _build_context_messages(
     eaten_label = f"Today's calories eaten (source: {source_label}): {calories_in} kcal. "
 
     # Burned calories label
-    if cycle_state == "ESTIMATED" and calories_out > 0:
+    if burned_source == "apple_health" and calories_out > 0:
+        burned_label = f"Today's active calories burned (Apple Health): {calories_out} kcal. "
+    elif cycle_state == "ESTIMATED" and calories_out > 0:
         burned_label = (
             f"Estimated calories burned today so far (WHOOP): ~{calories_out} kcal "
             f"(real-time estimate based on metabolism + workouts). "
@@ -159,6 +163,8 @@ def _build_context_messages(
         data_context += f" {user_data['whoop_activities']}."
     if user_data.get("whoop_body"):
         data_context += f" {user_data['whoop_body']}."
+    if user_data.get("apple_health_summary"):
+        data_context += f" {user_data['apple_health_summary']}."
     if user_data.get("gym_prompt"):
         data_context += f" User gym profile: {user_data['gym_prompt']}."
     if user_data.get("recent_gym_exercises"):
@@ -179,7 +185,7 @@ def _build_context_messages(
 
 
 async def get_today_stats(user_id: int) -> dict:
-    """Fetch today's stats: FatSecret diary (live) + WHOOP data (live). No DB reads."""
+    """Fetch today's stats from FatSecret, WHOOP, and stored Apple Health samples."""
     logger.info("Fetching today stats for user_id=%s", user_id)
     pool = await get_pool()
 
@@ -304,19 +310,37 @@ async def get_today_stats(user_id: int) -> dict:
         except Exception:
             logger.exception("Failed to fetch WHOOP data for user_id=%s", user_id)
 
+    from app.services.apple_health import get_apple_health_summary
+
+    now_local = datetime.now(ZoneInfo("Europe/Kyiv"))
+    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+    apple_health = await get_apple_health_summary(
+        pool,
+        user_id,
+        start_at=today_start.astimezone(timezone.utc),
+        end_at=tomorrow_start.astimezone(timezone.utc),
+    )
+
     # FatSecret is the sole source of truth for eaten calories (live API).
     total_in = round(fatsecret_calories) if fatsecret_ok else 0
     calories_source = "fatsecret" if fatsecret_ok else "none"
+    calories_out = whoop["calories_out"]
+    calories_burned_source = "whoop" if calories_out > 0 else "none"
+    if calories_out <= 0 and apple_health["active_energy_kcal"] > 0:
+        calories_out = apple_health["active_energy_kcal"]
+        calories_burned_source = "apple_health"
 
     logger.info("Stats for user_id=%s: in=%d kcal (src=%s), out=%d kcal, strain=%.1f, workouts=%d",
                 user_id, total_in, calories_source,
-                whoop["calories_out"], whoop["strain"], whoop["workout_count"])
+                calories_out, whoop["strain"], whoop["workout_count"])
 
     return {
         "today_calories_in": total_in,
         "calories_source": calories_source,
         "today_fatsecret_meals": fatsecret_meals,
-        "today_calories_out": whoop["calories_out"],
+        "today_calories_out": calories_out,
+        "calories_burned_source": calories_burned_source,
         "today_strain": whoop["strain"],
         "today_workout_count": whoop["workout_count"],
         "cycle_score_state": whoop["cycle_score_state"],
@@ -324,6 +348,13 @@ async def get_today_stats(user_id: int) -> dict:
         "whoop_recovery": whoop["recovery_info"],
         "whoop_activities": whoop["activities_info"],
         "whoop_body": whoop["body_info"],
+        "apple_health_steps": apple_health["steps"],
+        "apple_health_active_energy_kcal": apple_health["active_energy_kcal"],
+        "apple_health_avg_heart_rate": apple_health["avg_heart_rate"],
+        "apple_health_sleep_hours": apple_health["sleep_hours"],
+        "apple_health_metric_counts": apple_health["metric_counts"],
+        "apple_health_latest_metric_at": apple_health["latest_metric_at"],
+        "apple_health_summary": apple_health["summary"],
         "expired_services": expired_services,
     }
 

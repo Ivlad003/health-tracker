@@ -132,10 +132,17 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.database import get_pool, close_pool
+    from app.db_preflight import verify_apple_health_schema
     from app.scheduler import start_scheduler, stop_scheduler
     from app.services.telegram_bot import start_bot, stop_bot
 
-    await get_pool()
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            await verify_apple_health_schema(conn)
+    except Exception:
+        await close_pool()
+        raise
     start_scheduler()
     await start_bot()
     logger.info("App started")

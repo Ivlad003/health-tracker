@@ -76,6 +76,8 @@ async def morning_briefing() -> None:
                 data_summary += f"{stats['whoop_sleep']}. "
             if stats.get("whoop_recovery"):
                 data_summary += f"{stats['whoop_recovery']}. "
+            if stats.get("apple_health_summary"):
+                data_summary += f"{stats['apple_health_summary']}. "
             data_summary += f"Language: {lang}."
 
             prompt = (
@@ -131,6 +133,8 @@ async def evening_summary() -> None:
                 data_summary += f"{stats['whoop_recovery']}. "
             if stats.get("whoop_activities"):
                 data_summary += f"{stats['whoop_activities']}. "
+            if stats.get("apple_health_summary"):
+                data_summary += f"{stats['apple_health_summary']}. "
             data_summary += f"Language: {lang}."
 
             prompt = (
@@ -216,6 +220,8 @@ async def journal_reminders() -> None:
                 if stats.get("whoop_recovery"):
                     rec_short = stats["whoop_recovery"].split(",")[0] if stats["whoop_recovery"] else ""
                     parts.append(f"💚 {rec_short}")
+                if stats.get("apple_health_sleep_hours"):
+                    parts.append(f"❤️ Apple sleep: {stats['apple_health_sleep_hours']}h")
                 parts.append("\nЯк настрій? Які плани на день?")
                 text = "\n".join(parts)
             else:
@@ -228,6 +234,8 @@ async def journal_reminders() -> None:
                     parts.append(f"📊 {cal_in}/{goal} kcal")
                     if cal_out > 0:
                         parts[-1] += f", 🔥 {cal_out} спалено"
+                if stats.get("apple_health_steps"):
+                    parts.append(f"👣 {stats['apple_health_steps']} кроків")
                 strain = stats.get("today_strain", 0)
                 if strain > 0:
                     parts.append(f"💪 Strain: {strain}")
