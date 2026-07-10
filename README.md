@@ -51,6 +51,16 @@ health-tracker/
 3. Run database migrations
 4. Start the app: `uvicorn app.main:app`
 
+### Production database preflight
+
+Dokploy production deploys use the Dockerfile `CMD` as the authoritative migration path. Before Uvicorn starts, the container runs:
+
+```bash
+python -m app.db_preflight --apply-apple-health-migration
+```
+
+That command applies `database/migrations/007_apple_health_connector.sql` and verifies the required Apple Health tables and indexes. FastAPI repeats the verification during startup and fails before serving traffic if `apple_health_sync`, `health_data`, `apple_health_import_logs`, or their required indexes are missing.
+
 ## 📖 Documentation
 
 - [Getting Started](docs/en/getting-started.md)

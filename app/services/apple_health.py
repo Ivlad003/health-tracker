@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 class AppleHealthIngestionError(ValueError):
     """Raised when Apple Health payload validation or ingestion fails."""
+
+
+_STEP_METRICS = {"step_count", "stepcount", "steps", "step_count_total"}
+_ACTIVE_ENERGY_METRICS = {
+    "active_energy",
+    "activeenergy",
+    "active_energy_burned",
+    "activeenergyburned",
+    "active_calories",
+}
+_HEART_RATE_METRICS = {
+    "heart_rate",
+    "heartrate",
+    "heart_rate_average",
+    "walking_heart_rate_average",
+}
+_SLEEP_METRICS = {"sleep", "sleep_analysis", "sleepanalysis", "asleep", "sleep_duration"}
 
 
 def verify_apple_health_token(provided_token: str | None, expected_token: str) -> bool:
@@ -29,13 +47,14 @@ async def ensure_apple_health_sync(
     user_id: int,
     sync_frequency_hours: int = 6,
 ) -> dict[str, str]:
-    """Create or reactivate Apple Health sync credentials for a user."""
+    """Create or rotate Apple Health sync credentials for a user."""
     token = secrets.token_urlsafe(32)
     row = await pool.fetchrow(
         """INSERT INTO apple_health_sync (user_id, secret_key, sync_frequency_hours, is_active)
            VALUES ($1, $2, $3, TRUE)
            ON CONFLICT (user_id) DO UPDATE
-           SET is_active = TRUE,
+           SET secret_key = EXCLUDED.secret_key,
+               is_active = TRUE,
                sync_frequency_hours = EXCLUDED.sync_frequency_hours,
                updated_at = NOW()
            RETURNING secret_key""",
@@ -81,33 +100,240 @@ async def _get_active_sync(pool: Any, telegram_user_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-async def _is_duplicate_metric(
+async def get_apple_health_sync_for_observability(
+    pool: Any,
+    telegram_user_id: int,
+) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """SELECT u.id AS user_id,
+                  ahs.id AS sync_id,
+                  ahs.secret_key
+           FROM users u
+           JOIN apple_health_sync ahs ON ahs.user_id = u.id
+           WHERE u.telegram_user_id = $1""",
+        telegram_user_id,
+    )
+    return dict(row) if row else None
+
+
+def _metric_key(metric_type: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", metric_type.strip().lower()).strip("_")
+    aliases = {
+        "active_energy_burned": "active_energy",
+        "active_calories": "active_energy",
+        "step_count": "step_count",
+        "steps": "step_count",
+        "heart_rate": "heart_rate",
+        "sleep_analysis": "sleep_analysis",
+    }
+    return aliases.get(key, key)
+
+
+def _is_metric(metric_type: str, candidates: set[str]) -> bool:
+    key = _metric_key(metric_type)
+    compact = key.replace("_", "")
+    return key in candidates or compact in candidates
+
+
+def _to_float(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value or 0)
+
+
+def _format_number(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 0.05:
+        return str(rounded)
+    return f"{value:.1f}"
+
+
+async def get_apple_health_summary(
+    pool: Any,
+    user_id: int,
+    *,
+    start_at: datetime,
+    end_at: datetime,
+) -> dict[str, Any]:
+    """Aggregate Apple Health samples for assistant, sync, and briefing consumers.
+
+    Merge contract:
+    - Apple Health is primary for phone/watch-native metrics: steps, heart rate,
+      and imported sleep samples.
+    - WHOOP remains primary for proprietary metrics: strain, recovery, and
+      workout count.
+    - Calories burned use WHOOP when live WHOOP has a non-zero value; otherwise
+      Apple Health active energy is the fallback.
+    """
+    rows = await pool.fetch(
+        """SELECT metric_type, value, unit, recorded_at, duration_seconds
+           FROM health_data
+           WHERE user_id = $1
+                 AND source = 'apple_health'
+                 AND recorded_at >= $2
+                 AND recorded_at < $3
+           ORDER BY recorded_at ASC""",
+        user_id,
+        start_at,
+        end_at,
+    )
+
+    steps = 0.0
+    active_energy = 0.0
+    heart_rates: list[float] = []
+    sleep_seconds = 0.0
+    counts: dict[str, int] = {}
+    latest_metric_at = None
+
+    for row in rows:
+        metric_type = str(row["metric_type"])
+        key = _metric_key(metric_type)
+        value = _to_float(row["value"])
+        unit = str(row["unit"] or "").lower()
+        counts[key] = counts.get(key, 0) + 1
+        recorded_at = row["recorded_at"]
+        if latest_metric_at is None or recorded_at > latest_metric_at:
+            latest_metric_at = recorded_at
+
+        if _is_metric(metric_type, _STEP_METRICS):
+            steps += value
+        elif _is_metric(metric_type, _ACTIVE_ENERGY_METRICS):
+            active_energy += value
+        elif _is_metric(metric_type, _HEART_RATE_METRICS):
+            heart_rates.append(value)
+        elif _is_metric(metric_type, _SLEEP_METRICS):
+            duration_seconds = row["duration_seconds"]
+            if duration_seconds:
+                sleep_seconds += float(duration_seconds)
+            elif unit in {"h", "hr", "hour", "hours"}:
+                sleep_seconds += value * 3600
+            elif unit in {"m", "min", "minute", "minutes"}:
+                sleep_seconds += value * 60
+            elif unit in {"s", "sec", "second", "seconds"}:
+                sleep_seconds += value
+
+    avg_heart_rate = round(sum(heart_rates) / len(heart_rates)) if heart_rates else 0
+    sleep_hours = round(sleep_seconds / 3600, 1) if sleep_seconds else 0
+    active_energy_kcal = round(active_energy)
+    total_steps = round(steps)
+
+    parts = []
+    if total_steps:
+        parts.append(f"Apple Health steps: {total_steps}")
+    if active_energy_kcal:
+        parts.append(f"Apple Health active energy: {active_energy_kcal} kcal")
+    if avg_heart_rate:
+        parts.append(f"Apple Health average heart rate: {avg_heart_rate} bpm")
+    if sleep_hours:
+        parts.append(f"Apple Health sleep: {_format_number(sleep_hours)}h")
+
+    return {
+        "steps": total_steps,
+        "active_energy_kcal": active_energy_kcal,
+        "avg_heart_rate": avg_heart_rate,
+        "sleep_hours": sleep_hours,
+        "metric_counts": counts,
+        "latest_metric_at": latest_metric_at,
+        "summary": ". ".join(parts),
+    }
+
+
+def _sanitized_request_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in ("sourceType", "dataType", "syncTimestamp"):
+        if payload.get(key) is not None:
+            summary[key] = payload[key]
+    metrics = payload.get("metrics")
+    summary["metrics_count"] = len(metrics) if isinstance(metrics, list) else 0
+    return summary
+
+
+async def record_apple_health_import_log(
+    pool: Any,
+    *,
+    user_id: int,
+    sync_id: int | None,
+    http_status: int,
+    records_received: int = 0,
+    records_processed: int = 0,
+    records_failed: int = 0,
+    error_message: str | None = None,
+    request_summary: dict[str, Any] | None = None,
+    response_summary: dict[str, Any] | None = None,
+) -> None:
+    await pool.execute(
+        """INSERT INTO apple_health_import_logs
+               (user_id, sync_id, http_status, records_received, records_processed,
+                records_failed, error_message, request_body, response_body)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)""",
+        user_id,
+        sync_id,
+        http_status,
+        records_received,
+        records_processed,
+        records_failed,
+        error_message,
+        json.dumps(request_summary or {}),
+        json.dumps(response_summary or {}),
+    )
+
+
+async def record_apple_health_failure(
+    pool: Any,
+    *,
+    user_id: int,
+    sync_id: int | None,
+    http_status: int,
+    error_message: str,
+    records_received: int = 0,
+    records_processed: int = 0,
+    records_failed: int = 0,
+    request_summary: dict[str, Any] | None = None,
+) -> None:
+    if sync_id is not None:
+        await pool.execute(
+            """UPDATE apple_health_sync
+               SET error_count = error_count + 1,
+                   last_error_message = $2,
+                   updated_at = NOW()
+               WHERE id = $1""",
+            sync_id,
+            error_message,
+        )
+    await record_apple_health_import_log(
+        pool,
+        user_id=user_id,
+        sync_id=sync_id,
+        http_status=http_status,
+        records_received=records_received,
+        records_processed=records_processed,
+        records_failed=records_failed,
+        error_message=error_message,
+        request_summary=request_summary,
+        response_summary={"error": error_message},
+    )
+
+
+async def _get_existing_metric_for_unique_key(
     pool: Any,
     *,
     user_id: int,
     metric_type: str,
-    unit: str,
-    value: Decimal,
     recorded_at: datetime,
-) -> bool:
+) -> dict[str, Any] | None:
     row = await pool.fetchrow(
-        """SELECT id
+        """SELECT id, value, unit
            FROM health_data
            WHERE user_id = $1
                  AND source = 'apple_health'
                  AND metric_type = $2
-                 AND unit = $3
-                 AND value = $4
-                 AND recorded_at BETWEEN $5 AND $6
+                 AND recorded_at = $3
            LIMIT 1""",
         user_id,
         metric_type,
-        unit,
-        value,
-        recorded_at - timedelta(minutes=5),
-        recorded_at + timedelta(minutes=5),
+        recorded_at,
     )
-    return row is not None
+    return dict(row) if row is not None else None
 
 
 def _normalize_hae_timestamp(raw: str) -> str:
@@ -194,20 +420,15 @@ def convert_health_auto_export(
     }
 
 
-def _validate_payload(payload: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
+def _validate_metric_container(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if payload.get("sourceType") != "apple_health":
         raise AppleHealthIngestionError("sourceType must be apple_health")
-
-    try:
-        telegram_user_id = int(payload["userId"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AppleHealthIngestionError("userId must be a Telegram user id") from exc
 
     metrics = payload.get("metrics")
     if not isinstance(metrics, list):
         raise AppleHealthIngestionError("metrics must be a list")
 
-    return telegram_user_id, metrics
+    return metrics
 
 
 def _normalize_metric(
@@ -262,40 +483,68 @@ async def ingest_apple_health_payload(
     """Normalize and store Apple Health metrics sent by an iOS Shortcut."""
     received = len(payload.get("metrics", [])) if isinstance(payload.get("metrics"), list) else 0
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    telegram_user_id, metrics = _validate_payload(payload)
+    try:
+        telegram_user_id = int(payload["userId"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AppleHealthIngestionError("userId must be a Telegram user id") from exc
     sync = await _get_active_sync(pool, telegram_user_id)
     user_id = sync["user_id"]
     sync_id = sync["sync_id"]
-    normalized_metrics = [
-        _normalize_metric(
-            metric,
-            data_type=payload.get("dataType"),
-            current_time=current_time,
-        )
-        for metric in metrics
-    ]
-    processed = 0
+    request_summary = _sanitized_request_summary(payload)
+    inserted = 0
+    skipped = 0
+    duplicates = 0
+    conflicts = 0
     failed = 0
+
+    try:
+        metrics = _validate_metric_container(payload)
+        normalized_metrics = [
+            _normalize_metric(
+                metric,
+                data_type=payload.get("dataType"),
+                current_time=current_time,
+            )
+            for metric in metrics
+        ]
+    except AppleHealthIngestionError as exc:
+        failed = received or 1
+        await record_apple_health_failure(
+            pool,
+            user_id=user_id,
+            sync_id=sync_id,
+            http_status=400,
+            records_received=received,
+            records_processed=inserted,
+            records_failed=failed,
+            error_message=str(exc),
+            request_summary=request_summary,
+        )
+        raise
 
     for metric in normalized_metrics:
         try:
-            duplicate = await _is_duplicate_metric(
+            existing = await _get_existing_metric_for_unique_key(
                 pool,
                 user_id=user_id,
                 metric_type=metric["metric_type"],
-                unit=metric["unit"],
-                value=metric["value"],
                 recorded_at=metric["recorded_at"],
             )
-            if duplicate:
+            if existing is not None:
+                skipped += 1
+                if existing["unit"] == metric["unit"] and Decimal(str(existing["value"])) == metric["value"]:
+                    duplicates += 1
+                else:
+                    conflicts += 1
                 continue
 
-            await pool.execute(
+            row = await pool.fetchrow(
                 """INSERT INTO health_data
                        (user_id, source, metric_type, metric_subtype, value, unit,
                         recorded_at, duration_seconds, additional_data)
                    VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7, $8::jsonb)
-                   ON CONFLICT (user_id, source, metric_type, recorded_at) DO NOTHING""",
+                   ON CONFLICT (user_id, source, metric_type, recorded_at) DO NOTHING
+                   RETURNING id""",
                 user_id,
                 metric["metric_type"],
                 metric["metric_subtype"],
@@ -305,13 +554,29 @@ async def ingest_apple_health_payload(
                 metric["duration_seconds"],
                 json.dumps(metric["additional_data"]),
             )
-            processed += 1
+            if row is None:
+                skipped += 1
+                conflicts += 1
+                continue
+            inserted += 1
         except AppleHealthIngestionError:
             failed += 1
             raise
         except Exception as exc:
             failed += 1
-            raise AppleHealthIngestionError("failed to process Apple Health metric") from exc
+            error = AppleHealthIngestionError("failed to process Apple Health metric")
+            await record_apple_health_failure(
+                pool,
+                user_id=user_id,
+                sync_id=sync_id,
+                http_status=500,
+                records_received=received,
+                records_processed=inserted,
+                records_failed=failed,
+                error_message=str(error),
+                request_summary=request_summary,
+            )
+            raise error from exc
 
     await pool.execute(
         """UPDATE apple_health_sync
@@ -324,16 +589,43 @@ async def ingest_apple_health_payload(
         sync_id,
         failed,
     )
+    await record_apple_health_import_log(
+        pool,
+        user_id=user_id,
+        sync_id=sync_id,
+        http_status=200,
+        records_received=received,
+        records_processed=inserted,
+        records_failed=failed,
+        request_summary=request_summary,
+        response_summary={
+            "records_received": received,
+            "records_processed": inserted,
+            "records_inserted": inserted,
+            "records_skipped": skipped,
+            "records_duplicate": duplicates,
+            "records_conflict": conflicts,
+            "records_failed": failed,
+        },
+    )
 
     logger.info(
-        "Apple Health sync ingested: user_id=%s received=%d processed=%d failed=%d",
+        "Apple Health sync ingested: user_id=%s received=%d inserted=%d skipped=%d "
+        "duplicates=%d conflicts=%d failed=%d",
         user_id,
         received,
-        processed,
+        inserted,
+        skipped,
+        duplicates,
+        conflicts,
         failed,
     )
     return {
         "records_received": received,
-        "records_processed": processed,
+        "records_processed": inserted,
+        "records_inserted": inserted,
+        "records_skipped": skipped,
+        "records_duplicate": duplicates,
+        "records_conflict": conflicts,
         "records_failed": failed,
     }

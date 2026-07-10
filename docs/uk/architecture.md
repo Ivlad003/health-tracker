@@ -188,6 +188,14 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 4. Налаштуйте environment variables
 5. Налаштуйте домен та SSL
 
+Docker-образ копіює `database/` у контейнер і використовує один production-шлях міграції:
+
+```bash
+python -m app.db_preflight --apply-apple-health-migration
+```
+
+Ця prestart-команда застосовує міграцію Apple Health і перевіряє `apple_health_sync`, `health_data`, `apple_health_import_logs` та потрібні індекси Apple Health до старту Uvicorn. FastAPI lifespan повторює перевірку; якщо схема неповна, застосунок завершує старт із санітизованою помилкою до обслуговування трафіку.
+
 ---
 
 ## Моніторинг

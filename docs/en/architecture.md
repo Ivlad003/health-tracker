@@ -188,6 +188,14 @@ The system is deployed via Dokploy:
 4. Configure environment variables
 5. Set up domain and SSL
 
+The Docker image copies `database/` into the container and uses one production migration path:
+
+```bash
+python -m app.db_preflight --apply-apple-health-migration
+```
+
+This prestart command applies the Apple Health migration and verifies `apple_health_sync`, `health_data`, `apple_health_import_logs`, and the required Apple Health indexes before Uvicorn starts. The FastAPI lifespan runs the same verifier again; if the schema is incomplete, startup exits with a sanitized error before the app serves traffic.
+
 ---
 
 ## Monitoring

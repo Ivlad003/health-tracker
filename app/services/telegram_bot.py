@@ -498,7 +498,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             src_label = " (FatSecret)" if src == "fatsecret" else ""
             balance_line = f"\n\n📊 {total_in} / {daily_calorie_goal} kcal{src_label}"
             if total_out > 0:
-                balance_line += f"  🔥 {total_out} спалено"
+                burned_src = stats.get("calories_burned_source", "none")
+                burned_label = "Apple Health" if burned_src == "apple_health" else "WHOOP"
+                balance_line += f"  🔥 {total_out} спалено ({burned_label})"
             response_text += balance_line
             # Warn if any items failed to sync to FatSecret
             failed_sync = [i["name"] for i in logged if not i["synced_to_fs"]]
@@ -654,15 +656,27 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(
         "❤️ Apple Health\n"
         "\n"
-        "Apple Health не має backend API, тому дані надсилаються з iOS Shortcut.\n"
-        "Налаштуй Shortcut, який кожні 4-6 годин робить POST на цей URL:\n"
+        "Apple Health не має backend API. Є 2 підтримані способи синхронізації:\n"
+        "\n"
+        "1) Без встановлення додатків: iOS Shortcuts → Automation → Time of Day → "
+        "Get Health Samples → Get Contents of URL.\n"
+        "Метод: POST, Header: Content-Type = application/json, Request Body = Dictionary.\n"
+        "\n"
+        "URL для дії Get Contents of URL:\n"
         f"{shortcut_url}\n"
         "\n"
-        "Header: Content-Type: application/json\n"
+        "У Body додай тільки ці поля:\n"
+        "sourceType = apple_health\n"
+        "dataType = activity\n"
+        "metrics = список об'єктів з type, value, unit, timestamp, duration\n"
         "\n"
-        "URL вже містить твій userId та token — у тіло (Request Body) клади "
-        "лише `sourceType`, `dataType` та `metrics`. "
-        "Поля userId/token у тілі додавати НЕ треба.",
+        "userId/token у Body НЕ додавай — вони вже є в URL.\n"
+        "\n"
+        "2) Простіше, але з встановленням додатку: Health Auto Export — JSON+CSV. "
+        "У ньому вкажи цей самий URL і Output: JSON (REST API).\n"
+        "\n"
+        "Якщо URL потрапив не туди, запусти /connect_apple_health ще раз: "
+        "бот створить новий token, а старий URL перестане працювати.",
         disable_web_page_preview=True,
     )
 
@@ -820,13 +834,16 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             results.append("⌚ WHOOP — 🔑 сесія закінчилась → /connect_whoop")
         elif stats["today_calories_out"] > 0 or stats["whoop_sleep"] or stats["whoop_recovery"]:
             parts = []
-            if stats["today_calories_out"] > 0:
+            if stats.get("calories_burned_source") == "whoop" and stats["today_calories_out"] > 0:
                 parts.append(f"{stats['today_calories_out']} kcal спалено")
             if stats["whoop_recovery"]:
                 parts.append("recovery ✓")
             if stats["whoop_sleep"]:
                 parts.append("sleep ✓")
-            results.append(f"⌚ WHOOP — ✅ {', '.join(parts)}")
+            if parts:
+                results.append(f"⌚ WHOOP — ✅ {', '.join(parts)}")
+            else:
+                results.append("⌚ WHOOP — ✅ підключено (дані ще збираються)")
         else:
             results.append("⌚ WHOOP — ✅ підключено (дані ще збираються)")
     else:
@@ -839,9 +856,25 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_id,
     )
     if apple_health_row:
-        last_sync = apple_health_row["last_sync_at"]
-        if last_sync:
-            results.append(f"❤️ Apple Health — ✅ остання синхронізація {last_sync:%d.%m %H:%M}")
+        metric_counts = stats.get("apple_health_metric_counts") or {}
+        latest_metric_at = stats.get("apple_health_latest_metric_at")
+        if metric_counts:
+            count_text = ", ".join(
+                f"{metric}: {count}" for metric, count in sorted(metric_counts.items())
+            )
+            if latest_metric_at:
+                results.append(
+                    f"❤️ Apple Health — ✅ імпортовано сьогодні: {count_text}; "
+                    f"останній показник {latest_metric_at:%d.%m %H:%M}"
+                )
+            else:
+                results.append(f"❤️ Apple Health — ✅ імпортовано сьогодні: {count_text}")
+        elif apple_health_row["last_sync_at"]:
+            last_sync = apple_health_row["last_sync_at"]
+            results.append(
+                f"❤️ Apple Health — ✅ остання синхронізація {last_sync:%d.%m %H:%M}, "
+                "показників за сьогодні ще немає"
+            )
         else:
             results.append("❤️ Apple Health — ✅ підключено, очікую перший sync")
     else:

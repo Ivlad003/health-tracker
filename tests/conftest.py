@@ -1,4 +1,15 @@
+import os
+
 import pytest
+
+
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+os.environ.setdefault("WHOOP_CLIENT_ID", "test_whoop_id")
+os.environ.setdefault("WHOOP_CLIENT_SECRET", "test_whoop_secret")
+os.environ.setdefault("WHOOP_REDIRECT_URI", "http://localhost:8000/whoop/callback")
+os.environ.setdefault("FATSECRET_CLIENT_ID", "test_fs_id")
+os.environ.setdefault("FATSECRET_CLIENT_SECRET", "test_fs_secret")
+os.environ.setdefault("FATSECRET_SHARED_SECRET", "test_fs_shared")
 
 
 @pytest.fixture

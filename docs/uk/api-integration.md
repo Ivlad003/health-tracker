@@ -7,7 +7,8 @@
 Система інтегрується з чотирма зовнішніми джерелами/API:
 - **FatSecret** - база даних продуктів та калорійності
 - **WHOOP** - дані про фізичну активність
-- **Apple Health** - iOS health-метрики через webhook з Shortcut
+- **Apple Health** - iOS health-метрики через native Shortcuts або підтриманий
+  сторонній застосунок експорту
 - **OpenAI** - розпізнавання мови та аналіз тексту
 
 ---
@@ -213,11 +214,27 @@ Authorization: Bearer {access_token}
 
 ---
 
-## Apple Health Shortcut Webhook
+## Apple Health Sync
+
+Apple Health не має backend Web API. Підтримані способи налаштування:
+
+- **Native iOS Shortcuts, без встановлення додаткових застосунків** —
+  рекомендований low-friction шлях для користувачів, які не хочуть сторонній
+  застосунок.
+- **Health Auto Export iOS app** — простіший інтерфейс регулярного експорту,
+  але потрібно встановити сторонній застосунок *Health Auto Export — JSON+CSV*.
+
+Справжнього backend-only або zero-device-setup способу для Apple Health немає,
+бо дані Apple Health залишаються на iPhone користувача, доки iOS їх не надішле.
+
+### Native iOS Shortcuts
 
 Apple Health не має backend Web API. Користувач підключає його через
 `/connect_apple_health`: бот генерує персональний токен і webhook URL для iOS
 Shortcut.
+Повторний запуск `/connect_apple_health` змінює token: новий URL починає
+працювати одразу, а всі попередні URL відхиляються. Використовуй повторне
+підключення як спосіб відкликати URL або token, якщо він потрапив не туди.
 
 ```bash
 POST /api/v1/health/apple-health/sync?userId={telegram_user_id}&token={per_user_token}
@@ -249,7 +266,47 @@ application/json` і payload з метриками. **Не додавай пол
 Метрики старші за 30 днів відхиляються. Дані Apple Health зберігаються в
 уніфікованій таблиці `health_data` із `source = 'apple_health'`.
 
-### Health Auto Export iOS app (без власного Shortcut)
+#### Покрокове налаштування Shortcut
+
+1. У Telegram виконай `/connect_apple_health` і скопіюй згенерований URL. Запусти команду
+   повторно пізніше, якщо потрібно відкликати старий URL і створити новий.
+2. На iPhone відкрий **Shortcuts** -> **Automation** -> **New Automation**.
+3. Обери **Time of Day**, задай час синхронізації та повторення щодня. Для
+   частішої синхронізації створи кілька automation, наприклад ранок, день і
+   вечір.
+4. Додай дію **Find Health Samples**.
+   - Type: обери метрику, наприклад **Steps**.
+   - Start Date: `Current Date - 1 day`.
+   - End Date: `Current Date`.
+   - Group By: **Hour** або **Day**.
+5. Додай дію **Repeat with Each** для результату Health Samples.
+6. Усередині repeat-блоку додай дію **Dictionary** для одного metric object:
+   - `type`: `step_count`
+   - `value`: quantity поточного repeat item
+   - `unit`: `count`
+   - `timestamp`: start date поточного repeat item через **Format Date** у
+     форматі **ISO 8601**
+   - `duration`: `3600` для hourly samples або пропусти, якщо duration невідомий
+7. Додавай кожен metric dictionary до list variable з назвою `metrics`.
+8. Після repeat-блоку додай фінальну дію **Dictionary** для request body:
+   - `sourceType`: `apple_health`
+   - `dataType`: `activity`
+   - `metrics`: list variable `metrics`
+9. Додай **Get Contents of URL**:
+   - URL: встав URL з Telegram із кроку 1.
+   - Method: **POST**.
+   - Headers: `Content-Type` = `application/json`.
+   - Request Body: **JSON** або **Dictionary**, використай request body
+     dictionary з кроку 8.
+10. Запусти Shortcut один раз вручну. Успішний перший sync повертає JSON на
+    кшталт `{"records_received": 1, "records_processed": 1,
+    "records_failed": 0}`.
+
+Для додаткових Health-метрик повтори той самий шаблон і зміни `type`, `unit` та
+`dataType`. Тримай timestamps у форматі ISO 8601, а кожну метрику — новішою за
+30 днів.
+
+### Health Auto Export iOS app (сторонній застосунок)
 
 Той самий endpoint `/api/v1/health/apple-health/sync` також приймає JSON у
 форматі застосунку *Health Auto Export — JSON+CSV*. Коли тіло запиту має
@@ -259,7 +316,8 @@ application/json` і payload з метриками. **Не додавай пол
 
 Налаштування:
 
-1. У Telegram виконай `/connect_apple_health` і скопіюй URL.
+1. У Telegram виконай `/connect_apple_health` і скопіюй URL. Запусти команду
+   повторно пізніше, якщо потрібно відкликати старий URL і створити новий.
 2. Встанови **Health Auto Export — JSON+CSV** з App Store.
 3. Додай нову автоматизацію в застосунку:
    - Output: **JSON (REST API)**
@@ -269,7 +327,8 @@ application/json` і payload з метриками. **Не додавай пол
 4. Запусти один раз для перевірки. Сервер поверне `{"records_received": N,
    "records_processed": M, ...}`.
 
-iOS Shortcut не потрібен.
+Цей шлях не потребує створення iOS Shortcut, але потребує встановлення й
+налаштування стороннього застосунку Health Auto Export.
 
 ---
 

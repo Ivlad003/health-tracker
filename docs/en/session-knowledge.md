@@ -284,3 +284,5 @@ Docker image: `health-tracker`, deployed on Dokploy.
 docker build -t health-tracker .
 docker run --env-file .env -p 8000:8000 health-tracker
 ```
+
+Production startup uses the Dockerfile command as the single authoritative migration path for Apple Health. The container runs `python -m app.db_preflight --apply-apple-health-migration` before Uvicorn, then the FastAPI lifespan verifies the required Apple Health tables and indexes again before serving traffic.
