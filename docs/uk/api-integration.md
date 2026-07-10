@@ -258,13 +258,15 @@ GET /api/v1/health/apple-health/shortcut
 згенерувати через Apple Shortcuts CLI:
 
 ```bash
-plutil -convert binary1 \
-  -o /tmp/apple-health-sync-source.shortcut \
-  docs/shortcuts/apple-health-sync.shortcut.plist
+cp docs/shortcuts/apple-health-sync.shortcut.plist \
+  /tmp/apple-health-sync-source.shortcut
 shortcuts sign --mode anyone \
   --input /tmp/apple-health-sync-source.shortcut \
   --output docs/shortcuts/apple-health-sync.shortcut
 ```
+
+Вхідний файл має зберігати розширення `.shortcut`: Shortcuts використовує його,
+щоб розпізнати джерело як Shortcut, який можна підписати.
 
 Apple усе одно вимагає підтвердження на пристрої. Повністю backend-only або
 zero-touch setup неможливий: імпорт Shortcut, Health permission, Network

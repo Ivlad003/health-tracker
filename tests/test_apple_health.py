@@ -86,6 +86,17 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
         and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Step Metric"
     )
+    payload_base_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Sync Payload Base"
+    )
+    set_value_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.setvalueforkey"
+    )
     post_action = next(
         action
         for action in actions
@@ -124,7 +135,7 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         },
     ]
 
-    payload_items = post_action["WFWorkflowActionParameters"]["WFJSONValues"]["Value"][
+    payload_items = payload_base_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
         "WFDictionaryFieldValueItems"
     ]
     payload_by_key = {_shortcut_key(item): item for item in payload_items}
@@ -132,12 +143,28 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     assert _shortcut_text_value(payload_by_key["sourceType"]) == "apple_health"
     assert _shortcut_text_value(payload_by_key["dataType"]) == "activity"
 
-    metrics = payload_by_key["metrics"]
-    assert metrics["WFItemType"] == 2
-    assert metrics["WFValue"]["Value"] == {
+    set_value_parameters = set_value_action["WFWorkflowActionParameters"]
+    assert _shortcut_text_value(set_value_parameters["WFDictionaryKey"]) == "metrics"
+    assert set_value_parameters["WFDictionary"]["Value"] == {
+        "OutputName": "Sync Payload Base",
+        "OutputUUID": payload_base_action["WFWorkflowActionParameters"]["UUID"],
+        "Type": "ActionOutput",
+    }
+    assert _shortcut_token_attachment(set_value_parameters["WFDictionaryValue"]) == {
         "OutputName": "Repeat Results",
         "OutputUUID": repeat_end["WFWorkflowActionParameters"]["UUID"],
         "Type": "ActionOutput",
+    }
+
+    post_parameters = post_action["WFWorkflowActionParameters"]
+    assert post_parameters["WFHTTPBodyType"] == "JSON"
+    assert post_parameters["WFJSONValues"] == {
+        "WFSerializationType": "WFTextTokenAttachment",
+        "Value": {
+            "OutputName": "Sync Payload",
+            "OutputUUID": set_value_parameters["UUID"],
+            "Type": "ActionOutput",
+        },
     }
 
 

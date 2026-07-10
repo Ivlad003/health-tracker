@@ -17,6 +17,10 @@
 		<string>NCWidget</string>
 		<string>WatchKit</string>
 	</array>
+	<key>WFWorkflowInputContentItemClasses</key>
+	<array/>
+	<key>WFWorkflowOutputContentItemClasses</key>
+	<array/>
 	<key>WFWorkflowIcon</key>
 	<dict>
 		<key>WFWorkflowIconGlyphNumber</key>
@@ -32,7 +36,7 @@
 			<key>ParameterKey</key>
 			<string>WFURL</string>
 			<key>ActionIndex</key>
-			<integer>5</integer>
+			<integer>7</integer>
 			<key>Text</key>
 			<string>Paste the Apple Health webhook URL from /connect_apple_health.</string>
 			<key>DefaultValue</key>
@@ -110,7 +114,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>WFCommentActionText</key>
-				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, convert it to binary with plutil and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. The Shortcut must build metrics inside Repeat with Each from each Repeat Item quantity and ISO 8601 start date; server-side ingestion remains the source of truth for validation and normalization.</string>
+				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, copy it to a temporary file ending in .shortcut and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. The Shortcut must build metrics inside Repeat with Each from each Repeat Item quantity and ISO 8601 start date; server-side ingestion remains the source of truth for validation and normalization.</string>
 			</dict>
 		</dict>
 		<dict>
@@ -317,55 +321,14 @@
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.downloadurl</string>
+			<string>is.workflow.actions.dictionary</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
+				<key>CustomOutputName</key>
+				<string>Sync Payload Base</string>
 				<key>UUID</key>
-				<string>33333333-3333-4333-8333-333333333333</string>
-				<key>WFURL</key>
-				<string>https://example.com/api/v1/health/apple-health/sync?userId=123456789&amp;token=replace-me</string>
-				<key>WFHTTPMethod</key>
-				<string>POST</string>
-				<key>WFHTTPBodyType</key>
-				<string>JSON</string>
-				<key>ShowHeaders</key>
-				<false/>
-				<key>WFHTTPHeaders</key>
-				<dict>
-					<key>WFSerializationType</key>
-					<string>WFDictionaryFieldValue</string>
-					<key>Value</key>
-					<dict>
-						<key>WFDictionaryFieldValueItems</key>
-						<array>
-							<dict>
-								<key>WFItemType</key>
-								<integer>0</integer>
-								<key>WFKey</key>
-								<dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-									<key>Value</key>
-									<dict>
-										<key>string</key>
-										<string>Content-Type</string>
-									</dict>
-								</dict>
-								<key>WFValue</key>
-								<dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-									<key>Value</key>
-									<dict>
-										<key>string</key>
-										<string>application/json</string>
-									</dict>
-								</dict>
-							</dict>
-						</array>
-					</dict>
-				</dict>
-				<key>WFJSONValues</key>
+				<string>77777777-7777-4777-8777-777777777777</string>
+				<key>WFItems</key>
 				<dict>
 					<key>WFSerializationType</key>
 					<string>WFDictionaryFieldValue</string>
@@ -421,9 +384,94 @@
 									</dict>
 								</dict>
 							</dict>
+						</array>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.setvalueforkey</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>CustomOutputName</key>
+				<string>Sync Payload</string>
+				<key>UUID</key>
+				<string>88888888-8888-4888-8888-888888888888</string>
+				<key>WFDictionary</key>
+				<dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+					<key>Value</key>
+					<dict>
+						<key>OutputName</key>
+						<string>Sync Payload Base</string>
+						<key>OutputUUID</key>
+						<string>77777777-7777-4777-8777-777777777777</string>
+						<key>Type</key>
+						<string>ActionOutput</string>
+					</dict>
+				</dict>
+				<key>WFDictionaryKey</key>
+				<dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+					<key>Value</key>
+					<dict>
+						<key>string</key>
+						<string>metrics</string>
+					</dict>
+				</dict>
+				<key>WFDictionaryValue</key>
+				<dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict>
+							<key>{0, 1}</key>
+							<dict>
+								<key>OutputName</key>
+								<string>Repeat Results</string>
+								<key>OutputUUID</key>
+								<string>66666666-6666-4666-8666-666666666666</string>
+								<key>Type</key>
+								<string>ActionOutput</string>
+							</dict>
+						</dict>
+						<key>string</key>
+						<string>￼</string>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.downloadurl</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>UUID</key>
+				<string>33333333-3333-4333-8333-333333333333</string>
+				<key>WFURL</key>
+				<string>https://example.com/api/v1/health/apple-health/sync?userId=123456789&amp;token=replace-me</string>
+				<key>WFHTTPMethod</key>
+				<string>POST</string>
+				<key>WFHTTPBodyType</key>
+				<string>JSON</string>
+				<key>ShowHeaders</key>
+				<false/>
+				<key>WFHTTPHeaders</key>
+				<dict>
+					<key>WFSerializationType</key>
+					<string>WFDictionaryFieldValue</string>
+					<key>Value</key>
+					<dict>
+						<key>WFDictionaryFieldValueItems</key>
+						<array>
 							<dict>
 								<key>WFItemType</key>
-								<integer>2</integer>
+								<integer>0</integer>
 								<key>WFKey</key>
 								<dict>
 									<key>WFSerializationType</key>
@@ -431,27 +479,37 @@
 									<key>Value</key>
 									<dict>
 										<key>string</key>
-										<string>metrics</string>
+										<string>Content-Type</string>
 									</dict>
 								</dict>
 								<key>WFValue</key>
 								<dict>
 									<key>WFSerializationType</key>
-									<string>WFTextTokenAttachment</string>
+									<string>WFTextTokenString</string>
 									<key>Value</key>
 									<dict>
-										<key>OutputName</key>
-										<string>Repeat Results</string>
-										<key>OutputUUID</key>
-										<string>66666666-6666-4666-8666-666666666666</string>
-										<key>Type</key>
-										<string>ActionOutput</string>
+										<key>string</key>
+										<string>application/json</string>
 									</dict>
 								</dict>
 							</dict>
 						</array>
 					</dict>
 				</dict>
+			<key>WFJSONValues</key>
+			<dict>
+				<key>WFSerializationType</key>
+				<string>WFTextTokenAttachment</string>
+				<key>Value</key>
+				<dict>
+					<key>OutputName</key>
+					<string>Sync Payload</string>
+					<key>OutputUUID</key>
+					<string>88888888-8888-4888-8888-888888888888</string>
+					<key>Type</key>
+					<string>ActionOutput</string>
+				</dict>
+			</dict>
 			</dict>
 		</dict>
 	</array>

@@ -238,13 +238,15 @@ environment variable is required. The editable source template lives at
 artifact with Apple's Shortcuts CLI:
 
 ```bash
-plutil -convert binary1 \
-  -o /tmp/apple-health-sync-source.shortcut \
-  docs/shortcuts/apple-health-sync.shortcut.plist
+cp docs/shortcuts/apple-health-sync.shortcut.plist \
+  /tmp/apple-health-sync-source.shortcut
 shortcuts sign --mode anyone \
   --input /tmp/apple-health-sync-source.shortcut \
   --output docs/shortcuts/apple-health-sync.shortcut
 ```
+
+The input file must retain the `.shortcut` extension: Shortcuts uses it to
+recognize the source as a signable Shortcut workflow.
 
 Apple still requires device-side confirmation. A fully backend-only or
 zero-touch setup is not possible because the Shortcut import, Health permission,
