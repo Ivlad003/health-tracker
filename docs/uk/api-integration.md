@@ -246,10 +246,16 @@ Shortcut.
 5. У **Shortcuts** -> **Automation** створи **Personal Automation**, наприклад
    **Time of Day**, і вибери імпортований Shortcut для регулярного запуску.
 
-У deployment потрібно опублікувати `docs/shortcuts/apple-health-sync.shortcut`
-і встановити `APPLE_HEALTH_SHORTCUT_IMPORT_URL` на цей import URL. Editable
-source template лежить у `docs/shortcuts/apple-health-sync.shortcut.plist`;
-підписаний artifact можна згенерувати через Apple Shortcuts CLI:
+Backend віддає підписаний artifact тут:
+
+```text
+GET /api/v1/health/apple-health/shortcut
+```
+
+`/connect_apple_health` напряму дає посилання на цей URL, тому окрема env-змінна
+для Shortcut URL не потрібна. Editable source template лежить у
+`docs/shortcuts/apple-health-sync.shortcut.plist`; підписаний artifact можна
+згенерувати через Apple Shortcuts CLI:
 
 ```bash
 plutil -convert binary1 \

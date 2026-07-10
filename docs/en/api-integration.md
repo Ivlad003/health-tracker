@@ -226,10 +226,16 @@ The recommended onboarding path is a ready Shortcut named
 5. In **Shortcuts** -> **Automation**, create a **Personal Automation** such as
    **Time of Day** and choose the imported Shortcut for recurring sync.
 
-Deployments should publish `docs/shortcuts/apple-health-sync.shortcut` and set
-`APPLE_HEALTH_SHORTCUT_IMPORT_URL` to that import URL. The editable source
-template lives at `docs/shortcuts/apple-health-sync.shortcut.plist`; regenerate
-the signed artifact with Apple's Shortcuts CLI:
+The backend serves the signed artifact at:
+
+```text
+GET /api/v1/health/apple-health/shortcut
+```
+
+`/connect_apple_health` links to that URL directly, so no separate Shortcut URL
+environment variable is required. The editable source template lives at
+`docs/shortcuts/apple-health-sync.shortcut.plist`; regenerate the signed
+artifact with Apple's Shortcuts CLI:
 
 ```bash
 plutil -convert binary1 \

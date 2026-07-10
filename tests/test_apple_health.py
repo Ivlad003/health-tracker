@@ -19,6 +19,20 @@ def test_verify_apple_health_token_rejects_mismatch(mock_settings):
     assert verify_apple_health_token("wrong-token", "user-secret") is False
 
 
+@pytest.mark.asyncio
+async def test_apple_health_shortcut_download_serves_signed_artifact(mock_settings):
+    from app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/health/apple-health/shortcut")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/x-shortcut"
+    assert "apple-health-sync.shortcut" in response.headers["content-disposition"]
+    assert response.content.startswith(b"AEA1")
+    assert b"bplist00" in response.content[:32]
+
+
 class FakePool:
     def __init__(self):
         self.executed = []

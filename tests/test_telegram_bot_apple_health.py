@@ -68,6 +68,13 @@ async def test_connect_apple_health_reply_includes_prefilled_sync_url(mock_setti
 
 
 @pytest.mark.asyncio
+async def test_connect_apple_health_reply_links_served_shortcut_artifact(mock_settings):
+    reply = await _connect_apple_health_reply()
+    assert "http://localhost:8000/api/v1/health/apple-health/shortcut" in reply
+    assert "APPLE_HEALTH_SHORTCUT_IMPORT_URL" not in reply
+
+
+@pytest.mark.asyncio
 async def test_connect_apple_health_reply_prioritizes_ready_shortcut_import(mock_settings):
     reply = await _connect_apple_health_reply()
     assert "Готовий Shortcut" in reply

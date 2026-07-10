@@ -689,14 +689,7 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
         'token': sync['secret_key'],
     })
     shortcut_url = f"{webhook_url}?{shortcut_params}"
-    shortcut_import_url = settings.apple_health_shortcut_import_url.strip()
-    if shortcut_import_url:
-        shortcut_import_line = f"👉 Готовий Shortcut: {shortcut_import_url}\n"
-    else:
-        shortcut_import_line = (
-            "👉 Готовий Shortcut: `Health Tracker Apple Health Sync` "
-            "(file: docs/shortcuts/apple-health-sync.shortcut)\n"
-        )
+    shortcut_import_url = f"{settings.app_base_url}/api/v1/health/apple-health/shortcut"
     await update.message.reply_text(
         "❤️ Apple Health\n"
         "\n"
@@ -704,7 +697,7 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
         "Рекомендований шлях — імпортувати готовий iOS Shortcuts template.\n"
         "\n"
         "1) Готовий Shortcut для iOS Shortcuts:\n"
-        f"{shortcut_import_line}"
+        f"👉 {shortcut_import_url}\n"
         "Назва: Health Tracker Apple Health Sync\n"
         "Під час імпорту встав цей URL в Import Question:\n"
         f"{shortcut_url}\n"

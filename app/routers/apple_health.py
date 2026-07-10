@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from app.database import get_pool
 from app.services.apple_health import (
@@ -21,6 +23,19 @@ from app.services.apple_health import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/health/apple-health", tags=["apple-health"])
+SHORTCUT_PATH = Path(__file__).resolve().parents[2] / "docs" / "shortcuts" / "apple-health-sync.shortcut"
+
+
+@router.get("/shortcut")
+async def download_apple_health_shortcut():
+    """Serve the signed Apple Shortcuts template used by Telegram onboarding."""
+    if not SHORTCUT_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Apple Health Shortcut template is not available")
+    return FileResponse(
+        SHORTCUT_PATH,
+        media_type="application/x-shortcut",
+        filename="apple-health-sync.shortcut",
+    )
 
 
 @router.post("/sync")
