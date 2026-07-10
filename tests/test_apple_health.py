@@ -586,7 +586,47 @@ async def test_apple_health_webhook_logs_inactive_sync_rejection(mock_settings):
 
 
 @pytest.mark.asyncio
-async def test_apple_health_webhook_logs_invalid_json_when_url_user_identifies_sync(mock_settings):
+async def test_apple_health_webhook_does_not_mutate_failure_state_for_invalid_json_with_invalid_token(mock_settings):
+    from app.main import app
+
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=wrong-token",
+                content=b"not-json",
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 401
+    assert _executed(pool, "UPDATE apple_health_sync") == []
+    assert _executed(pool, "INSERT INTO apple_health_import_logs") == []
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_does_not_mutate_failure_state_for_invalid_json_with_missing_token(mock_settings):
+    from app.main import app
+
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999",
+                content=b"not-json",
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 401
+    assert _executed(pool, "UPDATE apple_health_sync") == []
+    assert _executed(pool, "INSERT INTO apple_health_import_logs") == []
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_logs_invalid_json_after_url_token_authenticates(mock_settings):
     from app.main import app
 
     pool = FakePool()
