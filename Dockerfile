@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 COPY database/ ./database/
+COPY docs/shortcuts/ ./docs/shortcuts/
 COPY newrelic.ini .
 
 EXPOSE 8000

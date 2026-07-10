@@ -1,6 +1,8 @@
 import json
 import logging
+import plistlib
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +19,126 @@ def test_verify_apple_health_token_rejects_mismatch(mock_settings):
     from app.services.apple_health import verify_apple_health_token
 
     assert verify_apple_health_token("wrong-token", "user-secret") is False
+
+
+@pytest.mark.asyncio
+async def test_apple_health_shortcut_download_serves_signed_artifact(mock_settings):
+    from app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/health/apple-health/shortcut")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/x-shortcut"
+    assert "apple-health-sync.shortcut" in response.headers["content-disposition"]
+    assert response.content.startswith(b"AEA1")
+    assert b"bplist00" in response.content[:32]
+
+
+def _shortcut_text_value(field: dict) -> str | None:
+    value = field.get("WFValue", {}).get("Value", {})
+    return value.get("string")
+
+
+def _shortcut_key(field: dict) -> str:
+    return field["WFKey"]["Value"]["string"]
+
+
+def _shortcut_token_attachment(field: dict) -> dict:
+    value = field["WFValue"]["Value"]
+    return value["attachmentsByRange"]["{0, 1}"]
+
+
+def test_apple_health_shortcut_template_posts_required_metrics_payload():
+    shortcut_source = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "shortcuts"
+        / "apple-health-sync.shortcut.plist"
+    )
+    workflow = plistlib.loads(shortcut_source.read_bytes())
+
+    actions = workflow["WFWorkflowActions"]
+    health_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.filter.health.quantity"
+    )
+    health_action_uuid = health_action["WFWorkflowActionParameters"]["UUID"]
+    repeat_actions = [
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.repeat.each"
+    ]
+    repeat_start = next(
+        action
+        for action in repeat_actions
+        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 0
+    )
+    repeat_end = next(
+        action
+        for action in repeat_actions
+        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 2
+    )
+    metric_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Step Metric"
+    )
+    post_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
+    )
+
+    assert repeat_start["WFWorkflowActionParameters"]["WFInput"]["Value"] == {
+        "OutputName": "Health Samples",
+        "OutputUUID": health_action_uuid,
+        "Type": "ActionOutput",
+    }
+
+    metric_items = metric_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    metric_by_key = {_shortcut_key(item): item for item in metric_items}
+    assert _shortcut_text_value(metric_by_key["type"]) == "step_count"
+    assert _shortcut_text_value(metric_by_key["unit"]) == "count"
+
+    value_attachment = _shortcut_token_attachment(metric_by_key["value"])
+    assert value_attachment["Type"] == "Variable"
+    assert value_attachment["VariableName"] == "Repeat Item"
+    assert value_attachment["Aggrandizements"] == [
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Quantity"}
+    ]
+
+    timestamp_attachment = _shortcut_token_attachment(metric_by_key["timestamp"])
+    assert timestamp_attachment["Type"] == "Variable"
+    assert timestamp_attachment["VariableName"] == "Repeat Item"
+    assert timestamp_attachment["Aggrandizements"] == [
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Start Date"},
+        {
+            "Type": "WFDateFormatVariableAggrandizement",
+            "WFDateFormatStyle": "ISO 8601",
+            "WFISO8601IncludeTime": True,
+        },
+    ]
+
+    payload_items = post_action["WFWorkflowActionParameters"]["WFJSONValues"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    payload_by_key = {_shortcut_key(item): item for item in payload_items}
+
+    assert _shortcut_text_value(payload_by_key["sourceType"]) == "apple_health"
+    assert _shortcut_text_value(payload_by_key["dataType"]) == "activity"
+
+    metrics = payload_by_key["metrics"]
+    assert metrics["WFItemType"] == 2
+    assert metrics["WFValue"]["Value"] == {
+        "OutputName": "Repeat Results",
+        "OutputUUID": repeat_end["WFWorkflowActionParameters"]["UUID"],
+        "Type": "ActionOutput",
+    }
 
 
 class FakePool:
