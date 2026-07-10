@@ -57,6 +57,15 @@ async def sync_apple_health(
             pool = await get_pool()
             sync = await get_apple_health_sync_for_observability(pool, query_user_id)
             if sync:
+                provided_token = x_apple_health_token or token
+                if not verify_apple_health_token(provided_token, sync["secret_key"]):
+                    logger.warning(
+                        "AppleHealth REJECT json_parse_unauthenticated client=%s ct=%r body_len=%d",
+                        client_host,
+                        content_type,
+                        body_len,
+                    )
+                    raise HTTPException(status_code=401, detail="Invalid Apple Health token") from exc
                 await record_apple_health_failure(
                     pool,
                     user_id=sync["user_id"],
