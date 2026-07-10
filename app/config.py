@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Apple Health
     apple_health_sync_hours: int = 6
+    apple_health_shortcut_import_url: str = ""
 
     # OpenAI
     openai_api_key: str = ""

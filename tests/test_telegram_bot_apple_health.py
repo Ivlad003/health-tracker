@@ -92,6 +92,36 @@ async def test_connect_apple_health_reply_includes_prefilled_sync_url(mock_setti
 
 
 @pytest.mark.asyncio
+async def test_connect_apple_health_reply_prioritizes_ready_shortcut_import(mock_settings):
+    from app.services.telegram_bot import handle_connect_apple_health
+
+    message = AsyncMock()
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=123456789, username="tester"),
+    )
+
+    with (
+        patch(
+            "app.services.telegram_bot._ensure_user",
+            AsyncMock(return_value={"id": 7, "daily_calorie_goal": 2000}),
+        ),
+        patch("app.services.telegram_bot.get_pool", AsyncMock(return_value=object())),
+        patch(
+            "app.services.telegram_bot.ensure_apple_health_sync",
+            AsyncMock(return_value={"secret_key": "token-123"}),
+        ),
+    ):
+        await handle_connect_apple_health(update, None)
+
+    reply = message.reply_text.call_args.args[0]
+    assert "Готовий Shortcut" in reply
+    assert "Import Question" in reply
+    assert "Health Tracker Apple Health Sync" in reply
+    assert "Get Health Samples → Get Contents of URL" not in reply
+
+
+@pytest.mark.asyncio
 async def test_connect_apple_health_reply_separates_supported_setup_paths(mock_settings):
     from app.services.telegram_bot import handle_connect_apple_health
 
@@ -115,7 +145,7 @@ async def test_connect_apple_health_reply_separates_supported_setup_paths(mock_s
         await handle_connect_apple_health(update, None)
 
     reply = message.reply_text.call_args.args[0]
-    assert "Без встановлення додатків" in reply
+    assert "Готовий Shortcut" in reply
     assert "iOS Shortcuts" in reply
     assert "Health Auto Export" in reply
     assert "з встановленням додатку" in reply
@@ -167,10 +197,9 @@ async def test_apple_health_help_reply_explains_shortcuts_setup_in_ukrainian(moc
     assert "Apple Shortcuts" in reply
     assert "нічого додатково встановлювати не треба" in reply
     assert "/connect_apple_health" in reply
-    assert "Get Health Samples" in reply
-    assert "Get Contents of URL" in reply
-    assert "Method: POST" in reply
-    assert "Content-Type = application/json" in reply
+    assert "готовий Shortcut" in reply
+    assert "ручний варіант" in reply
+    assert "Get Health Samples" not in reply
     assert "/sync" in reply
 
 

@@ -227,7 +227,7 @@ Apple Health не має backend Web API. Підтримані способи н
 Справжнього backend-only або zero-device-setup способу для Apple Health немає,
 бо дані Apple Health залишаються на iPhone користувача, доки iOS їх не надішле.
 
-### Native iOS Shortcuts
+### Рекомендовано: готовий iOS Shortcut
 
 Apple Health не має backend Web API. Користувач підключає його через
 `/connect_apple_health`: бот генерує персональний токен і webhook URL для iOS
@@ -235,6 +235,34 @@ Shortcut.
 Повторний запуск `/connect_apple_health` змінює token: новий URL починає
 працювати одразу, а всі попередні URL відхиляються. Використовуй повторне
 підключення як спосіб відкликати URL або token, якщо він потрапив не туди.
+
+Рекомендований onboarding — готовий Shortcut з назвою
+`Health Tracker Apple Health Sync`:
+
+1. У Telegram виконай `/connect_apple_health`.
+2. Відкрий Shortcut import link/file на iPhone користувача.
+3. Встав згенерований webhook URL в import question Shortcut.
+4. Запусти Shortcut один раз і дозволь доступ до Health та Network.
+5. У **Shortcuts** -> **Automation** створи **Personal Automation**, наприклад
+   **Time of Day**, і вибери імпортований Shortcut для регулярного запуску.
+
+У deployment потрібно опублікувати `docs/shortcuts/apple-health-sync.shortcut`
+і встановити `APPLE_HEALTH_SHORTCUT_IMPORT_URL` на цей import URL. Editable
+source template лежить у `docs/shortcuts/apple-health-sync.shortcut.plist`;
+підписаний artifact можна згенерувати через Apple Shortcuts CLI:
+
+```bash
+plutil -convert binary1 \
+  -o /tmp/apple-health-sync-source.shortcut \
+  docs/shortcuts/apple-health-sync.shortcut.plist
+shortcuts sign --mode anyone \
+  --input /tmp/apple-health-sync-source.shortcut \
+  --output docs/shortcuts/apple-health-sync.shortcut
+```
+
+Apple усе одно вимагає підтвердження на пристрої. Повністю backend-only або
+zero-touch setup неможливий: імпорт Shortcut, Health permission, Network
+permission і Personal Automation прив'язані до конкретного iPhone/iPad.
 
 ```bash
 POST /api/v1/health/apple-health/sync?userId={telegram_user_id}&token={per_user_token}
@@ -266,7 +294,10 @@ application/json` і payload з метриками. **Не додавай пол
 Метрики старші за 30 днів відхиляються. Дані Apple Health зберігаються в
 уніфікованій таблиці `health_data` із `source = 'apple_health'`.
 
-#### Покрокове налаштування Shortcut
+#### Ручний fallback для Shortcut
+
+Використовуй це тільки якщо готовий Shortcut не імпортується або його потрібно
+налагодити.
 
 1. У Telegram виконай `/connect_apple_health` і скопіюй згенерований URL. Запусти команду
    повторно пізніше, якщо потрібно відкликати старий URL і створити новий.
