@@ -44,6 +44,11 @@ def _shortcut_key(field: dict) -> str:
     return field["WFKey"]["Value"]["string"]
 
 
+def _shortcut_token_attachment(field: dict) -> dict:
+    value = field["WFValue"]["Value"]
+    return value["attachmentsByRange"]["{0, 1}"]
+
+
 def test_apple_health_shortcut_template_posts_required_metrics_payload():
     shortcut_source = (
         Path(__file__).resolve().parents[1]
@@ -60,11 +65,64 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.filter.health.quantity"
     )
     health_action_uuid = health_action["WFWorkflowActionParameters"]["UUID"]
+    repeat_actions = [
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.repeat.each"
+    ]
+    repeat_start = next(
+        action
+        for action in repeat_actions
+        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 0
+    )
+    repeat_end = next(
+        action
+        for action in repeat_actions
+        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 2
+    )
+    metric_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Step Metric"
+    )
     post_action = next(
         action
         for action in actions
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
     )
+
+    assert repeat_start["WFWorkflowActionParameters"]["WFInput"]["Value"] == {
+        "OutputName": "Health Samples",
+        "OutputUUID": health_action_uuid,
+        "Type": "ActionOutput",
+    }
+
+    metric_items = metric_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    metric_by_key = {_shortcut_key(item): item for item in metric_items}
+    assert _shortcut_text_value(metric_by_key["type"]) == "step_count"
+    assert _shortcut_text_value(metric_by_key["unit"]) == "count"
+
+    value_attachment = _shortcut_token_attachment(metric_by_key["value"])
+    assert value_attachment["Type"] == "Variable"
+    assert value_attachment["VariableName"] == "Repeat Item"
+    assert value_attachment["Aggrandizements"] == [
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Quantity"}
+    ]
+
+    timestamp_attachment = _shortcut_token_attachment(metric_by_key["timestamp"])
+    assert timestamp_attachment["Type"] == "Variable"
+    assert timestamp_attachment["VariableName"] == "Repeat Item"
+    assert timestamp_attachment["Aggrandizements"] == [
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Start Date"},
+        {
+            "Type": "WFDateFormatVariableAggrandizement",
+            "WFDateFormatStyle": "ISO 8601",
+            "WFISO8601IncludeTime": True,
+        },
+    ]
 
     payload_items = post_action["WFWorkflowActionParameters"]["WFJSONValues"]["Value"][
         "WFDictionaryFieldValueItems"
@@ -76,18 +134,9 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
 
     metrics = payload_by_key["metrics"]
     assert metrics["WFItemType"] == 2
-    metric_items = metrics["WFValue"]["Value"][0]["Value"]["WFDictionaryFieldValueItems"]
-    metric_by_key = {_shortcut_key(item): item for item in metric_items}
-
-    assert _shortcut_text_value(metric_by_key["type"]) == "step_count"
-    assert _shortcut_text_value(metric_by_key["unit"]) == "count"
-    timestamp_value = metric_by_key["timestamp"]["WFValue"]["Value"]
-    assert timestamp_value["attachmentsByRange"]["{0, 1}"] == {"Type": "CurrentDate"}
-
-    value_reference = metric_by_key["value"]["WFValue"]["Value"]
-    assert value_reference == {
-        "OutputName": "Health Samples",
-        "OutputUUID": health_action_uuid,
+    assert metrics["WFValue"]["Value"] == {
+        "OutputName": "Repeat Results",
+        "OutputUUID": repeat_end["WFWorkflowActionParameters"]["UUID"],
         "Type": "ActionOutput",
     }
 
