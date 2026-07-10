@@ -71,8 +71,8 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
             "is.workflow.actions.downloadurl",
         )
 
-    def test_payload_uses_set_dictionary_value_for_repeat_results(self) -> None:
-        """Avoid an invalid array/text-token combination that crashes Shortcuts on import."""
+    def test_payload_posts_native_dictionary_as_a_json_file(self) -> None:
+        """Avoid the invalid Dictionary attachment that yields a zero-byte JSON body."""
         workflow = plistlib.loads(SHORTCUT_SOURCE.read_bytes())
         actions = workflow["WFWorkflowActions"]
 
@@ -97,14 +97,47 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
         self.assertEqual(attachment["OutputName"], "Repeat Results")
         self.assertEqual(attachment["Type"], "ActionOutput")
 
+        file_type_actions = [
+            action["WFWorkflowActionParameters"]
+            for action in actions
+            if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettypeaction"
+        ]
+        self.assertEqual(len(file_type_actions), 2)
+        plist_file = next(
+            action
+            for action in file_type_actions
+            if action["CustomOutputName"] == "Payload Plist"
+        )
+        json_file = next(
+            action
+            for action in file_type_actions
+            if action["CustomOutputName"] == "Payload JSON"
+        )
+        self.assertEqual(plist_file["WFFileType"], "com.apple.plist")
+        self.assertEqual(
+            plist_file["WFInput"]["Value"]["OutputUUID"],
+            set_value["UUID"],
+        )
+        self.assertEqual(json_file["WFFileType"], "public.json")
+        self.assertEqual(
+            json_file["WFInput"]["Value"]["OutputUUID"],
+            plist_file["UUID"],
+        )
+
         post = next(
             action
             for action in actions
             if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
         )["WFWorkflowActionParameters"]
-        self.assertEqual(post["WFHTTPBodyType"], "JSON")
-        self.assertEqual(post["WFJSONValues"]["WFSerializationType"], "WFTextTokenAttachment")
-        self.assertEqual(post["WFJSONValues"]["Value"]["OutputName"], "Sync Payload")
+        self.assertEqual(post["WFHTTPBodyType"], "File")
+        self.assertNotIn("WFJSONValues", post)
+        request_variable = post["WFRequestVariable"]
+        self.assertEqual(request_variable["WFSerializationType"], "WFTextTokenString")
+        self.assertEqual(_text_value(request_variable), "￼")
+        attachment = request_variable["Value"]["attachmentsByRange"]["{0, 1}"]
+        self.assertEqual(attachment["OutputName"], "Payload JSON")
+        self.assertEqual(attachment["OutputUUID"], json_file["UUID"])
+        self.assertEqual(attachment["Type"], "ActionOutput")
 
 
 if __name__ == "__main__":

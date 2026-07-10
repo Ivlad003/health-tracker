@@ -36,7 +36,7 @@
 			<key>ParameterKey</key>
 			<string>WFURL</string>
 			<key>ActionIndex</key>
-			<integer>7</integer>
+			<integer>9</integer>
 			<key>Text</key>
 			<string>Paste the Apple Health webhook URL from /connect_apple_health.</string>
 			<key>DefaultValue</key>
@@ -168,7 +168,7 @@
 									<string>WFTextTokenString</string>
 									<key>Value</key>
 									<dict>
-										<key>string</key>
+						<key>string</key>
 										<string>type</string>
 									</dict>
 								</dict>
@@ -418,7 +418,7 @@
 					<string>WFTextTokenString</string>
 					<key>Value</key>
 					<dict>
-						<key>string</key>
+										<key>string</key>
 						<string>metrics</string>
 					</dict>
 				</dict>
@@ -448,6 +448,60 @@
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.gettypeaction</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>CustomOutputName</key>
+				<string>Payload Plist</string>
+				<key>UUID</key>
+				<string>99999999-9999-4999-8999-999999999999</string>
+				<key>WFFileType</key>
+				<string>com.apple.plist</string>
+				<key>WFInput</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>OutputName</key>
+						<string>Sync Payload</string>
+						<key>OutputUUID</key>
+						<string>88888888-8888-4888-8888-888888888888</string>
+						<key>Type</key>
+						<string>ActionOutput</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.gettypeaction</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>CustomOutputName</key>
+				<string>Payload JSON</string>
+				<key>UUID</key>
+				<string>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</string>
+				<key>WFFileType</key>
+				<string>public.json</string>
+				<key>WFInput</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>OutputName</key>
+						<string>Payload Plist</string>
+						<key>OutputUUID</key>
+						<string>99999999-9999-4999-8999-999999999999</string>
+						<key>Type</key>
+						<string>ActionOutput</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.downloadurl</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
@@ -458,7 +512,7 @@
 				<key>WFHTTPMethod</key>
 				<string>POST</string>
 				<key>WFHTTPBodyType</key>
-				<string>JSON</string>
+				<string>File</string>
 				<key>ShowHeaders</key>
 				<false/>
 				<key>WFHTTPHeaders</key>
@@ -496,20 +550,28 @@
 						</array>
 					</dict>
 				</dict>
-			<key>WFJSONValues</key>
-			<dict>
-				<key>WFSerializationType</key>
-				<string>WFTextTokenAttachment</string>
-				<key>Value</key>
+				<key>WFRequestVariable</key>
 				<dict>
-					<key>OutputName</key>
-					<string>Sync Payload</string>
-					<key>OutputUUID</key>
-					<string>88888888-8888-4888-8888-888888888888</string>
-					<key>Type</key>
-					<string>ActionOutput</string>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict>
+							<key>{0, 1}</key>
+							<dict>
+								<key>OutputName</key>
+								<string>Payload JSON</string>
+								<key>OutputUUID</key>
+								<string>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</string>
+								<key>Type</key>
+								<string>ActionOutput</string>
+							</dict>
+						</dict>
+						<key>string</key>
+						<string>&#xFFFC;</string>
+					</dict>
 				</dict>
-			</dict>
 			</dict>
 		</dict>
 	</array>

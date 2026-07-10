@@ -10,6 +10,7 @@ os.environ.setdefault("WHOOP_REDIRECT_URI", "http://localhost:8000/whoop/callbac
 os.environ.setdefault("FATSECRET_CLIENT_ID", "test_fs_id")
 os.environ.setdefault("FATSECRET_CLIENT_SECRET", "test_fs_secret")
 os.environ.setdefault("FATSECRET_SHARED_SECRET", "test_fs_shared")
+os.environ.setdefault("APP_BASE_URL", "http://localhost:8000")
 
 
 @pytest.fixture
@@ -22,3 +23,4 @@ def mock_settings(monkeypatch):
     monkeypatch.setenv("FATSECRET_CLIENT_ID", "test_fs_id")
     monkeypatch.setenv("FATSECRET_CLIENT_SECRET", "test_fs_secret")
     monkeypatch.setenv("FATSECRET_SHARED_SECRET", "test_fs_shared")
+    monkeypatch.setenv("APP_BASE_URL", "http://localhost:8000")

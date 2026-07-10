@@ -45,7 +45,7 @@ def _shortcut_key(field: dict) -> str:
 
 
 def _shortcut_token_attachment(field: dict) -> dict:
-    value = field["WFValue"]["Value"]
+    value = field.get("WFValue", field)["Value"]
     return value["attachmentsByRange"]["{0, 1}"]
 
 
@@ -97,6 +97,18 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         for action in actions
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.setvalueforkey"
     )
+    plist_file_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettypeaction"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Payload Plist"
+    )
+    json_file_action = next(
+        action
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettypeaction"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Payload JSON"
+    )
     post_action = next(
         action
         for action in actions
@@ -144,7 +156,7 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     assert _shortcut_text_value(payload_by_key["dataType"]) == "activity"
 
     set_value_parameters = set_value_action["WFWorkflowActionParameters"]
-    assert _shortcut_text_value(set_value_parameters["WFDictionaryKey"]) == "metrics"
+    assert set_value_parameters["WFDictionaryKey"]["Value"]["string"] == "metrics"
     assert set_value_parameters["WFDictionary"]["Value"] == {
         "OutputName": "Sync Payload Base",
         "OutputUUID": payload_base_action["WFWorkflowActionParameters"]["UUID"],
@@ -156,15 +168,38 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         "Type": "ActionOutput",
     }
 
-    post_parameters = post_action["WFWorkflowActionParameters"]
-    assert post_parameters["WFHTTPBodyType"] == "JSON"
-    assert post_parameters["WFJSONValues"] == {
+    plist_file_parameters = plist_file_action["WFWorkflowActionParameters"]
+    assert plist_file_parameters["WFFileType"] == "com.apple.plist"
+    assert plist_file_parameters["WFInput"] == {
         "WFSerializationType": "WFTextTokenAttachment",
         "Value": {
             "OutputName": "Sync Payload",
             "OutputUUID": set_value_parameters["UUID"],
             "Type": "ActionOutput",
         },
+    }
+
+    json_file_parameters = json_file_action["WFWorkflowActionParameters"]
+    assert json_file_parameters["WFFileType"] == "public.json"
+    assert json_file_parameters["WFInput"] == {
+        "WFSerializationType": "WFTextTokenAttachment",
+        "Value": {
+            "OutputName": "Payload Plist",
+            "OutputUUID": plist_file_parameters["UUID"],
+            "Type": "ActionOutput",
+        },
+    }
+
+    post_parameters = post_action["WFWorkflowActionParameters"]
+    assert post_parameters["WFHTTPBodyType"] == "File"
+    assert "WFJSONValues" not in post_parameters
+    request_variable = post_parameters["WFRequestVariable"]
+    assert request_variable["WFSerializationType"] == "WFTextTokenString"
+    assert request_variable["Value"]["string"] == "￼"
+    assert request_variable["Value"]["attachmentsByRange"]["{0, 1}"] == {
+        "OutputName": "Payload JSON",
+        "OutputUUID": json_file_parameters["UUID"],
+        "Type": "ActionOutput",
     }
 
 
