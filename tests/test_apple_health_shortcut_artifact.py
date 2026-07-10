@@ -35,6 +35,27 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
         self.assertIsInstance(workflow["WFWorkflowInputContentItemClasses"], list)
         self.assertIsInstance(workflow["WFWorkflowOutputContentItemClasses"], list)
 
+    def test_health_samples_are_limited_to_the_current_calendar_day(self) -> None:
+        """Avoid a rolling or unbounded Apple Health export."""
+        workflow = plistlib.loads(SHORTCUT_SOURCE.read_bytes())
+        health_action = next(
+            action
+            for action in workflow["WFWorkflowActions"]
+            if action["WFWorkflowActionIdentifier"]
+            == "is.workflow.actions.filter.health.quantity"
+        )
+        filter_templates = health_action["WFWorkflowActionParameters"][
+            "WFContentItemFilter"
+        ]["Value"]["WFActionParameterFilterTemplates"]
+        start_date_filter = next(
+            template
+            for template in filter_templates
+            if template["Property"] == "Start Date"
+        )
+
+        # In Find Health Samples, 1002 is Shortcuts' native "Start Date is today".
+        self.assertEqual(start_date_filter["Operator"], 1002)
+
     def test_import_question_targets_the_post_url(self) -> None:
         """Keep the per-user webhook question attached after action insertions."""
         workflow = plistlib.loads(SHORTCUT_SOURCE.read_bytes())

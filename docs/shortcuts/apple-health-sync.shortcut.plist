@@ -90,7 +90,7 @@
 								<key>Bounded</key>
 								<true/>
 								<key>Operator</key>
-								<integer>1001</integer>
+								<integer>1002</integer>
 								<key>Property</key>
 								<string>Start Date</string>
 								<key>Removable</key>

@@ -226,6 +226,10 @@ The recommended onboarding path is a ready Shortcut named
 5. In **Shortcuts** -> **Automation**, create a **Personal Automation** such as
    **Time of Day** and choose the imported Shortcut for recurring sync.
 
+The supplied Shortcut sends only Health samples whose **Start Date is today** in
+the iPhone's local calendar. It therefore starts at local midnight and does not
+export the user's complete Health history or a rolling previous-24-hour window.
+
 The backend serves the signed artifact at:
 
 ```text
@@ -294,8 +298,9 @@ Use this only if the ready Shortcut cannot be imported or needs debugging.
    morning, afternoon, and evening.
 4. Add the **Find Health Samples** action.
    - Type: choose the metric to sync, for example **Steps**.
-   - Start Date: `Current Date - 1 day`.
-   - End Date: `Current Date`.
+   - Start Date: choose **is today**. Do not use a rolling `Current Date - 1 day`
+     range; **is today** uses the iPhone's local calendar day beginning at
+     midnight.
    - Group By: **Hour** or **Day**.
 5. Add a **Repeat with Each** action for the Health Samples result.
 6. Inside the repeat block, add a **Dictionary** action for one metric object:

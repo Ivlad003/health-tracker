@@ -246,6 +246,10 @@ Shortcut.
 5. У **Shortcuts** -> **Automation** створи **Personal Automation**, наприклад
    **Time of Day**, і вибери імпортований Shortcut для регулярного запуску.
 
+Готовий Shortcut надсилає лише Health-зразки, для яких **Start Date is today**
+у локальному календарі iPhone. Тобто день починається з локальної опівночі, а
+Shortcut не експортує всю історію Health або рухоме вікно за попередні 24 години.
+
 Backend віддає підписаний artifact тут:
 
 ```text
@@ -315,8 +319,9 @@ application/json` і payload з метриками. **Не додавай пол
    вечір.
 4. Додай дію **Find Health Samples**.
    - Type: обери метрику, наприклад **Steps**.
-   - Start Date: `Current Date - 1 day`.
-   - End Date: `Current Date`.
+   - Start Date: обери **is today**. Не використовуй рухомий діапазон
+     `Current Date - 1 day`; **is today** використовує локальний календарний
+     день iPhone, що починається з опівночі.
    - Group By: **Hour** або **Day**.
 5. Додай дію **Repeat with Each** для результату Health Samples.
 6. Усередині repeat-блоку додай дію **Dictionary** для одного metric object:
