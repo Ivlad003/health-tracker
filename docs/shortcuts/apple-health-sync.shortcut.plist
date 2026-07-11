@@ -216,7 +216,7 @@
 														<key>Type</key>
 														<string>WFPropertyVariableAggrandizement</string>
 														<key>PropertyName</key>
-														<string>Quantity</string>
+														<string>Value</string>
 													</dict>
 												</array>
 											</dict>
