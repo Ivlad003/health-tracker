@@ -286,6 +286,14 @@ legacy `X-Apple-Health-Token` header and `userId` body field for backward
 compatibility. Metrics older than 30 days are rejected. Apple Health records are
 stored in the unified `health_data` table with `source = 'apple_health'`.
 
+The endpoint expects JSON, but if the body is not valid JSON it falls back to
+parsing it as an Apple property list (binary `bplist00` or XML plist). This
+covers Shortcuts setups where the dictionary is coerced through **Get Type** /
+plist steps and the request body ends up as plist bytes instead of JSON. Plist
+dates are converted to ISO 8601 strings and plist data blobs to UTF-8 (or
+Base64) strings before ingestion. Bodies that are neither JSON nor a plist
+dictionary are still rejected with `400 Invalid JSON payload`.
+
 #### Manual Shortcut fallback
 
 Use this only if the ready Shortcut cannot be imported or needs debugging.

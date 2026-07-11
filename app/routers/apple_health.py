@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import plistlib
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -36,6 +39,27 @@ async def download_apple_health_shortcut():
         media_type="application/x-shortcut",
         filename="apple-health-sync.shortcut",
     )
+
+
+def _plist_to_jsonable(value: Any) -> Any:
+    """Recursively convert plist-only types to their JSON equivalents.
+
+    Apple property lists natively encode dates (datetime) and raw data
+    (bytes); downstream ingestion expects the JSON shapes — ISO 8601
+    strings and plain/base64 strings.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return base64.b64encode(value).decode("ascii")
+    if isinstance(value, dict):
+        return {str(key): _plist_to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plist_to_jsonable(item) for item in value]
+    return value
 
 
 async def _echo_payload_to_telegram(
@@ -97,53 +121,74 @@ async def sync_apple_health(
         has_header_token,
     )
 
+    body_format = "json"
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        if query_user_id is not None:
-            pool = await get_pool()
-            sync = await get_apple_health_sync_for_observability(pool, query_user_id)
-            if sync:
-                provided_token = x_apple_health_token or token
-                if not verify_apple_health_token(provided_token, sync["secret_key"]):
-                    logger.warning(
-                        "AppleHealth REJECT json_parse_unauthenticated client=%s ct=%r body_len=%d",
-                        client_host,
-                        content_type,
-                        body_len,
+    # ValueError also covers UnicodeDecodeError: binary plist bodies are not
+    # valid UTF-8, so json.loads fails before reaching the JSON parser.
+    except ValueError as exc:
+        # Apple Shortcuts often posts the dictionary as an Apple property
+        # list (binary "bplist00" or XML) even when the flow intends JSON —
+        # coercing a plist file to public.json only renames the type.
+        # Accept that transparently instead of rejecting the sync.
+        try:
+            parsed_plist = plistlib.loads(body)
+        except Exception:
+            parsed_plist = None
+        if isinstance(parsed_plist, dict):
+            payload = _plist_to_jsonable(parsed_plist)
+            body_format = "plist"
+            logger.info(
+                "AppleHealth PLIST_FALLBACK client=%s ct=%r body_len=%d",
+                client_host,
+                content_type,
+                body_len,
+            )
+        else:
+            if query_user_id is not None:
+                pool = await get_pool()
+                sync = await get_apple_health_sync_for_observability(pool, query_user_id)
+                if sync:
+                    provided_token = x_apple_health_token or token
+                    if not verify_apple_health_token(provided_token, sync["secret_key"]):
+                        logger.warning(
+                            "AppleHealth REJECT json_parse_unauthenticated client=%s ct=%r body_len=%d",
+                            client_host,
+                            content_type,
+                            body_len,
+                        )
+                        raise HTTPException(status_code=401, detail="Invalid Apple Health token") from exc
+                    await record_apple_health_failure(
+                        pool,
+                        user_id=sync["user_id"],
+                        sync_id=sync["sync_id"],
+                        http_status=400,
+                        error_message="Invalid JSON payload",
+                        request_summary={
+                            "parse_error": "invalid_json",
+                            "body_length": body_len,
+                        },
                     )
-                    raise HTTPException(status_code=401, detail="Invalid Apple Health token") from exc
-                await record_apple_health_failure(
-                    pool,
-                    user_id=sync["user_id"],
-                    sync_id=sync["sync_id"],
-                    http_status=400,
-                    error_message="Invalid JSON payload",
-                    request_summary={
-                        "parse_error": "invalid_json",
-                        "body_length": body_len,
-                    },
-                )
-                await _echo_payload_to_telegram(
-                    query_user_id,
-                    body,
-                    filename="apple-health-payload.txt",
-                    caption=(
-                        "⚠️ Apple Health: запит відхилено — тіло не є валідним JSON "
-                        f"(HTTP 400 Invalid JSON payload).\n"
-                        f"Content-Type: {content_type}\n"
-                        f"Розмір: {body_len} байт.\n"
-                        "Отримане тіло запиту — у файлі."
-                    ),
-                )
-        logger.warning(
-            "AppleHealth REJECT json_parse client=%s ct=%r body_len=%d err_class=%s",
-            client_host,
-            content_type,
-            body_len,
-            type(exc).__name__,
-        )
-        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+                    await _echo_payload_to_telegram(
+                        query_user_id,
+                        body,
+                        filename="apple-health-payload.txt",
+                        caption=(
+                            "⚠️ Apple Health: запит відхилено — тіло не є валідним JSON "
+                            "або Apple plist (HTTP 400 Invalid JSON payload).\n"
+                            f"Content-Type: {content_type}\n"
+                            f"Розмір: {body_len} байт.\n"
+                            "Отримане тіло запиту — у файлі."
+                        ),
+                    )
+            logger.warning(
+                "AppleHealth REJECT json_parse client=%s ct=%r body_len=%d err_class=%s",
+                client_host,
+                content_type,
+                body_len,
+                type(exc).__name__,
+            )
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     # Health Auto Export iOS app uses {"data": {"metrics": [...]}}; it has no
     # userId in the body, so URL userId is mandatory for that shape.
@@ -219,10 +264,11 @@ async def sync_apple_health(
         raise HTTPException(status_code=401, detail="Invalid Apple Health token")
 
     logger.info(
-        "AppleHealth PARSED user_id=%s sync_id=%s format=%s body_len=%d metric_count=%d",
+        "AppleHealth PARSED user_id=%s sync_id=%s format=%s body_format=%s body_len=%d metric_count=%d",
         sync["user_id"],
         sync["sync_id"],
         "auto_export" if is_hae else "native",
+        body_format,
         body_len,
         native_metric_count,
     )
@@ -230,10 +276,11 @@ async def sync_apple_health(
     await _echo_payload_to_telegram(
         telegram_user_id,
         body,
-        filename="apple-health-payload.json",
+        filename="apple-health-payload.plist" if body_format == "plist" else "apple-health-payload.json",
         caption=(
             "📥 Apple Health: отримано payload "
             f"(формат: {'Health Auto Export' if is_hae else 'native'}, "
+            f"тіло: {'Apple plist' if body_format == 'plist' else 'JSON'}, "
             f"{body_len} байт). Отримане тіло запиту — у файлі."
         ),
     )

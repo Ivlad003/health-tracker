@@ -1020,6 +1020,171 @@ async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_setting
     assert resp.json()["records_processed"] == 1
 
 
+def test_plist_to_jsonable_normalizes_plist_only_types(mock_settings):
+    from app.routers.apple_health import _plist_to_jsonable
+
+    converted = _plist_to_jsonable(
+        {
+            "when": datetime(2026, 7, 10, 12, 30, 0),
+            "note": b"hello",
+            "blob": b"\xff\xfe",
+            "nested": [{"deep": datetime(2026, 7, 9, 8, 0, 0)}],
+            "count": 5,
+        }
+    )
+
+    assert converted == {
+        "when": "2026-07-10T12:30:00",
+        "note": "hello",
+        "blob": "//4=",
+        "nested": [{"deep": "2026-07-09T08:00:00"}],
+        "count": 5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_accepts_binary_plist_payload(mock_settings):
+    from app.main import app
+
+    payload = {
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": 5000,
+                "unit": "count",
+                # Shortcuts encodes dates as native plist <date> values;
+                # plistlib loads them back as naive UTC datetimes.
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None),
+            }
+        ],
+    }
+    body = plistlib.dumps(payload, fmt=plistlib.FMT_BINARY)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["records_processed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_accepts_xml_plist_payload(mock_settings):
+    from app.main import app
+
+    payload = {
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": 5000,
+                "unit": "count",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+    body = plistlib.dumps(payload, fmt=plistlib.FMT_XML)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["records_processed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_echoes_plist_payload_with_plist_filename(mock_settings):
+    from app.main import app
+
+    payload = {
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": 5000,
+                "unit": "count",
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None),
+            }
+        ],
+    }
+    body = plistlib.dumps(payload, fmt=plistlib.FMT_BINARY)
+    pool = FakePool()
+    send_document = AsyncMock()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_document", send_document):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 200
+    send_document.assert_awaited_once()
+    args, kwargs = send_document.await_args
+    assert args[0] == 999
+    assert kwargs["document"] == body
+    assert kwargs["filename"] == "apple-health-payload.plist"
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_rejects_body_that_is_neither_json_nor_plist(mock_settings):
+    from app.main import app
+
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=b"<?xml version=\"1.0\"?><note>not a plist</note>",
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid JSON payload"
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_rejects_plist_whose_root_is_not_a_dictionary(mock_settings):
+    from app.main import app
+
+    body = plistlib.dumps(["not", "a", "dictionary"], fmt=plistlib.FMT_XML)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid JSON payload"
+
+
 @pytest.mark.asyncio
 async def test_apple_health_webhook_rejects_old_url_after_reconnect(mock_settings):
     from app.main import app
