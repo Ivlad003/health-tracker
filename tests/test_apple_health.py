@@ -58,6 +58,73 @@ async def test_apple_health_shortcut_download_serves_signed_artifact(mock_settin
     assert b"bplist00" in response.content[:32]
 
 
+@pytest.mark.asyncio
+async def test_apple_health_shortcut_download_hands_macos_users_off_to_iphone(
+    mock_settings,
+):
+    from app.main import app
+
+    macos_user_agent = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/health/apple-health/shortcut",
+            headers={"User-Agent": macos_user_agent},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["vary"] == "User-Agent"
+    assert response.headers["cache-control"] == "no-store"
+    assert "не запускається на Mac" in response.text
+    assert "Find Health Samples" in response.text
+    assert not response.content.startswith(b"AEA1")
+
+
+@pytest.mark.asyncio
+async def test_apple_health_shortcut_download_keeps_iphone_supported(mock_settings):
+    from app.main import app
+
+    iphone_user_agent = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
+        "AppleWebKit/605.1.15 Version/18.5 Mobile/15E148 Safari/604.1"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/health/apple-health/shortcut",
+            headers={"User-Agent": iphone_user_agent},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/x-shortcut"
+    assert response.headers["vary"] == "User-Agent"
+    assert response.content.startswith(b"AEA1")
+
+
+@pytest.mark.asyncio
+async def test_apple_health_shortcut_download_keeps_ipad_desktop_user_agent_supported(
+    mock_settings,
+):
+    from app.main import app
+
+    ipad_desktop_user_agent = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) "
+        "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/health/apple-health/shortcut",
+            headers={"User-Agent": ipad_desktop_user_agent},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/x-shortcut"
+    assert response.headers["vary"] == "User-Agent"
+    assert response.content.startswith(b"AEA1")
+
+
 def _shortcut_text_value(field: dict) -> str | None:
     value = field.get("WFValue", {}).get("Value", {})
     return value.get("string")

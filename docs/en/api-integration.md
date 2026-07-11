@@ -220,11 +220,17 @@ The recommended onboarding path is a ready Shortcut named
 `Health Tracker Apple Health Sync`:
 
 1. In Telegram, run `/connect_apple_health`.
-2. Open the Shortcut import link/file on the user's iPhone.
+2. Open the Shortcut import link/file on the user's iPhone or iPad.
 3. Paste the generated webhook URL into the Shortcut's import question.
 4. Run the Shortcut once and approve the Health and Network permissions.
 5. In **Shortcuts** -> **Automation**, create a **Personal Automation** such as
    **Time of Day** and choose the imported Shortcut for recurring sync.
+
+Open and run the Shortcut on an iPhone or iPad. macOS does not support the
+**Find Health Samples** action. When a Mac opens the download endpoint, the
+server shows a device-handoff page instead of installing a Shortcut that cannot
+run there. iPad browsers that use a desktop-style `Macintosh` user agent still
+receive the signed Shortcut file.
 
 The supplied Shortcut runs four **Find Health Samples** queries and merges their
 results into a single POST:

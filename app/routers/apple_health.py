@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app.database import get_pool
 from app.services.apple_health import (
@@ -27,17 +27,62 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/health/apple-health", tags=["apple-health"])
 SHORTCUT_PATH = Path(__file__).resolve().parents[2] / "docs" / "shortcuts" / "apple-health-sync.shortcut"
+MACOS_SHORTCUT_HANDOFF_HTML = """<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open Apple Health Sync on iPhone or iPad</title>
+  <style>
+    body { font: 17px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; color: #1d1d1f; }
+    main { max-width: 680px; margin: 12vh auto; padding: 0 24px; }
+    h1 { font-size: 32px; line-height: 1.15; }
+    section { margin-top: 32px; }
+    button { font: inherit; padding: 10px 16px; border: 0; border-radius: 10px; color: white; background: #0071e3; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>Відкрий Shortcut на iPhone або iPad</h1>
+      <p>Цей Shortcut не запускається на Mac: дія <strong>Find Health Samples</strong> доступна лише на iPhone та iPad.</p>
+      <p>Відкрий це саме посилання в Telegram або Safari на iPhone чи iPad, імпортуй Shortcut і встав URL, який надіслав бот.</p>
+      <button type="button" onclick="navigator.clipboard.writeText(location.href).then(() => this.textContent = 'Скопійовано / Copied')">Скопіювати посилання / Copy link</button>
+    </section>
+    <section lang="en">
+      <h1>Open the Shortcut on iPhone or iPad</h1>
+      <p>This Shortcut cannot run on Mac because <strong>Find Health Samples</strong> is available only on iPhone and iPad.</p>
+      <p>Open this same link in Telegram or Safari on your iPhone or iPad, import the Shortcut, and paste the URL sent by the bot.</p>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def _is_macos_browser(user_agent: str) -> bool:
+    """Distinguish macOS browsers from iPad browsers using desktop-mode UAs."""
+    normalized = user_agent.lower()
+    looks_like_macos = "macintosh" in normalized or "mac os x" in normalized
+    looks_like_ipad = "mobile/" in normalized
+    return looks_like_macos and not looks_like_ipad
 
 
 @router.get("/shortcut")
-async def download_apple_health_shortcut():
+async def download_apple_health_shortcut(request: Request):
     """Serve the signed Apple Shortcuts template used by Telegram onboarding."""
+    if _is_macos_browser(request.headers.get("user-agent", "")):
+        return HTMLResponse(
+            MACOS_SHORTCUT_HANDOFF_HTML,
+            headers={"Cache-Control": "no-store", "Vary": "User-Agent"},
+        )
     if not SHORTCUT_PATH.is_file():
         raise HTTPException(status_code=404, detail="Apple Health Shortcut template is not available")
     return FileResponse(
         SHORTCUT_PATH,
         media_type="application/x-shortcut",
         filename="apple-health-sync.shortcut",
+        headers={"Vary": "User-Agent"},
     )
 
 

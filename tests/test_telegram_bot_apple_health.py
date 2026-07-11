@@ -84,6 +84,16 @@ async def test_connect_apple_health_reply_prioritizes_ready_shortcut_import(mock
 
 
 @pytest.mark.asyncio
+async def test_connect_apple_health_reply_warns_that_health_samples_do_not_run_on_mac(
+    mock_settings,
+):
+    reply = await _connect_apple_health_reply()
+    assert "саме на iPhone або iPad" in reply
+    assert "На Mac" in reply
+    assert "Find Health Samples" in reply
+
+
+@pytest.mark.asyncio
 async def test_connect_apple_health_reply_separates_supported_setup_paths(mock_settings):
     reply = await _connect_apple_health_reply()
     assert "Готовий Shortcut" in reply
@@ -111,6 +121,16 @@ async def test_apple_health_help_reply_explains_shortcuts_setup_in_ukrainian(moc
     assert "ручний варіант" in reply
     assert "Get Health Samples" not in reply
     assert "/sync" in reply
+
+
+@pytest.mark.asyncio
+async def test_apple_health_help_warns_that_shortcut_must_run_on_iphone_or_ipad(
+    mock_settings,
+):
+    reply = await _apple_health_help_reply()
+    assert "саме на iPhone або iPad" in reply
+    assert "На Mac" in reply
+    assert "Find Health Samples" in reply
 
 
 @pytest.mark.asyncio
