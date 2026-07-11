@@ -226,9 +226,44 @@ The recommended onboarding path is a ready Shortcut named
 5. In **Shortcuts** -> **Automation**, create a **Personal Automation** such as
    **Time of Day** and choose the imported Shortcut for recurring sync.
 
-The supplied Shortcut sends only Health samples whose **Start Date is today** in
-the iPhone's local calendar. It therefore starts at local midnight and does not
-export the user's complete Health history or a rolling previous-24-hour window.
+The supplied Shortcut runs four **Find Health Samples** queries and merges their
+results into a single POST:
+
+| Health type (picker label) | Sent as `type` | Unit | Date filter |
+|---|---|---|---|
+| Steps | `step_count` | `count` | Start Date is today |
+| Active Calories | `active_energy` | `kcal` | Start Date is today |
+| Sleep | `sleep_analysis` | `s` | Start Date is in the last 2 days |
+| Heart Rate Variability SDNN | `heart_rate_variability` | `ms` | Start Date is today |
+
+Point-in-time metrics send only samples whose **Start Date is today** in the
+iPhone's local calendar, so the sync does not export the user's complete Health
+history or a rolling previous-24-hour window.
+
+Sleep is handled differently in three ways:
+
+- Sleep samples are category samples whose Value/Duration render as localized
+  text in Shortcuts, so each sleep metric is sent with `value: 0` plus `end`
+  (ISO 8601 end date) and `stage` fields; the server derives the duration from
+  `end` and keeps `stage` as diagnostic data.
+- The sleep query covers the **last 2 days** because a night usually starts
+  before midnight; the server attributes each sleep sample to the day its
+  interval *ends*.
+- Overlapping sleep samples (an In Bed envelope plus Core/REM/Deep stages, or
+  iPhone plus Watch sources) are merged as time intervals server-side instead
+  of summed, so a night is not double-counted.
+
+HRV (SDNN) is surfaced as a **stress proxy** in briefings and the assistant:
+Apple Health has no native stress metric, and lower-than-usual HRV correlates
+with higher stress. WHOOP recovery remains the primary recovery signal for
+users who have WHOOP connected. If the imported Shortcut shows an empty Type in
+the HRV query, reselect *Heart Rate Variability SDNN* manually in the Shortcuts
+editor — the picker label can vary by iOS version.
+
+After the Shortcut template changes, existing users must delete the previously
+imported Shortcut, import it again from the same link, and approve Health
+access for the new data types (Health permissions are granted per type). An old
+imported copy keeps sending steps only.
 
 The backend serves the signed artifact at:
 
@@ -272,6 +307,14 @@ Content-Type: application/json
       "unit": "count",
       "timestamp": "2026-05-20T10:00:00Z",
       "duration": 3600
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-05-19T23:04:00+03:00",
+      "end": "2026-05-20T06:34:00+03:00",
+      "stage": "Core"
     }
   ]
 }

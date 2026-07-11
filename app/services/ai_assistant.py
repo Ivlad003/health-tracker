@@ -26,7 +26,8 @@ INTENT DEFINITIONS:
 - log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The bot automatically syncs entries to FatSecret if connected, so always log food when user asks.
 - query_data: User asks about their health data (sleep, recovery, calories, workouts, steps, heart rate, mood, history, stats). You have access to WHOOP data, Apple Health samples, and FatSecret diary — use all available data when answering.
   WHOOP data available: sleep (duration, stages, performance), recovery (score, HRV, resting HR, SpO2, skin temp), strain, calories burned, workouts, weight, height, max HR.
-  Apple Health data available when synced: steps, active energy, heart rate, and sleep samples.
+  Apple Health data available when synced: steps, active energy, heart rate, sleep, and HRV (SDNN).
+  Stress: there is no direct stress metric. Use Apple Health HRV as a stress proxy (lower HRV than the user's usual level suggests higher stress/fatigue; higher HRV suggests better recovery) together with WHOOP recovery when available, and say it is an HRV-based estimate.
   WHOOP data NOT available via API (app-only): HR zones, VO₂ max, stress monitor. If user asks about these and Apple Health did not sync them, explain they're only visible in the source app directly.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - gym: User describes gym exercises, asks about previous workouts, or asks for exercise progression.
@@ -351,6 +352,7 @@ async def get_today_stats(user_id: int) -> dict:
         "apple_health_steps": apple_health["steps"],
         "apple_health_active_energy_kcal": apple_health["active_energy_kcal"],
         "apple_health_avg_heart_rate": apple_health["avg_heart_rate"],
+        "apple_health_avg_hrv_ms": apple_health["avg_hrv_ms"],
         "apple_health_sleep_hours": apple_health["sleep_hours"],
         "apple_health_metric_counts": apple_health["metric_counts"],
         "apple_health_latest_metric_at": apple_health["latest_metric_at"],

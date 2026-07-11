@@ -31,6 +31,17 @@ _HEART_RATE_METRICS = {
     "walking_heart_rate_average",
 }
 _SLEEP_METRICS = {"sleep", "sleep_analysis", "sleepanalysis", "asleep", "sleep_duration"}
+_HRV_METRICS = {
+    "heart_rate_variability",
+    "heartratevariability",
+    "heart_rate_variability_sdnn",
+    "hrv",
+    "hrv_sdnn",
+}
+
+# A single sleep sample longer than a day is bogus input; clamp it so one bad
+# interval cannot inflate the daily total.
+_MAX_SLEEP_SAMPLE_SECONDS = 24 * 3600
 
 
 def verify_apple_health_token(provided_token: str | None, expected_token: str) -> bool:
@@ -152,6 +163,9 @@ def _metric_key(metric_type: str) -> str:
         "steps": "step_count",
         "heart_rate": "heart_rate",
         "sleep_analysis": "sleep_analysis",
+        "heart_rate_variability_sdnn": "heart_rate_variability",
+        "hrv": "heart_rate_variability",
+        "hrv_sdnn": "heart_rate_variability",
     }
     return aliases.get(key, key)
 
@@ -175,6 +189,41 @@ def _format_number(value: float) -> str:
     return f"{value:.1f}"
 
 
+def _sleep_duration_seconds(row: Any, value: float, unit: str) -> float:
+    duration_seconds = row["duration_seconds"]
+    if duration_seconds:
+        return float(duration_seconds)
+    if unit in {"h", "hr", "hour", "hours"}:
+        return value * 3600
+    if unit in {"m", "min", "minute", "minutes"}:
+        return value * 60
+    if unit in {"s", "sec", "second", "seconds"}:
+        return value
+    return 0.0
+
+
+def _merged_interval_seconds(intervals: list[tuple[datetime, datetime]]) -> float:
+    """Total seconds covered by the union of possibly-overlapping intervals.
+
+    Apple Health reports sleep as overlapping samples (an "In Bed" envelope
+    plus Core/REM/Deep stage segments, sometimes from both iPhone and Watch);
+    summing them would double-count the night.
+    """
+    total = 0.0
+    merged_start: datetime | None = None
+    merged_end: datetime | None = None
+    for start, end in sorted(intervals):
+        if merged_end is None or start > merged_end:
+            if merged_start is not None and merged_end is not None:
+                total += (merged_end - merged_start).total_seconds()
+            merged_start, merged_end = start, end
+        elif end > merged_end:
+            merged_end = end
+    if merged_start is not None and merged_end is not None:
+        total += (merged_end - merged_start).total_seconds()
+    return total
+
+
 async def get_apple_health_summary(
     pool: Any,
     user_id: int,
@@ -186,12 +235,18 @@ async def get_apple_health_summary(
 
     Merge contract:
     - Apple Health is primary for phone/watch-native metrics: steps, heart rate,
-      and imported sleep samples.
+      HRV (stress proxy), and imported sleep samples.
     - WHOOP remains primary for proprietary metrics: strain, recovery, and
       workout count.
     - Calories burned use WHOOP when live WHOOP has a non-zero value; otherwise
       Apple Health active energy is the fallback.
+
+    Sleep is attributed to the day the sample *ends* (a night usually starts
+    before midnight), so the fetch window is widened by one day and overlapping
+    samples (In Bed vs sleep stages, iPhone vs Watch) are merged as intervals
+    instead of summed.
     """
+    fetch_start = start_at - timedelta(days=1)
     rows = await pool.fetch(
         """SELECT metric_type, value, unit, recorded_at, duration_seconds
            FROM health_data
@@ -201,45 +256,61 @@ async def get_apple_health_summary(
                  AND recorded_at < $3
            ORDER BY recorded_at ASC""",
         user_id,
-        start_at,
+        fetch_start,
         end_at,
     )
 
     steps = 0.0
     active_energy = 0.0
     heart_rates: list[float] = []
-    sleep_seconds = 0.0
+    hrv_values: list[float] = []
+    sleep_intervals: list[tuple[datetime, datetime]] = []
     counts: dict[str, int] = {}
     latest_metric_at = None
+
+    def _register(key: str, recorded_at: datetime) -> None:
+        nonlocal latest_metric_at
+        counts[key] = counts.get(key, 0) + 1
+        if latest_metric_at is None or recorded_at > latest_metric_at:
+            latest_metric_at = recorded_at
 
     for row in rows:
         metric_type = str(row["metric_type"])
         key = _metric_key(metric_type)
         value = _to_float(row["value"])
         unit = str(row["unit"] or "").lower()
-        counts[key] = counts.get(key, 0) + 1
         recorded_at = row["recorded_at"]
-        if latest_metric_at is None or recorded_at > latest_metric_at:
-            latest_metric_at = recorded_at
+
+        if _is_metric(metric_type, _SLEEP_METRICS):
+            duration = min(
+                _sleep_duration_seconds(row, value, unit),
+                _MAX_SLEEP_SAMPLE_SECONDS,
+            )
+            if duration <= 0:
+                continue
+            ends_at = recorded_at + timedelta(seconds=duration)
+            if not (start_at <= ends_at < end_at):
+                continue
+            sleep_intervals.append((recorded_at, ends_at))
+            _register(key, recorded_at)
+            continue
+
+        if recorded_at < start_at:
+            continue
+        _register(key, recorded_at)
 
         if _is_metric(metric_type, _STEP_METRICS):
             steps += value
         elif _is_metric(metric_type, _ACTIVE_ENERGY_METRICS):
             active_energy += value
+        elif _is_metric(metric_type, _HRV_METRICS):
+            hrv_values.append(value)
         elif _is_metric(metric_type, _HEART_RATE_METRICS):
             heart_rates.append(value)
-        elif _is_metric(metric_type, _SLEEP_METRICS):
-            duration_seconds = row["duration_seconds"]
-            if duration_seconds:
-                sleep_seconds += float(duration_seconds)
-            elif unit in {"h", "hr", "hour", "hours"}:
-                sleep_seconds += value * 3600
-            elif unit in {"m", "min", "minute", "minutes"}:
-                sleep_seconds += value * 60
-            elif unit in {"s", "sec", "second", "seconds"}:
-                sleep_seconds += value
 
+    sleep_seconds = _merged_interval_seconds(sleep_intervals)
     avg_heart_rate = round(sum(heart_rates) / len(heart_rates)) if heart_rates else 0
+    avg_hrv_ms = round(sum(hrv_values) / len(hrv_values)) if hrv_values else 0
     sleep_hours = round(sleep_seconds / 3600, 1) if sleep_seconds else 0
     active_energy_kcal = round(active_energy)
     total_steps = round(steps)
@@ -253,11 +324,14 @@ async def get_apple_health_summary(
         parts.append(f"Apple Health average heart rate: {avg_heart_rate} bpm")
     if sleep_hours:
         parts.append(f"Apple Health sleep: {_format_number(sleep_hours)}h")
+    if avg_hrv_ms:
+        parts.append(f"Apple Health HRV (stress proxy): {avg_hrv_ms} ms")
 
     return {
         "steps": total_steps,
         "active_energy_kcal": active_energy_kcal,
         "avg_heart_rate": avg_heart_rate,
+        "avg_hrv_ms": avg_hrv_ms,
         "sleep_hours": sleep_hours,
         "metric_counts": counts,
         "latest_metric_at": latest_metric_at,
@@ -431,12 +505,24 @@ def convert_health_auto_export(
                 if point.get("Min") is not None
                 else point.get("Max")
             )
+            unit = units
+            if value is None and _is_metric(name, _SLEEP_METRICS):
+                # HAE sleep points carry hour buckets (asleep/inBed/...) instead
+                # of qty; prefer actual sleep over time in bed.
+                for field in ("asleep", "totalSleep", "inBed"):
+                    if point.get(field) is not None:
+                        value = point[field]
+                        break
+                if value is not None:
+                    raw_ts = point.get("sleepStart") or raw_ts
+                    if unit == "unknown":
+                        unit = "hr"
             if value is None or not name or not raw_ts:
                 continue
             flat.append({
                 "type": name,
                 "value": value,
-                "unit": units,
+                "unit": unit,
                 "timestamp": _normalize_hae_timestamp(str(raw_ts)),
             })
     return {
@@ -484,6 +570,16 @@ def _normalize_metric(
     duration_seconds = int(duration) if duration is not None else None
     if duration_seconds is not None and duration_seconds < 0:
         raise AppleHealthIngestionError("metric duration must be non-negative")
+
+    # The Shortcut cannot compute numeric durations reliably (Shortcuts renders
+    # sleep Value/Duration as localized text), so interval samples send an
+    # "end" ISO timestamp instead and the duration is derived here.
+    if duration_seconds is None:
+        end_raw = metric.get("end") or metric.get("end_timestamp") or metric.get("endDate")
+        if end_raw:
+            ended_at = _parse_datetime(str(end_raw), "metric end")
+            if ended_at > recorded_at:
+                duration_seconds = int((ended_at - recorded_at).total_seconds())
 
     additional_data = {
         key: value
