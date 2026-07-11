@@ -82,33 +82,29 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     workflow = plistlib.loads(shortcut_source.read_bytes())
 
     actions = workflow["WFWorkflowActions"]
-    health_action = next(
+    health_actions = [
         action
         for action in actions
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.filter.health.quantity"
-    )
-    health_action_uuid = health_action["WFWorkflowActionParameters"]["UUID"]
-    repeat_actions = [
+    ]
+    repeat_starts = [
         action
         for action in actions
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.repeat.each"
+        and action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 0
     ]
-    repeat_start = next(
-        action
-        for action in repeat_actions
-        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 0
-    )
-    repeat_end = next(
-        action
-        for action in repeat_actions
-        if action["WFWorkflowActionParameters"]["WFControlFlowMode"] == 2
-    )
-    metric_action = next(
-        action
-        for action in actions
-        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
-        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "Step Metric"
-    )
+
+    def metric_fields(name: str) -> dict:
+        metric_action = next(
+            action
+            for action in actions
+            if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+            and action["WFWorkflowActionParameters"].get("CustomOutputName") == name
+        )
+        metric_items = metric_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
+            "WFDictionaryFieldValueItems"
+        ]
+        return {_shortcut_key(item): item for item in metric_items}
     payload_base_action = next(
         action
         for action in actions
@@ -138,33 +134,19 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
     )
 
-    assert repeat_start["WFWorkflowActionParameters"]["WFInput"]["Value"] == {
-        "OutputName": "Health Samples",
-        "OutputUUID": health_action_uuid,
-        "Type": "ActionOutput",
-    }
-
-    metric_items = metric_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
-        "WFDictionaryFieldValueItems"
+    assert [
+        repeat["WFWorkflowActionParameters"]["WFInput"]["Value"]["OutputUUID"]
+        for repeat in repeat_starts
+    ] == [
+        health_action["WFWorkflowActionParameters"]["UUID"]
+        for health_action in health_actions
     ]
-    metric_by_key = {_shortcut_key(item): item for item in metric_items}
-    assert _shortcut_text_value(metric_by_key["type"]) == "step_count"
-    assert _shortcut_text_value(metric_by_key["unit"]) == "count"
 
-    value_attachment = _shortcut_token_attachment(metric_by_key["value"])
-    assert value_attachment["Type"] == "Variable"
-    assert value_attachment["VariableName"] == "Repeat Item"
     # Health sample content items expose "Value" (alongside Start Date, End
     # Date, Duration, Source, Name); "Quantity" is not a property and renders
     # as an empty string.
-    assert value_attachment["Aggrandizements"] == [
-        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Value"}
-    ]
-
-    timestamp_attachment = _shortcut_token_attachment(metric_by_key["timestamp"])
-    assert timestamp_attachment["Type"] == "Variable"
-    assert timestamp_attachment["VariableName"] == "Repeat Item"
-    assert timestamp_attachment["Aggrandizements"] == [
+    sample_value = [{"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Value"}]
+    iso_start_date = [
         {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Start Date"},
         {
             "Type": "WFDateFormatVariableAggrandizement",
@@ -172,6 +154,49 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
             "WFISO8601IncludeTime": True,
         },
     ]
+    iso_end_date = [
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "End Date"},
+        {
+            "Type": "WFDateFormatVariableAggrandizement",
+            "WFDateFormatStyle": "ISO 8601",
+            "WFISO8601IncludeTime": True,
+        },
+    ]
+
+    def assert_repeat_item_field(field: dict, aggrandizements: list) -> None:
+        attachment = _shortcut_token_attachment(field)
+        assert attachment["Type"] == "Variable"
+        assert attachment["VariableName"] == "Repeat Item"
+        assert attachment["Aggrandizements"] == aggrandizements
+
+    step_metric = metric_fields("Step Metric")
+    assert _shortcut_text_value(step_metric["type"]) == "step_count"
+    assert _shortcut_text_value(step_metric["unit"]) == "count"
+    assert_repeat_item_field(step_metric["value"], sample_value)
+    assert_repeat_item_field(step_metric["timestamp"], iso_start_date)
+
+    energy_metric = metric_fields("Energy Metric")
+    assert _shortcut_text_value(energy_metric["type"]) == "active_energy"
+    assert _shortcut_text_value(energy_metric["unit"]) == "kcal"
+    assert_repeat_item_field(energy_metric["value"], sample_value)
+    assert_repeat_item_field(energy_metric["timestamp"], iso_start_date)
+
+    # Sleep Value/Duration render as localized text in Shortcuts, so the sleep
+    # metric ships value 0 with start/end ISO timestamps; the server derives
+    # the duration from "end" and the localized stage text is diagnostic only.
+    sleep_metric = metric_fields("Sleep Metric")
+    assert _shortcut_text_value(sleep_metric["type"]) == "sleep_analysis"
+    assert _shortcut_text_value(sleep_metric["value"]) == "0"
+    assert _shortcut_text_value(sleep_metric["unit"]) == "s"
+    assert_repeat_item_field(sleep_metric["timestamp"], iso_start_date)
+    assert_repeat_item_field(sleep_metric["end"], iso_end_date)
+    assert_repeat_item_field(sleep_metric["stage"], sample_value)
+
+    hrv_metric = metric_fields("HRV Metric")
+    assert _shortcut_text_value(hrv_metric["type"]) == "heart_rate_variability"
+    assert _shortcut_text_value(hrv_metric["unit"]) == "ms"
+    assert_repeat_item_field(hrv_metric["value"], sample_value)
+    assert_repeat_item_field(hrv_metric["timestamp"], iso_start_date)
 
     payload_items = payload_base_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
         "WFDictionaryFieldValueItems"
@@ -189,9 +214,8 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
         "Type": "ActionOutput",
     }
     assert _shortcut_token_attachment(set_value_parameters["WFDictionaryValue"]) == {
-        "OutputName": "Repeat Results",
-        "OutputUUID": repeat_end["WFWorkflowActionParameters"]["UUID"],
-        "Type": "ActionOutput",
+        "Type": "Variable",
+        "VariableName": "Metrics",
     }
 
     plist_file_parameters = plist_file_action["WFWorkflowActionParameters"]
@@ -1340,6 +1364,80 @@ def test_convert_health_auto_export_flattens_and_normalizes_dates(mock_settings)
     }
     assert result["metrics"][2]["type"] == "heart_rate"
     assert result["metrics"][2]["value"] == 72
+
+
+@pytest.mark.asyncio
+async def test_ingest_apple_health_payload_derives_sleep_duration_from_end_timestamp(mock_settings):
+    from app.services.apple_health import ingest_apple_health_payload
+
+    pool = FakePool()
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "sleep_analysis",
+                "value": "0",
+                "unit": "s",
+                "timestamp": "2026-05-19T23:04:00+03:00",
+                "end": "2026-05-20T06:34:00+03:00",
+                "stage": "Core",
+            },
+        ],
+    }
+
+    result = await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["records_inserted"] == 1
+    inserts = _executed(pool, "INSERT INTO health_data")
+    assert len(inserts) == 1
+    _, args = inserts[0]
+    assert args[1] == "sleep_analysis"
+    # 23:04 → 06:34 is 7.5h, derived from the "end" field the Shortcut sends.
+    assert args[6] == 27000
+    additional_data = json.loads(args[7])
+    assert additional_data["stage"] == "Core"
+    assert additional_data["end"] == "2026-05-20T06:34:00+03:00"
+
+
+def test_convert_health_auto_export_extracts_sleep_from_hour_buckets(mock_settings):
+    from app.services.apple_health import convert_health_auto_export
+
+    hae_payload = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {
+                            "date": "2026-05-20 07:12:00 +0300",
+                            "sleepStart": "2026-05-19 23:04:00 +0300",
+                            "sleepEnd": "2026-05-20 07:12:00 +0300",
+                            "asleep": 7.5,
+                            "inBed": 8.1,
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    result = convert_health_auto_export(hae_payload, telegram_user_id=42)
+
+    assert result["metrics"] == [
+        {
+            "type": "sleep_analysis",
+            "value": 7.5,
+            "unit": "hr",
+            "timestamp": "2026-05-19T23:04:00+03:00",
+        }
+    ]
 
 
 def test_convert_health_auto_export_skips_invalid_points(mock_settings):

@@ -222,6 +222,8 @@ async def journal_reminders() -> None:
                     parts.append(f"💚 {rec_short}")
                 if stats.get("apple_health_sleep_hours"):
                     parts.append(f"❤️ Apple sleep: {stats['apple_health_sleep_hours']}h")
+                if stats.get("apple_health_avg_hrv_ms"):
+                    parts.append(f"🧘 HRV (стрес-проксі): {stats['apple_health_avg_hrv_ms']} ms")
                 parts.append("\nЯк настрій? Які плани на день?")
                 text = "\n".join(parts)
             else:
