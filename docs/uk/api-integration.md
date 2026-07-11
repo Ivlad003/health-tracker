@@ -334,7 +334,10 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
 5. Додай дію **Repeat with Each** для результату Health Samples.
 6. Усередині repeat-блоку додай дію **Dictionary** для одного metric object:
    - `type`: `step_count`
-   - `value`: quantity поточного repeat item
+   - `value`: властивість **Value** поточного repeat item («Quantity» не є
+     властивістю health sample і рендериться порожнім рядком). Сервер також
+     приймає текстові значення на кшталт `"434 count"` чи `"68,5"` і
+     видобуває числову частину.
    - `unit`: `count`
    - `timestamp`: start date поточного repeat item через **Format Date** у
      форматі **ISO 8601**

@@ -313,7 +313,10 @@ Use this only if the ready Shortcut cannot be imported or needs debugging.
 5. Add a **Repeat with Each** action for the Health Samples result.
 6. Inside the repeat block, add a **Dictionary** action for one metric object:
    - `type`: `step_count`
-   - `value`: the repeat item's quantity
+   - `value`: the repeat item's **Value** property ("Quantity" is not a
+     health sample property and renders as an empty string). The server
+     also accepts text renders such as `"434 count"` or `"68,5"` and
+     extracts the numeric part.
    - `unit`: `count`
    - `timestamp`: the repeat item's start date, formatted with **Format Date**
      using **ISO 8601**
