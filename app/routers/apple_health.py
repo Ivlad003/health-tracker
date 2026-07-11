@@ -38,6 +38,38 @@ async def download_apple_health_shortcut():
     )
 
 
+async def _echo_payload_to_telegram(
+    telegram_user_id: int,
+    body: bytes,
+    filename: str,
+    caption: str,
+) -> None:
+    """Echo the raw received sync body to the owner's Telegram chat for debugging.
+
+    Only called after the Apple Health token has been verified. Must never
+    break request handling.
+    """
+    try:
+        from app.services.telegram_bot import send_document, send_message
+
+        if body:
+            await send_document(
+                telegram_user_id,
+                document=body,
+                filename=filename,
+                caption=caption,
+            )
+        else:
+            await send_message(
+                telegram_user_id,
+                f"{caption}\nТіло запиту порожнє (0 байт).",
+            )
+    except Exception:
+        logger.exception(
+            "AppleHealth payload echo to Telegram failed for user %s", telegram_user_id
+        )
+
+
 @router.post("/sync")
 async def sync_apple_health(
     request: Request,
@@ -91,6 +123,18 @@ async def sync_apple_health(
                         "parse_error": "invalid_json",
                         "body_length": body_len,
                     },
+                )
+                await _echo_payload_to_telegram(
+                    query_user_id,
+                    body,
+                    filename="apple-health-payload.txt",
+                    caption=(
+                        "⚠️ Apple Health: запит відхилено — тіло не є валідним JSON "
+                        f"(HTTP 400 Invalid JSON payload).\n"
+                        f"Content-Type: {content_type}\n"
+                        f"Розмір: {body_len} байт.\n"
+                        "Отримане тіло запиту — у файлі."
+                    ),
                 )
         logger.warning(
             "AppleHealth REJECT json_parse client=%s ct=%r body_len=%d err_class=%s",
@@ -181,6 +225,17 @@ async def sync_apple_health(
         "auto_export" if is_hae else "native",
         body_len,
         native_metric_count,
+    )
+
+    await _echo_payload_to_telegram(
+        telegram_user_id,
+        body,
+        filename="apple-health-payload.json",
+        caption=(
+            "📥 Apple Health: отримано payload "
+            f"(формат: {'Health Auto Export' if is_hae else 'native'}, "
+            f"{body_len} байт). Отримане тіло запиту — у файлі."
+        ),
     )
 
     if is_hae:

@@ -53,6 +53,24 @@ async def send_message(telegram_user_id: int, text: str) -> None:
     )
 
 
+async def send_document(
+    telegram_user_id: int,
+    document: bytes,
+    filename: str,
+    caption: str | None = None,
+) -> None:
+    """Send a file to a user via the bot. Used to echo Apple Health payloads."""
+    if _application is None:
+        logger.warning("Bot not started, cannot send document to %s", telegram_user_id)
+        return
+    await _application.bot.send_document(
+        chat_id=telegram_user_id,
+        document=document,
+        filename=filename,
+        caption=caption,
+    )
+
+
 def _is_pure_gram_serving(desc: str) -> bool:
     """Check if serving description is a pure gram amount like '100g' or '1 g'."""
     d = desc.strip().lower()

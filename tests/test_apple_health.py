@@ -3,7 +3,7 @@ import logging
 import plistlib
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -276,7 +276,9 @@ def _executed(pool: FakePool, fragment: str):
 
 
 def _assert_logs_do_not_contain(caplog, *sensitive_values: str) -> None:
-    log_output = caplog.text
+    # Check rendered messages only; caplog.text also contains file:lineno
+    # prefixes, which can spuriously match short values like "72".
+    log_output = "\n".join(record.getMessage() for record in caplog.records)
     for sensitive_value in sensitive_values:
         assert sensitive_value not in log_output
 
@@ -833,6 +835,121 @@ async def test_apple_health_webhook_logs_invalid_json_after_url_token_authentica
     assert log_args[:7] == (7, 3, 400, 0, 0, 0, "Invalid JSON payload")
     assert "not-json" not in (log_args[7] or "")
 
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_echoes_invalid_json_body_to_telegram(mock_settings):
+    from app.main import app
+
+    pool = FakePool()
+    send_document = AsyncMock()
+    raw_body = b"bplist00\x00fake-binary-plist"
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_document", send_document):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=user-secret",
+                content=raw_body,
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 400
+    send_document.assert_awaited_once()
+    args, kwargs = send_document.await_args
+    assert args[0] == 999
+    assert kwargs["document"] == raw_body
+    assert kwargs["filename"] == "apple-health-payload.txt"
+    assert "Invalid JSON payload" in kwargs["caption"]
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_does_not_echo_invalid_json_without_valid_token(mock_settings):
+    from app.main import app
+
+    pool = FakePool()
+    send_document = AsyncMock()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_document", send_document):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync?userId=999&token=wrong-token",
+                content=b"not-json",
+                headers={"Content-Type": "application/json"},
+            )
+
+    assert resp.status_code == 401
+    send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_echoes_valid_payload_to_telegram(mock_settings):
+    from app.main import app
+
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": 5000,
+                "unit": "count",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+    body = _json_body(payload)
+    pool = FakePool()
+    send_document = AsyncMock()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_document", send_document):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Apple-Health-Token": "user-secret",
+                },
+            )
+
+    assert resp.status_code == 200
+    send_document.assert_awaited_once()
+    args, kwargs = send_document.await_args
+    assert args[0] == 999
+    assert kwargs["document"] == body
+    assert kwargs["filename"] == "apple-health-payload.json"
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_survives_telegram_echo_failure(mock_settings):
+    from app.main import app
+
+    payload = {"userId": 999, "sourceType": "apple_health", "metrics": []}
+    body = _json_body(payload)
+    pool = FakePool()
+    send_document = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_document", send_document):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Apple-Health-Token": "user-secret",
+                },
+            )
+
+    assert resp.status_code == 200
+    send_document.assert_awaited_once()
 
 
 @pytest.mark.asyncio
