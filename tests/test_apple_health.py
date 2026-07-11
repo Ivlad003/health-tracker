@@ -194,9 +194,8 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     assert post_parameters["WFHTTPBodyType"] == "File"
     assert "WFJSONValues" not in post_parameters
     request_variable = post_parameters["WFRequestVariable"]
-    assert request_variable["WFSerializationType"] == "WFTextTokenString"
-    assert request_variable["Value"]["string"] == "￼"
-    assert request_variable["Value"]["attachmentsByRange"]["{0, 1}"] == {
+    assert request_variable["WFSerializationType"] == "WFTextTokenAttachment"
+    assert request_variable["Value"] == {
         "OutputName": "Payload JSON",
         "OutputUUID": json_file_parameters["UUID"],
         "Type": "ActionOutput",

@@ -132,9 +132,11 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
         self.assertEqual(post["WFHTTPBodyType"], "File")
         self.assertNotIn("WFJSONValues", post)
         request_variable = post["WFRequestVariable"]
-        self.assertEqual(request_variable["WFSerializationType"], "WFTextTokenString")
-        self.assertEqual(_text_value(request_variable), "￼")
-        attachment = request_variable["Value"]["attachmentsByRange"]["{0, 1}"]
+        self.assertEqual(
+            request_variable["WFSerializationType"],
+            "WFTextTokenAttachment",
+        )
+        attachment = request_variable["Value"]
         self.assertEqual(attachment["OutputName"], "Payload JSON")
         self.assertEqual(attachment["OutputUUID"], json_file["UUID"])
         self.assertEqual(attachment["Type"], "ActionOutput")
