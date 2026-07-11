@@ -104,10 +104,10 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
             if template["Property"] == "Start Date"
         )
 
-        # 1001 is "Start Date is in the last", unit 16384 is days.
+        # 1001 is "Start Date is in the last"; NSCalendar.Unit.day is 16.
         self.assertEqual(start_date_filter["Operator"], 1001)
         self.assertEqual(start_date_filter["Values"]["Number"], "2")
-        self.assertEqual(start_date_filter["Values"]["Unit"], 16384)
+        self.assertEqual(start_date_filter["Values"]["Unit"], 16)
 
     def test_each_query_loops_and_appends_one_metric_to_the_metrics_variable(self) -> None:
         """Every query gets repeat → dictionary → Add to Variable "Metrics" wiring."""
