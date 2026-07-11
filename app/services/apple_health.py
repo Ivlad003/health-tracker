@@ -77,7 +77,34 @@ def _parse_datetime(value: str, field_name: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _normalize_numeric_text(raw: str) -> str:
+    """Extract the numeric part of a Shortcuts-rendered quantity string.
+
+    The Shortcut inserts the health sample's Value property as localized
+    text, which can carry a unit suffix ("434 count"), grouping spaces
+    ("5 037", regular or non-breaking), or a decimal comma ("68,5"). A comma
+    followed by exactly three digits is ambiguous grouping (5,037 could be
+    5037 or 5.037) and is left untouched so it fails validation instead of
+    silently changing magnitude.
+    """
+    match = re.match(r"\s*(-?\d[\d\u00a0\u202f .,]*)", raw)
+    if not match:
+        return raw
+    number = (
+        match.group(1)
+        .replace("\u00a0", "")
+        .replace("\u202f", "")
+        .replace(" ", "")
+        .rstrip(".,")
+    )
+    if re.fullmatch(r"-?\d+,\d{1,2}", number):
+        number = number.replace(",", ".")
+    return number
+
+
 def _parse_decimal(value: Any, field_name: str) -> Decimal:
+    if isinstance(value, str):
+        value = _normalize_numeric_text(value)
     try:
         return Decimal(str(value))
     except (InvalidOperation, TypeError) as exc:

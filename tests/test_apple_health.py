@@ -21,6 +21,29 @@ def test_verify_apple_health_token_rejects_mismatch(mock_settings):
     assert verify_apple_health_token("wrong-token", "user-secret") is False
 
 
+def test_parse_decimal_accepts_shortcuts_text_renders(mock_settings):
+    from decimal import Decimal
+
+    from app.services.apple_health import _parse_decimal
+
+    assert _parse_decimal(434, "metric value") == Decimal("434")
+    assert _parse_decimal("434", "metric value") == Decimal("434")
+    assert _parse_decimal("434 count", "metric value") == Decimal("434")
+    assert _parse_decimal("68.5", "metric value") == Decimal("68.5")
+    assert _parse_decimal("68,5", "metric value") == Decimal("68.5")
+    assert _parse_decimal("5 037", "metric value") == Decimal("5037")
+    assert _parse_decimal("5 037 count", "metric value") == Decimal("5037")
+    assert _parse_decimal("-2.5 kg", "metric value") == Decimal("-2.5")
+
+
+def test_parse_decimal_rejects_non_numeric_values(mock_settings):
+    from app.services.apple_health import AppleHealthIngestionError, _parse_decimal
+
+    for bad in ("", "count", None, "5,037"):
+        with pytest.raises(AppleHealthIngestionError, match="must be numeric"):
+            _parse_decimal(bad, "metric value")
+
+
 @pytest.mark.asyncio
 async def test_apple_health_shortcut_download_serves_signed_artifact(mock_settings):
     from app.main import app
@@ -131,8 +154,11 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     value_attachment = _shortcut_token_attachment(metric_by_key["value"])
     assert value_attachment["Type"] == "Variable"
     assert value_attachment["VariableName"] == "Repeat Item"
+    # Health sample content items expose "Value" (alongside Start Date, End
+    # Date, Duration, Source, Name); "Quantity" is not a property and renders
+    # as an empty string.
     assert value_attachment["Aggrandizements"] == [
-        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Quantity"}
+        {"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Value"}
     ]
 
     timestamp_attachment = _shortcut_token_attachment(metric_by_key["timestamp"])
@@ -986,6 +1012,45 @@ async def test_apple_health_webhook_ingests_valid_payload(mock_settings):
 
     assert resp.status_code == 200
     assert resp.json()["records_processed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_ingests_text_rendered_values(mock_settings):
+    """The Shortcut posts the sample Value as localized text, e.g. "434 count"."""
+    from app.main import app
+
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {
+                "type": "step_count",
+                "value": "434 count",
+                "unit": "count",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+    body = _json_body(payload)
+    pool = FakePool()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Apple-Health-Token": "user-secret",
+                },
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["records_processed"] == 1
+    inserts = _executed(pool, "INSERT INTO health_data")
+    assert len(inserts) == 1
 
 
 @pytest.mark.asyncio
