@@ -319,11 +319,16 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     }
 
 
+def _natural_key_duration(duration_seconds):
+    """Model health_data_natural_key's NULLS NOT DISTINCT: NULL durations must
+    compare equal to each other (mapping them to a shared sentinel does that)."""
+    return duration_seconds if duration_seconds is not None else -1
+
+
 class FakePool:
     def __init__(self):
         self.executed = []
         self.fetchrow_calls = []
-        self.duplicate_metric = None
         self.health_rows = []
         self.force_insert_conflict = False
         self.fail_health_data_insert = False
@@ -341,28 +346,26 @@ class FakePool:
             return self.active_sync
         if "FROM users" in query and "apple_health_sync" in query:
             return self.inactive_sync or self.active_sync
-        if "FROM health_data" in query:
-            if self.duplicate_metric is not None:
-                return self.duplicate_metric
-            user_id, metric_type, recorded_at = args
-            for row in self.health_rows:
-                if (
-                    row["user_id"] == user_id
-                    and row["source"] == "apple_health"
-                    and row["metric_type"] == metric_type
-                    and row["recorded_at"] == recorded_at
-                ):
-                    return row
-            return None
         if "INSERT INTO health_data" in query:
             if self.fail_health_data_insert:
                 raise RuntimeError("database unavailable")
             self.executed.append((query, args))
             if self.force_insert_conflict:
                 return None
-            key = (args[0], "apple_health", args[1], args[5])
+            # Model the widened UNIQUE health_data_natural_key:
+            # (user_id, source, metric_type, recorded_at, value,
+            #  COALESCE(duration_seconds, -1)). ON CONFLICT DO NOTHING => None.
+            key = (args[0], "apple_health", args[1], args[5], args[3], _natural_key_duration(args[6]))
             for row in self.health_rows:
-                if (row["user_id"], row["source"], row["metric_type"], row["recorded_at"]) == key:
+                row_key = (
+                    row["user_id"],
+                    row["source"],
+                    row["metric_type"],
+                    row["recorded_at"],
+                    row["value"],
+                    _natural_key_duration(row.get("duration_seconds")),
+                )
+                if row_key == key:
                     return None
             row = {
                 "id": len(self.health_rows) + 1,
@@ -373,6 +376,7 @@ class FakePool:
                 "value": args[3],
                 "unit": args[4],
                 "recorded_at": args[5],
+                "duration_seconds": args[6],
             }
             self.health_rows.append(row)
             return {"id": row["id"]}
@@ -465,8 +469,6 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
         "records_processed": 2,
         "records_inserted": 2,
         "records_skipped": 0,
-        "records_duplicate": 0,
-        "records_conflict": 0,
         "records_failed": 0,
         "records_by_type": {"active_energy": 1, "step_count": 1},
         "unmapped_metric_types": [],
@@ -492,7 +494,9 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
 
 
 @pytest.mark.asyncio
-async def test_ingest_apple_health_payload_reports_identical_existing_metric_as_duplicate(mock_settings):
+async def test_ingest_apple_health_payload_skips_identical_resend(mock_settings):
+    """An identical resend (same value AND duration) collides on the widened
+    natural key and stays an idempotent no-op skip."""
     from app.services.apple_health import ingest_apple_health_payload
 
     recorded_at = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
@@ -505,6 +509,7 @@ async def test_ingest_apple_health_payload_reports_identical_existing_metric_as_
         "value": 5000,
         "unit": "count",
         "recorded_at": recorded_at,
+        "duration_seconds": None,
     })
     payload = {
         "userId": 999,
@@ -529,17 +534,17 @@ async def test_ingest_apple_health_payload_reports_identical_existing_metric_as_
         "records_processed": 0,
         "records_inserted": 0,
         "records_skipped": 1,
-        "records_duplicate": 1,
-        "records_conflict": 0,
         "records_failed": 0,
         "records_by_type": {"step_count": 1},
         "unmapped_metric_types": [],
-        "summary": "1 records received, 0 stored, 1 skipped (1 duplicate): 1 steps",
+        "summary": "1 records received, 0 stored, 1 skipped (duplicate): 1 steps",
     }
 
 
 @pytest.mark.asyncio
-async def test_ingest_apple_health_payload_reports_same_timestamp_different_value_as_conflict(mock_settings):
+async def test_ingest_stores_same_second_different_value_as_distinct_row(mock_settings):
+    """The core fix: two samples sharing metric_type + second but with a
+    different value are now stored as separate rows, not dropped as a conflict."""
     from app.services.apple_health import ingest_apple_health_payload
 
     recorded_at = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
@@ -552,6 +557,7 @@ async def test_ingest_apple_health_payload_reports_same_timestamp_different_valu
         "value": 4000,
         "unit": "count",
         "recorded_at": recorded_at,
+        "duration_seconds": None,
     })
     payload = {
         "userId": 999,
@@ -573,16 +579,17 @@ async def test_ingest_apple_health_payload_reports_same_timestamp_different_valu
 
     assert result == {
         "records_received": 1,
-        "records_processed": 0,
-        "records_inserted": 0,
-        "records_skipped": 1,
-        "records_duplicate": 0,
-        "records_conflict": 1,
+        "records_processed": 1,
+        "records_inserted": 1,
+        "records_skipped": 0,
         "records_failed": 0,
         "records_by_type": {"step_count": 1},
         "unmapped_metric_types": [],
-        "summary": "1 records received, 0 stored, 1 skipped (1 same-timestamp conflict): 1 steps",
+        "summary": "1 records received, 1 stored: 1 steps",
     }
+    # Both the pre-existing 4000 sample and the new 5000 sample coexist.
+    assert len(pool.health_rows) == 2
+    assert {int(r["value"]) for r in pool.health_rows} == {4000, 5000}
 
 
 @pytest.mark.asyncio
@@ -614,12 +621,10 @@ async def test_ingest_apple_health_payload_does_not_count_database_insert_confli
         "records_processed": 0,
         "records_inserted": 0,
         "records_skipped": 1,
-        "records_duplicate": 0,
-        "records_conflict": 1,
         "records_failed": 0,
         "records_by_type": {"step_count": 1},
         "unmapped_metric_types": [],
-        "summary": "1 records received, 0 stored, 1 skipped (1 same-timestamp conflict): 1 steps",
+        "summary": "1 records received, 0 stored, 1 skipped (duplicate): 1 steps",
     }
 
 
@@ -1596,8 +1601,9 @@ def _load_real_shortcut_payload() -> dict:
 
 @pytest.mark.asyncio
 async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_settings):
-    """Every metric in the real shortcut export is accounted for: stored, or
-    explicitly skipped as a same-key collision — never silently dropped."""
+    """With the widened natural key (migration 008), every distinct metric in
+    the real shortcut export is stored — the 9 same-second samples that used to
+    collide now coexist as separate rows."""
     from app.services.apple_health import ingest_apple_health_payload
 
     payload = _load_real_shortcut_payload()
@@ -1611,29 +1617,35 @@ async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_se
         now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
     )
 
-    # 1239 received; 9 collide on UNIQUE(user_id, source, metric_type,
-    # recorded_at) within this single payload (Apple emits several samples in
-    # the same minute), so only 1230 distinct rows can be stored.
+    # All 1239 land: the 6 step/energy pairs (different value) and 3 sleep pairs
+    # (different duration) that shared a second are now distinct on
+    # (..., recorded_at, value, COALESCE(duration_seconds, -1)).
     assert result["records_received"] == 1239
-    assert result["records_inserted"] == 1230
-    assert result["records_processed"] == 1230
-    assert result["records_skipped"] == 9
-    assert result["records_duplicate"] == 3
-    assert result["records_conflict"] == 6
+    assert result["records_inserted"] == 1239
+    assert result["records_processed"] == 1239
+    assert result["records_skipped"] == 0
     assert result["records_failed"] == 0
 
-    # Completeness invariant: nothing vanishes — received is fully partitioned
-    # into stored + skipped + failed.
+    # Completeness invariant: received is fully partitioned into
+    # stored + skipped + failed.
     assert (
         result["records_received"]
         == result["records_inserted"] + result["records_skipped"] + result["records_failed"]
     )
 
-    # The 9 same-key collisions are detected on the pre-insert lookup, so only
-    # 1230 rows are actually written to health_data.
     inserted_rows = [q for q, _ in pool.executed if "INSERT INTO health_data" in q]
-    assert len(inserted_rows) == 1230
-    assert len(pool.health_rows) == 1230
+    assert len(inserted_rows) == 1239
+    assert len(pool.health_rows) == 1239
+
+    # Prove the fix concretely: at least one (metric_type, recorded_at) second
+    # now holds more than one stored row — impossible under the old key.
+    from collections import Counter
+
+    per_second = Counter(
+        (row["metric_type"], row["recorded_at"]) for row in pool.health_rows
+    )
+    assert max(per_second.values()) == 2
+    assert sum(1 for n in per_second.values() if n == 2) == 9
 
     assert result["records_by_type"] == {
         "step_count": 515,
@@ -1646,8 +1658,8 @@ async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_se
 
 @pytest.mark.asyncio
 async def test_ingest_logs_completeness_breakdown_in_import_log(mock_settings):
-    """apple_health_import_logs captures the received/processed columns and the
-    full skip breakdown in response_body for the real payload."""
+    """apple_health_import_logs captures received/processed/skipped columns and
+    the by-type breakdown in response_body for the real payload."""
     from app.services.apple_health import ingest_apple_health_payload
 
     payload = _load_real_shortcut_payload()
@@ -1662,18 +1674,18 @@ async def test_ingest_logs_completeness_breakdown_in_import_log(mock_settings):
     import_logs = _executed(pool, "INSERT INTO apple_health_import_logs")
     assert len(import_logs) == 1
     _, log_args = import_logs[0]
-    # columns: user_id, sync_id, http_status, received, processed, failed, error
-    assert log_args[:7] == (7, 3, 200, 1239, 1230, 0, None)
+    # columns: user_id, sync_id, http_status, received, processed, failed, error,
+    #          request_body, response_body, records_skipped
+    assert log_args[:7] == (7, 3, 200, 1239, 1239, 0, None)
+    assert log_args[9] == 0  # records_skipped column
     response_body = json.loads(log_args[8])
-    assert response_body["records_skipped"] == 9
-    assert response_body["records_duplicate"] == 3
-    assert response_body["records_conflict"] == 6
+    assert response_body["records_skipped"] == 0
     assert response_body["records_by_type"] == {
         "step_count": 515,
         "active_energy": 509,
         "sleep_analysis": 215,
     }
-    assert "1239 records received, 1230 stored" in response_body["summary"]
+    assert "1239 records received, 1239 stored" in response_body["summary"]
 
 
 @pytest.mark.asyncio
@@ -1738,13 +1750,10 @@ def test_build_ingestion_summary_formats_counts_and_skips(mock_settings):
         received=1239,
         inserted=1230,
         skipped=9,
-        duplicates=3,
-        conflicts=6,
         failed=0,
     )
     assert summary == (
-        "1239 records received, 1230 stored, "
-        "9 skipped (3 duplicate, 6 same-timestamp conflict): "
+        "1239 records received, 1230 stored, 9 skipped (duplicate): "
         "515 steps, 509 active energy, 215 sleep"
     )
 
@@ -1757,8 +1766,6 @@ def test_build_ingestion_summary_handles_clean_import_and_unmapped(mock_settings
         received=12,
         inserted=12,
         skipped=0,
-        duplicates=0,
-        conflicts=0,
         failed=0,
         unmapped_types=["blood_glucose"],
     )
@@ -1845,3 +1852,94 @@ async def test_apple_health_webhook_survives_summary_notification_failure(mock_s
     assert resp.status_code == 200
     assert resp.json()["records_processed"] == 1
     send_message.assert_awaited_once()
+
+
+class _SleepSummaryPool:
+    """Minimal pool feeding get_apple_health_summary the rows a sync stored."""
+
+    def __init__(self, health_rows):
+        self._rows = health_rows
+
+    async def fetchrow(self, query, *args):
+        # No FatSecret / WHOOP tokens for this user in the sleep-only test.
+        return None
+
+    async def fetch(self, query, *args):
+        assert "FROM health_data" in query
+        return self._rows
+
+
+@pytest.mark.asyncio
+async def test_sleep_in_bed_and_awake_same_start_persist_and_feed_aggregation(mock_settings):
+    """Regression: the 'In Bed' envelope + 'Awake' segment share a start
+    timestamp with identical value/unit. Before the widened key the multi-hour
+    In-Bed row was silently discarded as a duplicate, starving nightly sleep.
+    Now both persist as distinct rows AND the aggregation sees the 8h envelope.
+    """
+    from app.services.apple_health import (
+        _merged_interval_seconds,
+        get_apple_health_summary,
+        ingest_apple_health_payload,
+    )
+
+    sleep_start = "2026-07-11T05:00:00+00:00"
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {  # 20-minute Awake segment
+                "type": "sleep_analysis", "value": "0", "unit": "s",
+                "timestamp": sleep_start, "end": "2026-07-11T05:20:00+00:00",
+                "stage": "Awake",
+            },
+            {  # 8-hour In Bed envelope sharing the same start
+                "type": "sleep_analysis", "value": "0", "unit": "s",
+                "timestamp": sleep_start, "end": "2026-07-11T13:00:00+00:00",
+                "stage": "In Bed",
+            },
+        ],
+    }
+
+    pool = FakePool()
+    result = await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    # Both segments stored as distinct rows — neither dropped as a duplicate.
+    assert result["records_inserted"] == 2
+    assert result["records_skipped"] == 0
+    assert result["records_received"] == result["records_inserted"] + result["records_skipped"] + result["records_failed"]
+    assert len(pool.health_rows) == 2
+    assert sorted(r["duration_seconds"] for r in pool.health_rows) == [1200, 28800]
+
+    # The union of the overlapping intervals is the In-Bed envelope (8h), not
+    # the 20-minute Awake segment.
+    start = datetime(2026, 7, 11, 5, 0, tzinfo=timezone.utc)
+    assert _merged_interval_seconds([
+        (start, start + timedelta(minutes=20)),
+        (start, start + timedelta(hours=8)),
+    ]) == 8 * 3600
+
+    # End-to-end: feed the stored rows through the nightly-sleep aggregation.
+    summary_rows = [
+        {
+            "metric_type": r["metric_type"],
+            "value": r["value"],
+            "unit": r["unit"],
+            "recorded_at": r["recorded_at"],
+            "duration_seconds": r["duration_seconds"],
+        }
+        for r in pool.health_rows
+    ]
+    summary = await get_apple_health_summary(
+        _SleepSummaryPool(summary_rows),
+        7,
+        start_at=datetime(2026, 7, 11, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert summary["sleep_hours"] == 8.0
+    assert summary["metric_counts"]["sleep_analysis"] == 2

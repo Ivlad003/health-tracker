@@ -380,15 +380,19 @@ async def record_apple_health_import_log(
     records_received: int = 0,
     records_processed: int = 0,
     records_failed: int = 0,
+    records_skipped: int = 0,
     error_message: str | None = None,
     request_summary: dict[str, Any] | None = None,
     response_summary: dict[str, Any] | None = None,
 ) -> None:
+    # records_skipped is bound last ($10) to match the column appended by
+    # migration 008 (ALTER TABLE ADD COLUMN lands it physically last).
     await pool.execute(
         """INSERT INTO apple_health_import_logs
                (user_id, sync_id, http_status, records_received, records_processed,
-                records_failed, error_message, request_body, response_body)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)""",
+                records_failed, error_message, request_body, response_body,
+                records_skipped)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)""",
         user_id,
         sync_id,
         http_status,
@@ -398,6 +402,7 @@ async def record_apple_health_import_log(
         error_message,
         json.dumps(request_summary or {}),
         json.dumps(response_summary or {}),
+        records_skipped,
     )
 
 
@@ -411,6 +416,7 @@ async def record_apple_health_failure(
     records_received: int = 0,
     records_processed: int = 0,
     records_failed: int = 0,
+    records_skipped: int = 0,
     request_summary: dict[str, Any] | None = None,
 ) -> None:
     if sync_id is not None:
@@ -431,32 +437,11 @@ async def record_apple_health_failure(
         records_received=records_received,
         records_processed=records_processed,
         records_failed=records_failed,
+        records_skipped=records_skipped,
         error_message=error_message,
         request_summary=request_summary,
         response_summary={"error": error_message},
     )
-
-
-async def _get_existing_metric_for_unique_key(
-    pool: Any,
-    *,
-    user_id: int,
-    metric_type: str,
-    recorded_at: datetime,
-) -> dict[str, Any] | None:
-    row = await pool.fetchrow(
-        """SELECT id, value, unit
-           FROM health_data
-           WHERE user_id = $1
-                 AND source = 'apple_health'
-                 AND metric_type = $2
-                 AND recorded_at = $3
-           LIMIT 1""",
-        user_id,
-        metric_type,
-        recorded_at,
-    )
-    return dict(row) if row is not None else None
 
 
 def _normalize_hae_timestamp(raw: str) -> str:
@@ -650,15 +635,15 @@ def build_ingestion_summary(
     received: int,
     inserted: int,
     skipped: int,
-    duplicates: int,
-    conflicts: int,
     failed: int,
     unmapped_types: list[str] | None = None,
 ) -> str:
     """Human-readable one-line summary of what a sync parsed and stored.
 
-    Example: ``"1239 records received, 1230 stored, 9 skipped (3 duplicate,
-    6 same-timestamp conflict): 515 steps, 509 active energy, 215 sleep"``.
+    Example: ``"1239 records received, 1239 stored: 515 steps, 509 active
+    energy, 215 sleep"``. Since migration 008 widened the natural key with
+    ``value`` + ``duration_seconds``, a skip can only be an identical resend of
+    an already-stored sample, so skips are reported simply as duplicates.
     """
     breakdown_parts = [
         f"{count} {_metric_summary_label(key)}"
@@ -669,13 +654,7 @@ def build_ingestion_summary(
     summary = f"{received} records received, {inserted} stored"
     notes: list[str] = []
     if skipped:
-        detail = []
-        if duplicates:
-            detail.append(f"{duplicates} duplicate")
-        if conflicts:
-            detail.append(f"{conflicts} same-timestamp conflict")
-        suffix = f" ({', '.join(detail)})" if detail else ""
-        notes.append(f"{skipped} skipped{suffix}")
+        notes.append(f"{skipped} skipped (duplicate)")
     if failed:
         notes.append(f"{failed} failed")
     if notes:
@@ -697,12 +676,18 @@ async def ingest_apple_health_payload(
     Completeness contract: ``records_received`` is the number of metrics in the
     payload; ``records_inserted`` (== ``records_processed``) is how many new
     ``health_data`` rows were written. The gap is fully accounted for by
-    ``records_skipped`` (= ``records_duplicate`` + ``records_conflict``) plus
-    ``records_failed``. Skips are NOT failures: a duplicate is an identical
-    resend, a conflict is a different value colliding on the
-    ``UNIQUE(user_id, source, metric_type, recorded_at)`` key — including two
-    distinct samples that share the same (minute-truncated) timestamp inside a
-    single payload, which the schema cannot store separately.
+    ``records_skipped`` plus ``records_failed`` — the invariant
+    ``received == inserted + skipped + failed`` always holds.
+
+    Skips are NOT failures. Since migration 008 widened the natural key to
+    ``health_data_natural_key`` = ``(user_id, source, metric_type, recorded_at,
+    value, duration_seconds)`` (UNIQUE ... NULLS NOT DISTINCT so NULL durations
+    still dedup), two genuinely-distinct samples that share the same second
+    (different step counts, or an "Awake" vs "In Bed" sleep segment with
+    different durations) now store as separate rows. A row is only skipped when
+    it collides on that full key — i.e. an identical resend of an already-stored
+    sample — so ``ON CONFLICT DO NOTHING`` keeps resends idempotent without ever
+    mutating a stored row.
     """
     received = len(payload.get("metrics", [])) if isinstance(payload.get("metrics"), list) else 0
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -716,8 +701,6 @@ async def ingest_apple_health_payload(
     request_summary = _sanitized_request_summary(payload)
     inserted = 0
     skipped = 0
-    duplicates = 0
-    conflicts = 0
     failed = 0
 
     try:
@@ -747,26 +730,16 @@ async def ingest_apple_health_payload(
 
     for metric in normalized_metrics:
         try:
-            existing = await _get_existing_metric_for_unique_key(
-                pool,
-                user_id=user_id,
-                metric_type=metric["metric_type"],
-                recorded_at=metric["recorded_at"],
-            )
-            if existing is not None:
-                skipped += 1
-                if existing["unit"] == metric["unit"] and Decimal(str(existing["value"])) == metric["value"]:
-                    duplicates += 1
-                else:
-                    conflicts += 1
-                continue
-
+            # The widened natural key means a differing value/duration can no
+            # longer collide, so ON CONFLICT can only fire on a true duplicate
+            # (identical resend). A NULL from RETURNING is therefore a skip;
+            # there is no separate "conflict" case to track anymore.
             row = await pool.fetchrow(
                 """INSERT INTO health_data
                        (user_id, source, metric_type, metric_subtype, value, unit,
                         recorded_at, duration_seconds, additional_data)
                    VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7, $8::jsonb)
-                   ON CONFLICT (user_id, source, metric_type, recorded_at) DO NOTHING
+                   ON CONFLICT ON CONSTRAINT health_data_natural_key DO NOTHING
                    RETURNING id""",
                 user_id,
                 metric["metric_type"],
@@ -779,7 +752,6 @@ async def ingest_apple_health_payload(
             )
             if row is None:
                 skipped += 1
-                conflicts += 1
                 continue
             inserted += 1
         except AppleHealthIngestionError:
@@ -807,8 +779,6 @@ async def ingest_apple_health_payload(
         received=received,
         inserted=inserted,
         skipped=skipped,
-        duplicates=duplicates,
-        conflicts=conflicts,
         failed=failed,
         unmapped_types=unmapped_types,
     )
@@ -832,14 +802,13 @@ async def ingest_apple_health_payload(
         records_received=received,
         records_processed=inserted,
         records_failed=failed,
+        records_skipped=skipped,
         request_summary=request_summary,
         response_summary={
             "records_received": received,
             "records_processed": inserted,
             "records_inserted": inserted,
             "records_skipped": skipped,
-            "records_duplicate": duplicates,
-            "records_conflict": conflicts,
             "records_failed": failed,
             "records_by_type": counts_by_type,
             "unmapped_metric_types": unmapped_types,
@@ -848,14 +817,12 @@ async def ingest_apple_health_payload(
     )
 
     logger.info(
-        "Apple Health sync ingested: user_id=%s received=%d inserted=%d skipped=%d "
-        "duplicates=%d conflicts=%d failed=%d",
+        "Apple Health sync ingested: user_id=%s received=%d inserted=%d "
+        "skipped=%d failed=%d",
         user_id,
         received,
         inserted,
         skipped,
-        duplicates,
-        conflicts,
         failed,
     )
     return {
@@ -863,8 +830,6 @@ async def ingest_apple_health_payload(
         "records_processed": inserted,
         "records_inserted": inserted,
         "records_skipped": skipped,
-        "records_duplicate": duplicates,
-        "records_conflict": conflicts,
         "records_failed": failed,
         "records_by_type": counts_by_type,
         "unmapped_metric_types": unmapped_types,

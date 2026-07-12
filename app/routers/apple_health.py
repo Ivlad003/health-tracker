@@ -123,8 +123,6 @@ def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
     received = result.get("records_received", 0)
     inserted = result.get("records_inserted", result.get("records_processed", 0))
     skipped = result.get("records_skipped", 0)
-    duplicates = result.get("records_duplicate", 0)
-    conflicts = result.get("records_conflict", 0)
     failed = result.get("records_failed", 0)
     counts_by_type = result.get("records_by_type") or {}
 
@@ -140,15 +138,9 @@ def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
         f"Розпізнано: {breakdown}.",
     ]
     if skipped:
-        detail = []
-        if duplicates:
-            detail.append(f"{duplicates} дублікат(и)")
-        if conflicts:
-            detail.append(f"{conflicts} збіг за часом")
-        suffix = f" ({', '.join(detail)})" if detail else ""
         lines.append(
-            f"Пропущено {skipped}{suffix} — це не втрата, "
-            "а повторні чи однакові за часом семпли."
+            f"Пропущено {skipped} — це не втрата, а повторно надіслані "
+            "(уже збережені) семпли."
         )
     if failed:
         lines.append(f"⚠️ Помилок: {failed}.")
