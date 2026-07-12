@@ -259,7 +259,7 @@ Shortcut, який не запуститься. iPad із desktop-style User-Age
 |---|---|---|---|
 | Steps | `step_count` | `count` | Start Date is today |
 | Active Calories | `active_energy` | `kcal` | Start Date is today |
-| Sleep | `sleep_analysis` | `s` | Start Date is in the last 2 days |
+| Sleep | `sleep_analysis` | `s` | End Date is today |
 | Heart Rate Variability SDNN | `heart_rate_variability` | `ms` | Start Date is today |
 
 Точкові метрики надсилають лише зразки, для яких **Start Date is today** у
@@ -272,8 +272,10 @@ Shortcut, який не запуститься. iPad із desktop-style User-Age
   локалізованим текстом, тому кожна метрика сну надсилається з `value: 0` та
   полями `end` (ISO 8601 дата завершення) і `stage`; сервер обчислює тривалість
   з `end`, а `stage` зберігає як діагностичні дані.
-- Запит сну покриває **останні 2 дні**, бо ніч зазвичай починається до опівночі;
-  сервер зараховує зразок сну до дня, в який його інтервал *завершується*.
+- Запит сну використовує **End Date is today**. Це включає ніч, яка почалася до
+  опівночі, але залишає заявлений snapshot у межах одного календарного дня,
+  повного станом на момент sync; сервер зараховує зразок сну до дня, в який його
+  інтервал *завершується*.
 - Зразки сну, що перекриваються (обгортка In Bed плюс стадії Core/REM/Deep, або
   джерела iPhone і Watch), сервер об'єднує як часові інтервали, а не сумує, тож
   ніч не рахується двічі.
@@ -287,8 +289,9 @@ picker може відрізнятися залежно від версії iOS.
 
 Після зміни шаблону Shortcut наявні користувачі мають видалити раніше
 імпортований Shortcut, імпортувати його заново за тим самим посиланням і
-дозволити доступ до Health для нових типів даних (дозволи Health видаються
-окремо на кожен тип). Стара імпортована копія й надалі надсилатиме лише кроки.
+дозволити доступ до Health для типів даних (дозволи Health видаються окремо на
+кожен тип). Сервер відхиляє стару імпортовану копію без schema-v2 snapshot
+envelope.
 
 Backend віддає підписаний artifact тут:
 
@@ -327,7 +330,8 @@ Content-Type: application/json
   "schemaVersion": 2,
   "snapshot": {
     "timezone": "+03:00",
-    "coveredDates": ["2026-07-10", "2026-07-11"]
+    "coveredDates": ["2026-07-11"],
+    "generatedAt": "2026-07-11T10:05:00+03:00"
   },
   "metrics": [
     {
@@ -349,10 +353,11 @@ Content-Type: application/json
 ```
 
 `snapshot.timezone` — це назва IANA (наприклад, `"Europe/Kyiv"`) або фіксований
-зсув UTC (наприклад, `"+03:00"`). `snapshot.coveredDates` перелічує локальні
-календарні дні, які цей знімок повністю покриває, кожен запитаний від локальної
-`00:00`; поточний день — це знімок «повний станом на зараз», який замінює
-пізніша синхронізація.
+зсув UTC (наприклад, `"+03:00"`). Готовий Shortcut форматує поточний зсув
+пристрою як `XXXXX`. Єдиний елемент `snapshot.coveredDates` — поточна локальна
+дата: точкові семпли використовують **Start Date is today**, а сон — **End Date
+is today**. Поточний день — це знімок «повний станом на зараз», який замінює
+пізніша синхронізація. `snapshot.generatedAt` фіксує час створення snapshot.
 
 Згенерований URL вже містить Telegram user ID (`users.telegram_user_id`) і
 персональний token, тому в Shortcut достатньо вказати URL, `Content-Type:
@@ -372,9 +377,11 @@ application/json` і payload з метриками. **Не додавай пол
 
 - **Конверт знімка (обовʼязковий).** Кожен POST має містити `schemaVersion: 2`
   плюс `snapshot.timezone` і `snapshot.coveredDates`. `coveredDates` — це
-  локальні календарні дні, які цей знімок повністю покриває, кожен запитаний від
-  локальної `00:00`; поточний день — це знімок «повний станом на зараз», який
-  замінює пізніша синхронізація.
+  локальні календарні дні, які цей знімок повністю покриває. Готовий Shortcut
+  заявляє лише поточну локальну дату, запитує точкові метрики від локальної
+  `00:00` і включає інтервали сну, дата завершення яких дорівнює покритій даті.
+  Поточний день — це знімок «повний станом на зараз», який замінює пізніша
+  синхронізація.
 - **Ідемпотентність через заміну.** Агрегат кожного покритого дня **замінюється**,
   а не інкрементується. Повторне надсилання того самого знімка не змінює
   значення; новіший, повніший знімок для того самого дня перезаписує його — без
@@ -430,9 +437,15 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
      форматі **ISO 8601**
    - `duration`: `3600` для hourly samples або пропусти, якщо duration невідомий
 7. Додавай кожен metric dictionary до list variable з назвою `metrics`.
-8. Після repeat-блоку додай фінальну дію **Dictionary** для request body:
+8. Після repeat-блоку відформатуй **Current Date** трьома способами: ISO 8601
+   без часу для покритої дати, custom format `XXXXX` для UTC offset та ISO 8601
+   з часом для `generatedAt`. Поклади покриту дату в одноелементний **List**,
+   потім створи Dictionary `snapshot` з `timezone`, `coveredDates` і
+   `generatedAt`. Додай фінальну дію **Dictionary** для request body:
    - `sourceType`: `apple_health`
+   - `schemaVersion`: `2`
    - `dataType`: `activity`
+   - `snapshot`: Dictionary snapshot
    - `metrics`: list variable `metrics`
 9. Додай **Get Contents of URL**:
    - URL: встав URL з Telegram із кроку 1.
@@ -441,7 +454,8 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
    - Request Body: **JSON** або **Dictionary**, використай request body
      dictionary з кроку 8.
 10. Запусти Shortcut один раз вручну. Успішний перший sync повертає JSON на
-    кшталт `{"records_received": 1, "records_processed": 1,
+    кшталт `{"schema_version": 2, "records_received": 1,
+    "records_aggregated": 1, "aggregate_rows_updated": 1, "raw_stored": 0,
     "records_failed": 0}`.
 
 Для додаткових Health-метрик повтори той самий шаблон і зміни `type`, `unit` та
@@ -467,7 +481,8 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
    - Aggregation: наприклад, hourly або daily
    - Metrics: обери будь-які (або **All**)
 4. Запусти один раз для перевірки. Сервер поверне `{"records_received": N,
-   "records_processed": M, ...}`.
+   "records_aggregated": M, "aggregate_rows_updated": D, "raw_stored": 0,
+   ...}`.
 
 Цей шлях не потребує створення iOS Shortcut, але потребує встановлення й
 налаштування стороннього застосунку Health Auto Export.

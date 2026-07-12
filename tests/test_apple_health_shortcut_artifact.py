@@ -58,6 +58,24 @@ def _query_type(query: dict) -> str:
     return type_filter["Values"]["Enumeration"]["Value"]
 
 
+def _dictionary_items(action: dict) -> dict[str, dict]:
+    items = action["WFWorkflowActionParameters"]["WFItems"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    return {_text_value(item["WFKey"]): item for item in items}
+
+
+def _current_date_format(field: dict) -> dict:
+    attachment = field["Value"]["attachmentsByRange"]["{0, 1}"]
+    if attachment["Type"] != "CurrentDate":
+        raise AssertionError("expected a Current Date magic variable")
+    return next(
+        item
+        for item in attachment["Aggrandizements"]
+        if item["Type"] == "WFDateFormatVariableAggrandizement"
+    )
+
+
 class AppleHealthShortcutArtifactTests(unittest.TestCase):
     def test_source_uses_current_export_root_keys(self) -> None:
         """Keep the source compatible with the current Shortcuts signing service."""
@@ -92,22 +110,61 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
             # In Find Health Samples, 1002 is Shortcuts' native "Start Date is today".
             self.assertEqual(start_date_filter["Operator"], 1002)
 
-    def test_sleep_samples_cover_the_last_two_days(self) -> None:
-        """A night usually starts before midnight; "is today" would drop it."""
+    def test_sleep_samples_end_in_the_current_calendar_day(self) -> None:
+        """Include overnight samples while keeping the declared snapshot to today."""
         workflow = _load_workflow()
         sleep_query = next(
             query for query in _health_queries(workflow) if _query_type(query) == "Sleep"
         )
-        start_date_filter = next(
+        end_date_filter = next(
             template
             for template in _filter_templates(sleep_query)
-            if template["Property"] == "Start Date"
+            if template["Property"] == "End Date"
         )
 
-        # 1001 is "Start Date is in the last"; NSCalendar.Unit.day is 16.
-        self.assertEqual(start_date_filter["Operator"], 1001)
-        self.assertEqual(start_date_filter["Values"]["Number"], "2")
-        self.assertEqual(start_date_filter["Values"]["Unit"], 16)
+        # 1002 is Shortcuts' native "End Date is today" predicate.
+        self.assertEqual(end_date_filter["Operator"], 1002)
+
+    def test_payload_declares_a_single_day_schema_v2_snapshot(self) -> None:
+        """The signed client must satisfy the backend completeness contract."""
+        workflow = _load_workflow()
+        payload = next(
+            action
+            for action in workflow["WFWorkflowActions"]
+            if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+            and action["WFWorkflowActionParameters"].get("CustomOutputName")
+            == "Sync Payload Base"
+        )
+        payload_items = _dictionary_items(payload)
+
+        self.assertEqual(_text_value(payload_items["schemaVersion"]["WFValue"]), "2")
+
+        snapshot_item = payload_items["snapshot"]
+        self.assertEqual(snapshot_item["WFItemType"], 1)
+        snapshot_items = {
+            _text_value(item["WFKey"]): item
+            for item in snapshot_item["WFValue"]["Value"]["Value"][
+                "WFDictionaryFieldValueItems"
+            ]
+        }
+
+        timezone_format = _current_date_format(snapshot_items["timezone"]["WFValue"])
+        self.assertEqual(timezone_format["WFDateFormatStyle"], "Custom")
+        self.assertEqual(timezone_format["WFDateFormat"], "XXXXX")
+
+        covered_dates = snapshot_items["coveredDates"]
+        self.assertEqual(covered_dates["WFItemType"], 2)
+        covered_date_items = covered_dates["WFValue"]["Value"]
+        self.assertEqual(len(covered_date_items), 1)
+        covered_date_format = _current_date_format(covered_date_items[0]["WFValue"])
+        self.assertEqual(covered_date_format["WFDateFormatStyle"], "ISO 8601")
+        self.assertFalse(covered_date_format["WFISO8601IncludeTime"])
+
+        generated_at_format = _current_date_format(
+            snapshot_items["generatedAt"]["WFValue"]
+        )
+        self.assertEqual(generated_at_format["WFDateFormatStyle"], "ISO 8601")
+        self.assertTrue(generated_at_format["WFISO8601IncludeTime"])
 
     def test_each_query_loops_and_appends_one_metric_to_the_metrics_variable(self) -> None:
         """Every query gets repeat → dictionary → Add to Variable "Metrics" wiring."""

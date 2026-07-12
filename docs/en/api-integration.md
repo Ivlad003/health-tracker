@@ -239,7 +239,7 @@ results into a single POST:
 |---|---|---|---|
 | Steps | `step_count` | `count` | Start Date is today |
 | Active Calories | `active_energy` | `kcal` | Start Date is today |
-| Sleep | `sleep_analysis` | `s` | Start Date is in the last 2 days |
+| Sleep | `sleep_analysis` | `s` | End Date is today |
 | Heart Rate Variability SDNN | `heart_rate_variability` | `ms` | Start Date is today |
 
 Point-in-time metrics send only samples whose **Start Date is today** in the
@@ -252,9 +252,10 @@ Sleep is handled differently in three ways:
   text in Shortcuts, so each sleep metric is sent with `value: 0` plus `end`
   (ISO 8601 end date) and `stage` fields; the server derives the duration from
   `end` and keeps `stage` as diagnostic data.
-- The sleep query covers the **last 2 days** because a night usually starts
-  before midnight; the server attributes each sleep sample to the day its
-  interval *ends*.
+- The sleep query uses **End Date is today**. This includes a night that began
+  before midnight while keeping the declared snapshot to one complete-so-far
+  calendar day; the server attributes each sleep sample to the day its interval
+  *ends*.
 - Overlapping sleep samples (an In Bed envelope plus Core/REM/Deep stages, or
   iPhone plus Watch sources) are merged as time intervals server-side instead
   of summed, so a night is not double-counted.
@@ -268,8 +269,8 @@ editor — the picker label can vary by iOS version.
 
 After the Shortcut template changes, existing users must delete the previously
 imported Shortcut, import it again from the same link, and approve Health
-access for the new data types (Health permissions are granted per type). An old
-imported copy keeps sending steps only.
+access for the data types (Health permissions are granted per type). An old
+imported copy without the schema-v2 snapshot envelope is rejected by the server.
 
 The backend serves the signed artifact at:
 
@@ -308,7 +309,8 @@ Content-Type: application/json
   "schemaVersion": 2,
   "snapshot": {
     "timezone": "+03:00",
-    "coveredDates": ["2026-07-10", "2026-07-11"]
+    "coveredDates": ["2026-07-11"],
+    "generatedAt": "2026-07-11T10:05:00+03:00"
   },
   "metrics": [
     {
@@ -330,9 +332,11 @@ Content-Type: application/json
 ```
 
 `snapshot.timezone` is an IANA name (e.g. `"Europe/Kyiv"`) or a fixed UTC
-offset (e.g. `"+03:00"`). `snapshot.coveredDates` lists the local calendar days
-this snapshot fully covers, each queried from local `00:00`; the current day is
-a complete-so-far snapshot that a later sync replaces.
+offset (e.g. `"+03:00"`). The ready Shortcut formats the current device offset
+as `XXXXX`. Its single `snapshot.coveredDates` entry is the current local date:
+point-in-time samples use **Start Date is today**, while sleep uses **End Date is
+today**. The current day is a complete-so-far snapshot that a later sync
+replaces. `snapshot.generatedAt` records when that snapshot was produced.
 
 The generated URL already contains the Telegram user ID (`users.telegram_user_id`)
 and per-user token, so the Shortcut only needs the URL, `Content-Type:
@@ -352,8 +356,10 @@ for Apple Health is **0** — no rows are written to `health_data`.
 
 - **Snapshot envelope (required).** Each POST must carry `schemaVersion: 2` plus
   `snapshot.timezone` and `snapshot.coveredDates`. `coveredDates` are the local
-  calendar days this snapshot fully covers, each queried from local `00:00`; the
-  current day is a complete-so-far snapshot that a later sync replaces.
+  calendar days this snapshot fully covers. The ready Shortcut declares only
+  the current local date, queries point metrics from local `00:00`, and includes
+  sleep intervals whose end date is that covered date. The current day is a
+  complete-so-far snapshot that a later sync replaces.
 - **Idempotency by replacement.** Each covered day's aggregate is **replaced**,
   not incremented. Replaying the same snapshot leaves values unchanged; a newer,
   fuller snapshot for the same day overwrites it — no double counting.
@@ -407,10 +413,15 @@ Use this only if the ready Shortcut cannot be imported or needs debugging.
      using **ISO 8601**
    - `duration`: `3600` for hourly grouped samples, or omit it when unknown
 7. Append each metric dictionary to a list variable named `metrics`.
-8. After the repeat block, add a final **Dictionary** action for the request
-   body:
+8. After the repeat block, format **Current Date** three ways: ISO 8601 without
+   time for the covered date, custom format `XXXXX` for the UTC offset, and ISO
+   8601 with time for `generatedAt`. Put the covered date in a one-item **List**,
+   then create a `snapshot` Dictionary with `timezone`, `coveredDates`, and
+   `generatedAt`. Add a final **Dictionary** action for the request body:
    - `sourceType`: `apple_health`
+   - `schemaVersion`: `2`
    - `dataType`: `activity`
+   - `snapshot`: the snapshot Dictionary
    - `metrics`: the `metrics` list variable
 9. Add **Get Contents of URL**:
    - URL: paste the Telegram URL from step 1.
@@ -419,7 +430,8 @@ Use this only if the ready Shortcut cannot be imported or needs debugging.
    - Request Body: **JSON** or **Dictionary**, using the request body dictionary
      from step 8.
 10. Run the Shortcut once manually. A successful first sync returns JSON like
-    `{"records_received": 1, "records_processed": 1, "records_failed": 0}`.
+    `{"schema_version": 2, "records_received": 1, "records_aggregated": 1,
+    "aggregate_rows_updated": 1, "raw_stored": 0, "records_failed": 0}`.
 
 For additional Health metrics, repeat the same pattern and change `type`, `unit`,
 and `dataType` as needed. Keep timestamps in ISO 8601 format and keep each metric
@@ -444,7 +456,8 @@ Setup:
    - Aggregation: e.g. hourly or daily
    - Metrics: select whichever you want (or **All**)
 4. Run once to verify. The server will return `{"records_received": N,
-   "records_processed": M, ...}`.
+   "records_aggregated": M, "aggregate_rows_updated": D, "raw_stored": 0,
+   ...}`.
 
 This path does not require building an iOS Shortcut, but it does require
 installing and configuring the third-party Health Auto Export app.

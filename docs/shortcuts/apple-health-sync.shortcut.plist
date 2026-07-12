@@ -114,7 +114,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>WFCommentActionText</key>
-				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, copy it to a temporary file ending in .shortcut and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. Four Find Health Samples queries (Steps, Active Calories, Sleep, Heart Rate Variability SDNN) each loop over their samples and append one metric dictionary to the Metrics variable, which becomes the metrics list of a single POST. Each Find Health Samples query MUST be bounded to each covered calendar day starting at LOCAL midnight (Start Date is today / that day at 00:00) — NOT a relative "last N days" rolling window. This posts a COMPLETE calendar-day snapshot: the Shortcut MUST add the snapshot envelope to the POST body — schemaVersion 2, snapshot.timezone (IANA name or fixed UTC offset), and snapshot.coveredDates (the local days this snapshot fully covers) — alongside sourceType and the metrics list. Sleep samples send value 0 with start/end ISO timestamps because Shortcuts renders sleep Value and Duration as localized text; the server derives the duration from the end field and attributes each sleep sample to the local date it ENDS, which must be within coveredDates. NOTE: the signed .shortcut binary must be re-authored on-device (Find Health Samples needs an iPhone/iPad with HealthKit) and re-signed, because the server now REJECTS legacy rolling-window payloads that lack the snapshot envelope — they are no longer merged. Server-side ingestion remains the source of truth for validation and normalization.</string>
+				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, copy it to a temporary file ending in .shortcut and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. Four Find Health Samples queries (Steps, Active Calories, Sleep, Heart Rate Variability SDNN) each loop over their samples and append one metric dictionary to the Metrics variable, which becomes the metrics list of a single POST. Point-in-time queries use Start Date is today; Sleep uses End Date is today so an overnight interval is included without declaring yesterday as a complete day. This posts a COMPLETE current-calendar-day snapshot: the Shortcut adds schemaVersion 2 plus snapshot.timezone, snapshot.coveredDates, and snapshot.generatedAt alongside sourceType and the metrics list. Sleep samples send value 0 with start/end ISO timestamps because Shortcuts renders sleep Value and Duration as localized text; the server derives the duration from the end field and attributes each sleep sample to the local date it ENDS, which is the covered date. The server rejects legacy rolling-window payloads that lack the snapshot envelope. Server-side ingestion remains the source of truth for validation and normalization.</string>
 			</dict>
 		</dict>
 		<dict>
@@ -675,15 +675,15 @@
 								<key>Bounded</key>
 								<true/>
 								<key>Operator</key>
-								<integer>1001</integer>
+								<integer>1002</integer>
 								<key>Property</key>
-								<string>Start Date</string>
+								<string>End Date</string>
 								<key>Removable</key>
 								<false/>
 								<key>Values</key>
 								<dict>
 									<key>Number</key>
-									<string>2</string>
+									<string>1</string>
 									<key>Unit</key>
 									<integer>16</integer>
 								</dict>
@@ -1344,6 +1344,203 @@
 										<key>string</key>
 										<string>activity</string>
 									</dict>
+								</dict>
+							</dict>
+							<dict>
+								<key>WFItemType</key>
+								<integer>0</integer>
+								<key>WFKey</key>
+								<dict>
+									<key>WFSerializationType</key>
+									<string>WFTextTokenString</string>
+									<key>Value</key>
+									<dict>
+										<key>string</key>
+										<string>schemaVersion</string>
+									</dict>
+								</dict>
+								<key>WFValue</key>
+								<dict>
+									<key>WFSerializationType</key>
+									<string>WFTextTokenString</string>
+									<key>Value</key>
+									<dict>
+										<key>string</key>
+										<string>2</string>
+									</dict>
+								</dict>
+							</dict>
+							<dict>
+								<key>WFItemType</key>
+								<integer>1</integer>
+								<key>WFKey</key>
+								<dict>
+									<key>WFSerializationType</key>
+									<string>WFTextTokenString</string>
+									<key>Value</key>
+									<dict>
+										<key>string</key>
+										<string>snapshot</string>
+									</dict>
+								</dict>
+								<key>WFValue</key>
+								<dict>
+									<key>Value</key>
+									<dict>
+										<key>Value</key>
+										<dict>
+											<key>WFDictionaryFieldValueItems</key>
+											<array>
+												<dict>
+													<key>WFItemType</key>
+													<integer>0</integer>
+													<key>WFKey</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>timezone</string>
+														</dict>
+													</dict>
+													<key>WFValue</key>
+													<dict>
+														<key>Value</key>
+														<dict>
+															<key>attachmentsByRange</key>
+															<dict>
+																<key>{0, 1}</key>
+																<dict>
+																	<key>Aggrandizements</key>
+																	<array>
+																		<dict>
+																			<key>Type</key>
+																			<string>WFDateFormatVariableAggrandizement</string>
+																			<key>WFDateFormat</key>
+																			<string>XXXXX</string>
+																			<key>WFDateFormatStyle</key>
+																			<string>Custom</string>
+																			<key>WFISO8601IncludeTime</key>
+																			<false/>
+																		</dict>
+																	</array>
+																	<key>Type</key>
+																	<string>CurrentDate</string>
+																</dict>
+															</dict>
+															<key>string</key>
+															<string>￼</string>
+														</dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+													</dict>
+												</dict>
+												<dict>
+													<key>WFItemType</key>
+													<integer>2</integer>
+													<key>WFKey</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>coveredDates</string>
+														</dict>
+													</dict>
+													<key>WFValue</key>
+													<dict>
+														<key>Value</key>
+														<array>
+															<dict>
+																<key>WFItemType</key>
+																<integer>0</integer>
+																<key>WFValue</key>
+																<dict>
+																	<key>Value</key>
+																	<dict>
+																		<key>attachmentsByRange</key>
+																		<dict>
+																			<key>{0, 1}</key>
+																			<dict>
+																				<key>Aggrandizements</key>
+																				<array>
+																					<dict>
+																						<key>Type</key>
+																						<string>WFDateFormatVariableAggrandizement</string>
+																						<key>WFDateFormatStyle</key>
+																						<string>ISO 8601</string>
+																						<key>WFISO8601IncludeTime</key>
+																						<false/>
+																					</dict>
+																				</array>
+																				<key>Type</key>
+																				<string>CurrentDate</string>
+																			</dict>
+																		</dict>
+																		<key>string</key>
+																		<string>￼</string>
+																	</dict>
+																	<key>WFSerializationType</key>
+																	<string>WFTextTokenString</string>
+																</dict>
+															</dict>
+														</array>
+														<key>WFSerializationType</key>
+														<string>WFArrayParameterState</string>
+													</dict>
+												</dict>
+												<dict>
+													<key>WFItemType</key>
+													<integer>0</integer>
+													<key>WFKey</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>generatedAt</string>
+														</dict>
+													</dict>
+													<key>WFValue</key>
+													<dict>
+														<key>Value</key>
+														<dict>
+															<key>attachmentsByRange</key>
+															<dict>
+																<key>{0, 1}</key>
+																<dict>
+																	<key>Aggrandizements</key>
+																	<array>
+																		<dict>
+																			<key>Type</key>
+																			<string>WFDateFormatVariableAggrandizement</string>
+																			<key>WFDateFormatStyle</key>
+																			<string>ISO 8601</string>
+																			<key>WFISO8601IncludeTime</key>
+																			<true/>
+																		</dict>
+																	</array>
+																	<key>Type</key>
+																	<string>CurrentDate</string>
+																</dict>
+															</dict>
+															<key>string</key>
+															<string>￼</string>
+														</dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+													</dict>
+												</dict>
+											</array>
+										</dict>
+										<key>WFSerializationType</key>
+										<string>WFDictionaryFieldValue</string>
+									</dict>
+									<key>WFSerializationType</key>
+									<string>WFDictionaryFieldValue</string>
 								</dict>
 							</dict>
 						</array>
