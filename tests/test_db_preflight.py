@@ -4,18 +4,21 @@ import pytest
 
 from app.db_preflight import (
     AppleHealthSchemaError,
+    REQUIRED_APPLE_HEALTH_CONSTRAINTS,
     REQUIRED_APPLE_HEALTH_INDEXES,
     REQUIRED_APPLE_HEALTH_TABLES,
     apply_apple_health_migration,
+    apply_apple_health_migrations,
     run_preflight,
     verify_apple_health_schema,
 )
 
 
 class FakeConnection:
-    def __init__(self, tables=None, indexes=None):
+    def __init__(self, tables=None, indexes=None, constraints=None):
         self.tables = set(tables or [])
         self.indexes = set(indexes or [])
+        self.constraints = set(constraints or [])
         self.executed = []
         self.closed = False
 
@@ -27,6 +30,8 @@ class FakeConnection:
             return [{"table_name": name} for name in self.tables.intersection(names)]
         if "pg_indexes" in query:
             return [{"indexname": name} for name in self.indexes.intersection(names)]
+        if "pg_constraint" in query:
+            return [{"conname": name} for name in self.constraints.intersection(names)]
         return []
 
     async def close(self):
@@ -38,6 +43,7 @@ async def test_verify_apple_health_schema_passes_when_required_objects_exist():
     conn = FakeConnection(
         tables=REQUIRED_APPLE_HEALTH_TABLES,
         indexes=REQUIRED_APPLE_HEALTH_INDEXES,
+        constraints=REQUIRED_APPLE_HEALTH_CONSTRAINTS,
     )
 
     await verify_apple_health_schema(conn)
@@ -72,7 +78,12 @@ async def test_run_preflight_applies_migration_before_verifying(monkeypatch):
     conn = FakeConnection(
         tables=REQUIRED_APPLE_HEALTH_TABLES,
         indexes=REQUIRED_APPLE_HEALTH_INDEXES,
+        constraints=REQUIRED_APPLE_HEALTH_CONSTRAINTS,
     )
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://test:test@localhost:5432/test")
 
     async def fake_connect(dsn):
         assert dsn == "postgresql://test:test@localhost:5432/test"
@@ -82,5 +93,23 @@ async def test_run_preflight_applies_migration_before_verifying(monkeypatch):
 
     await run_preflight(apply_migration=True)
 
+    # run_preflight now applies BOTH 007 and 009: the base connector tables and
+    # the processed daily aggregate table.
     assert any("CREATE TABLE IF NOT EXISTS apple_health_sync" in sql for sql in conn.executed)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS health_daily_aggregates" in sql for sql in conn.executed
+    )
     assert conn.closed is True
+
+
+@pytest.mark.asyncio
+async def test_apply_apple_health_migrations_applies_both_files():
+    conn = FakeConnection()
+
+    await apply_apple_health_migrations(conn)
+
+    # Both ordered migration files are executed (007 connector + 009 aggregate).
+    assert any("CREATE TABLE IF NOT EXISTS apple_health_sync" in sql for sql in conn.executed)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS health_daily_aggregates" in sql for sql in conn.executed
+    )

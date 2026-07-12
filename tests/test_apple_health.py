@@ -1,7 +1,7 @@
 import json
 import logging
 import plistlib
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -319,19 +319,41 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     }
 
 
-def _natural_key_duration(duration_seconds):
-    """Model health_data_natural_key's NULLS NOT DISTINCT: NULL durations must
-    compare equal to each other (mapping them to a shared sentinel does that)."""
-    return duration_seconds if duration_seconds is not None else -1
+# Positional layout of the args passed to the health_daily_aggregates upsert
+# (see ingest_apple_health_payload's pool.execute("INSERT INTO
+# health_daily_aggregates ...", user_id, day, tz, steps, ...)).
+AGG_USER_ID = 0
+AGG_METRIC_DATE = 1
+AGG_TIMEZONE = 2
+AGG_STEPS = 3
+AGG_ACTIVE_ENERGY = 4
+AGG_AVG_HR = 5
+AGG_HR_SAMPLES = 6
+AGG_AVG_HRV = 7
+AGG_HRV_SAMPLES = 8
+AGG_SLEEP_SECONDS = 9
+AGG_SAMPLES_RECEIVED = 10
+AGG_SAMPLES_AGGREGATED = 11
+AGG_METRICS_JSON = 12
+AGG_SNAPSHOT_GENERATED_AT = 13
 
 
 class FakePool:
+    """Fake asyncpg pool for the daily-aggregate model.
+
+    Serves the sync-lookup fetchrow queries and captures the
+    health_daily_aggregates upserts done via pool.execute. The upsert replaces
+    each day's row (ON CONFLICT DO UPDATE), so a replay/newer snapshot for the
+    same day overwrites rather than accumulates — mirrored here by keying on
+    (user_id, metric_date).
+    """
+
     def __init__(self):
         self.executed = []
         self.fetchrow_calls = []
-        self.health_rows = []
-        self.force_insert_conflict = False
-        self.fail_health_data_insert = False
+        # (user_id, metric_date) -> last upsert args tuple (replace semantics).
+        self.aggregates = {}
+        self.fail_aggregate_upsert = False
         self.apple_health_secret = "user-secret"
         self.active_sync = {"user_id": 7, "sync_id": 3, "secret_key": self.apple_health_secret}
         self.inactive_sync = None
@@ -346,45 +368,25 @@ class FakePool:
             return self.active_sync
         if "FROM users" in query and "apple_health_sync" in query:
             return self.inactive_sync or self.active_sync
-        if "INSERT INTO health_data" in query:
-            if self.fail_health_data_insert:
-                raise RuntimeError("database unavailable")
-            self.executed.append((query, args))
-            if self.force_insert_conflict:
-                return None
-            # Model the widened UNIQUE health_data_natural_key:
-            # (user_id, source, metric_type, recorded_at, value,
-            #  COALESCE(duration_seconds, -1)). ON CONFLICT DO NOTHING => None.
-            key = (args[0], "apple_health", args[1], args[5], args[3], _natural_key_duration(args[6]))
-            for row in self.health_rows:
-                row_key = (
-                    row["user_id"],
-                    row["source"],
-                    row["metric_type"],
-                    row["recorded_at"],
-                    row["value"],
-                    _natural_key_duration(row.get("duration_seconds")),
-                )
-                if row_key == key:
-                    return None
-            row = {
-                "id": len(self.health_rows) + 1,
-                "user_id": args[0],
-                "source": "apple_health",
-                "metric_type": args[1],
-                "metric_subtype": args[2],
-                "value": args[3],
-                "unit": args[4],
-                "recorded_at": args[5],
-                "duration_seconds": args[6],
-            }
-            self.health_rows.append(row)
-            return {"id": row["id"]}
         raise AssertionError(f"Unexpected fetchrow query: {query}")
 
     async def execute(self, query, *args):
+        if "INSERT INTO health_daily_aggregates" in query:
+            if self.fail_aggregate_upsert:
+                raise RuntimeError("database unavailable")
+            self.aggregates[(args[AGG_USER_ID], args[AGG_METRIC_DATE])] = args
         self.executed.append((query, args))
         return "OK"
+
+    # --- convenience accessors for assertions ---------------------------------
+    def aggregate_upserts(self):
+        return [args for query, args in self.executed if "INSERT INTO health_daily_aggregates" in query]
+
+    def aggregate_for(self, day):
+        for (uid, d), args in self.aggregates.items():
+            if d == day:
+                return args
+        return None
 
 
 def _json_body(payload: dict) -> bytes:
@@ -402,6 +404,27 @@ def _assert_logs_do_not_contain(caplog, *sensitive_values: str) -> None:
     log_output = "\n".join(record.getMessage() for record in caplog.records)
     for sensitive_value in sensitive_values:
         assert sensitive_value not in log_output
+
+
+def _today_covered() -> list[str]:
+    """coveredDates covering the UTC 'today' the webhook's default now falls on."""
+    return [datetime.now(timezone.utc).date().isoformat()]
+
+
+def _envelope(metrics, covered_dates, *, tz="+00:00", user_id=999, data_type="activity", **extra):
+    """Wrap metrics in the schemaVersion-2 completeness envelope the ingestion
+    contract now requires (snapshot.timezone + snapshot.coveredDates)."""
+    payload = {
+        "userId": user_id,
+        "sourceType": "apple_health",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": tz, "coveredDates": covered_dates},
+        "metrics": metrics,
+    }
+    if data_type is not None:
+        payload["dataType"] = data_type
+    payload.update(extra)
+    return payload
 
 
 @pytest.mark.asyncio
@@ -436,12 +459,8 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
     from app.services.apple_health import ingest_apple_health_payload
 
     pool = FakePool()
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "syncTimestamp": "2026-05-20T12:00:00+00:00",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "active_energy",
                 "value": 123.4,
@@ -456,7 +475,9 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
                 "timestamp": "2026-05-20T11:00:00+00:00",
             },
         ],
-    }
+        ["2026-05-20"],
+        syncTimestamp="2026-05-20T12:00:00+00:00",
+    )
 
     result = await ingest_apple_health_payload(
         pool,
@@ -465,17 +486,36 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
     )
 
     assert result == {
+        "schema_version": 2,
         "records_received": 2,
-        "records_processed": 2,
-        "records_inserted": 2,
-        "records_skipped": 0,
+        "records_aggregated": 2,
+        "aggregate_rows_updated": 1,
+        "raw_stored": 0,
         "records_failed": 0,
+        "covered_dates": ["2026-05-20"],
+        "daily": {
+            "2026-05-20": {
+                "steps": 5000,
+                "active_energy_kcal": 123.4,
+                "avg_heart_rate": 0,
+                "avg_hrv_ms": 0,
+                "sleep_hours": 0,
+                "samples_received": 2,
+                "records_by_type": {"active_energy": 1, "step_count": 1},
+            },
+        },
         "records_by_type": {"active_energy": 1, "step_count": 1},
         "unmapped_metric_types": [],
-        "summary": "2 records received, 2 stored: 1 active energy, 1 steps",
+        "summary": "2 samples received, 2 aggregated into 1 daily row, raw stored: 0: 1 active energy, 1 steps",
     }
-    inserts = [query for query, _ in pool.executed if "INSERT INTO health_data" in query]
-    assert len(inserts) == 2
+    # One upsert into the aggregate table for the single covered day; nothing
+    # goes to health_data any more.
+    upserts = pool.aggregate_upserts()
+    assert len(upserts) == 1
+    assert not [query for query, _ in pool.executed if "INSERT INTO health_data" in query]
+    agg = pool.aggregate_for(date(2026, 5, 20))
+    assert agg[AGG_STEPS] == 5000
+    assert float(agg[AGG_ACTIVE_ENERGY]) == 123.4
     sync_updates = [query for query, _ in pool.executed if "UPDATE apple_health_sync" in query]
     assert len(sync_updates) == 1
     import_logs = _executed(pool, "INSERT INTO apple_health_import_logs")
@@ -494,82 +534,59 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
 
 
 @pytest.mark.asyncio
-async def test_ingest_apple_health_payload_skips_identical_resend(mock_settings):
-    """An identical resend (same value AND duration) collides on the widened
-    natural key and stays an idempotent no-op skip."""
+async def test_ingest_apple_health_payload_replay_leaves_daily_aggregate_unchanged(mock_settings):
+    """Replaying an identical snapshot replaces the day's row with the same
+    values — the aggregate is not double-counted (the old raw-row 'skip a
+    duplicate' no-op becomes an idempotent upsert-replace)."""
     from app.services.apple_health import ingest_apple_health_payload
 
     recorded_at = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
     pool = FakePool()
-    pool.health_rows.append({
-        "id": 1,
-        "user_id": 7,
-        "source": "apple_health",
-        "metric_type": "step_count",
-        "value": 5000,
-        "unit": "count",
-        "recorded_at": recorded_at,
-        "duration_seconds": None,
-    })
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [{
+    payload = _envelope(
+        [{
             "type": "step_count",
             "value": 5000,
             "unit": "count",
             "timestamp": recorded_at.isoformat(),
         }],
-    }
-
-    result = await ingest_apple_health_payload(
-        pool,
-        payload,
-        now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+        ["2026-05-20"],
     )
+    now = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
 
-    assert result == {
-        "records_received": 1,
-        "records_processed": 0,
-        "records_inserted": 0,
-        "records_skipped": 1,
-        "records_failed": 0,
-        "records_by_type": {"step_count": 1},
-        "unmapped_metric_types": [],
-        "summary": "1 records received, 0 stored, 1 skipped (duplicate): 1 steps",
-    }
+    first = await ingest_apple_health_payload(pool, payload, now=now)
+    first_agg = pool.aggregate_for(date(2026, 5, 20))
+    # Replay the identical snapshot.
+    second = await ingest_apple_health_payload(pool, payload, now=now)
+    second_agg = pool.aggregate_for(date(2026, 5, 20))
+
+    # Values unchanged across the replay: one day, 5000 steps both times.
+    assert first == second
+    assert first["records_aggregated"] == 1
+    assert first["aggregate_rows_updated"] == 1
+    assert first_agg[AGG_STEPS] == 5000
+    assert second_agg[AGG_STEPS] == 5000
+    # Still exactly one aggregate row for that day (replace, not accumulate).
+    assert len([d for (uid, d) in pool.aggregates if d == date(2026, 5, 20)]) == 1
 
 
 @pytest.mark.asyncio
-async def test_ingest_stores_same_second_different_value_as_distinct_row(mock_settings):
-    """The core fix: two samples sharing metric_type + second but with a
-    different value are now stored as separate rows, not dropped as a conflict."""
+async def test_ingest_sums_same_second_distinct_samples_into_daily_total(mock_settings):
+    """Two samples sharing metric_type + second but with different values both
+    contribute to the day's aggregate (there is no raw natural-key collision to
+    drop one) — the day's steps SUM the two."""
     from app.services.apple_health import ingest_apple_health_payload
 
     recorded_at = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
     pool = FakePool()
-    pool.health_rows.append({
-        "id": 1,
-        "user_id": 7,
-        "source": "apple_health",
-        "metric_type": "step_count",
-        "value": 4000,
-        "unit": "count",
-        "recorded_at": recorded_at,
-        "duration_seconds": None,
-    })
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [{
-            "type": "step_count",
-            "value": 5000,
-            "unit": "count",
-            "timestamp": recorded_at.isoformat(),
-        }],
-    }
+    payload = _envelope(
+        [
+            {"type": "step_count", "value": 4000, "unit": "count",
+             "timestamp": recorded_at.isoformat()},
+            {"type": "step_count", "value": 5000, "unit": "count",
+             "timestamp": recorded_at.isoformat()},
+        ],
+        ["2026-05-20"],
+    )
 
     result = await ingest_apple_health_payload(
         pool,
@@ -577,66 +594,58 @@ async def test_ingest_stores_same_second_different_value_as_distinct_row(mock_se
         now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert result == {
-        "records_received": 1,
-        "records_processed": 1,
-        "records_inserted": 1,
-        "records_skipped": 0,
-        "records_failed": 0,
-        "records_by_type": {"step_count": 1},
-        "unmapped_metric_types": [],
-        "summary": "1 records received, 1 stored: 1 steps",
-    }
-    # Both the pre-existing 4000 sample and the new 5000 sample coexist.
-    assert len(pool.health_rows) == 2
-    assert {int(r["value"]) for r in pool.health_rows} == {4000, 5000}
+    assert result["records_received"] == 2
+    assert result["records_aggregated"] == 2
+    assert result["records_by_type"] == {"step_count": 2}
+    # Both same-second samples SUM into the single day's steps.
+    agg = pool.aggregate_for(date(2026, 5, 20))
+    assert agg[AGG_STEPS] == 9000  # 4000 + 5000, not collapsed to one
+    assert agg[AGG_SAMPLES_RECEIVED] == 2
+    assert result["daily"]["2026-05-20"]["steps"] == 9000
 
 
 @pytest.mark.asyncio
-async def test_ingest_apple_health_payload_does_not_count_database_insert_conflict_as_processed(mock_settings):
+async def test_ingest_apple_health_payload_newer_snapshot_replaces_same_day(mock_settings):
+    """A later snapshot for the same day replaces (not increments) the day's
+    aggregate — the DO UPDATE upsert overwrites the previous row."""
     from app.services.apple_health import ingest_apple_health_payload
 
     pool = FakePool()
-    pool.force_insert_conflict = True
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [{
-            "type": "step_count",
-            "value": 5000,
-            "unit": "count",
-            "timestamp": "2026-05-20T11:00:00+00:00",
-        }],
-    }
+    now = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
 
-    result = await ingest_apple_health_payload(
+    await ingest_apple_health_payload(
         pool,
-        payload,
-        now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+        _envelope(
+            [{"type": "step_count", "value": 5000, "unit": "count",
+              "timestamp": "2026-05-20T09:00:00+00:00"}],
+            ["2026-05-20"],
+        ),
+        now=now,
+    )
+    assert pool.aggregate_for(date(2026, 5, 20))[AGG_STEPS] == 5000
+
+    # Newer, fuller snapshot for the same day.
+    await ingest_apple_health_payload(
+        pool,
+        _envelope(
+            [{"type": "step_count", "value": 12345, "unit": "count",
+              "timestamp": "2026-05-20T11:00:00+00:00"}],
+            ["2026-05-20"],
+        ),
+        now=now,
     )
 
-    assert result == {
-        "records_received": 1,
-        "records_processed": 0,
-        "records_inserted": 0,
-        "records_skipped": 1,
-        "records_failed": 0,
-        "records_by_type": {"step_count": 1},
-        "unmapped_metric_types": [],
-        "summary": "1 records received, 0 stored, 1 skipped (duplicate): 1 steps",
-    }
+    # Replaced, not added to the previous 5000.
+    assert pool.aggregate_for(date(2026, 5, 20))[AGG_STEPS] == 12345
+    assert len([d for (uid, d) in pool.aggregates if d == date(2026, 5, 20)]) == 1
 
 
 @pytest.mark.asyncio
 async def test_ingest_apple_health_payload_rejects_old_metrics(mock_settings):
     from app.services.apple_health import AppleHealthIngestionError, ingest_apple_health_payload
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": 5000,
@@ -644,7 +653,8 @@ async def test_ingest_apple_health_payload_rejects_old_metrics(mock_settings):
                 "timestamp": "2026-04-01T11:00:00+00:00",
             }
         ],
-    }
+        ["2026-04-01"],
+    )
 
     with pytest.raises(AppleHealthIngestionError, match="older than 30 days"):
         await ingest_apple_health_payload(
@@ -661,6 +671,8 @@ async def test_ingest_apple_health_payload_rejects_old_metrics(mock_settings):
     _, log_args = import_logs[0]
     assert log_args[:7] == (7, 3, 400, 1, 0, 1, "metric timestamp is older than 30 days")
     assert "5000" not in log_args[7]
+    # Nothing persisted for the rejected batch.
+    assert pool.aggregate_upserts() == []
 
 
 @pytest.mark.asyncio
@@ -668,9 +680,14 @@ async def test_ingest_apple_health_payload_logs_malformed_payload_after_sync_loo
     from app.services.apple_health import AppleHealthIngestionError, ingest_apple_health_payload
 
     pool = FakePool()
+    # A valid completeness envelope but wrong sourceType: the envelope passes,
+    # then the metric-container validation rejects it — still logged against the
+    # looked-up sync.
     payload = {
         "userId": 999,
         "sourceType": "not_apple_health",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": "+00:00", "coveredDates": ["2026-05-20"]},
         "metrics": [],
     }
 
@@ -691,11 +708,8 @@ async def test_ingest_apple_health_payload_does_not_partially_insert_invalid_bat
     from app.services.apple_health import AppleHealthIngestionError, ingest_apple_health_payload
 
     pool = FakePool()
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": 5000,
@@ -709,7 +723,8 @@ async def test_ingest_apple_health_payload_does_not_partially_insert_invalid_bat
                 "timestamp": "2026-04-01T11:00:00+00:00",
             },
         ],
-    }
+        ["2026-05-20", "2026-04-01"],
+    )
 
     with pytest.raises(AppleHealthIngestionError, match="older than 30 days"):
         await ingest_apple_health_payload(
@@ -718,42 +733,46 @@ async def test_ingest_apple_health_payload_does_not_partially_insert_invalid_bat
             now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
         )
 
+    # A single invalid metric rejects the whole batch: no aggregate row upserted
+    # (and nothing ever goes to health_data).
+    assert pool.aggregate_upserts() == []
     assert not [query for query, _ in pool.executed if "INSERT INTO health_data" in query]
 
 
 @pytest.mark.asyncio
-async def test_ingest_apple_health_payload_logs_db_failures(mock_settings):
-    from app.services.apple_health import AppleHealthIngestionError, ingest_apple_health_payload
+async def test_ingest_apple_health_payload_raises_when_aggregate_upsert_fails(mock_settings):
+    """A database failure during the daily-aggregate upsert is recorded as a
+    sanitized failure and surfaced; the sync is not marked successful."""
+    from app.services.apple_health import (
+        AppleHealthIngestionError,
+        ingest_apple_health_payload,
+    )
 
     pool = FakePool()
-    pool.fail_health_data_insert = True
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [{
+    pool.fail_aggregate_upsert = True
+    payload = _envelope(
+        [{
             "type": "step_count",
             "value": 5000,
             "unit": "count",
             "timestamp": "2026-05-20T11:00:00+00:00",
         }],
-    }
+        ["2026-05-20"],
+    )
 
-    with pytest.raises(AppleHealthIngestionError, match="failed to process Apple Health metric"):
+    with pytest.raises(AppleHealthIngestionError, match="failed to persist"):
         await ingest_apple_health_payload(
             pool,
             payload,
             now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
         )
 
-    failure_updates = _executed(pool, "UPDATE apple_health_sync")
-    assert len(failure_updates) == 1
-    assert failure_updates[0][1] == (3, "failed to process Apple Health metric")
+    # A sanitized 500 failure import log is recorded, and the success bookkeeping
+    # (last_sync_at / success_count) never runs.
     import_logs = _executed(pool, "INSERT INTO apple_health_import_logs")
     assert len(import_logs) == 1
-    _, log_args = import_logs[0]
-    assert log_args[:7] == (7, 3, 500, 1, 0, 1, "failed to process Apple Health metric")
-    assert "5000" not in log_args[7]
+    assert import_logs[0][1][2] == 500  # http_status
+    assert _executed(pool, "last_sync_at") == []
 
 
 @pytest.mark.asyncio
@@ -1022,11 +1041,8 @@ async def test_apple_health_webhook_does_not_echo_invalid_json_without_valid_tok
 async def test_apple_health_webhook_echoes_valid_payload_to_telegram(mock_settings):
     from app.main import app
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": 5000,
@@ -1034,7 +1050,8 @@ async def test_apple_health_webhook_echoes_valid_payload_to_telegram(mock_settin
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ],
-    }
+        _today_covered(),
+    )
     body = _json_body(payload)
     pool = FakePool()
     send_document = AsyncMock()
@@ -1064,7 +1081,7 @@ async def test_apple_health_webhook_echoes_valid_payload_to_telegram(mock_settin
 async def test_apple_health_webhook_survives_telegram_echo_failure(mock_settings):
     from app.main import app
 
-    payload = {"userId": 999, "sourceType": "apple_health", "metrics": []}
+    payload = _envelope([], _today_covered())
     body = _json_body(payload)
     pool = FakePool()
     send_document = AsyncMock(side_effect=RuntimeError("telegram down"))
@@ -1090,11 +1107,8 @@ async def test_apple_health_webhook_survives_telegram_echo_failure(mock_settings
 async def test_apple_health_webhook_ingests_valid_payload(mock_settings):
     from app.main import app
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": 5000,
@@ -1102,7 +1116,8 @@ async def test_apple_health_webhook_ingests_valid_payload(mock_settings):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ],
-    }
+        _today_covered(),
+    )
     body = _json_body(payload)
     pool = FakePool()
 
@@ -1119,7 +1134,7 @@ async def test_apple_health_webhook_ingests_valid_payload(mock_settings):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
+    assert resp.json()["records_aggregated"] == 1
 
 
 @pytest.mark.asyncio
@@ -1127,11 +1142,8 @@ async def test_apple_health_webhook_ingests_text_rendered_values(mock_settings):
     """The Shortcut posts the sample Value as localized text, e.g. "434 count"."""
     from app.main import app
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": "434 count",
@@ -1139,7 +1151,8 @@ async def test_apple_health_webhook_ingests_text_rendered_values(mock_settings):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ],
-    }
+        _today_covered(),
+    )
     body = _json_body(payload)
     pool = FakePool()
 
@@ -1156,19 +1169,18 @@ async def test_apple_health_webhook_ingests_text_rendered_values(mock_settings):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
-    inserts = _executed(pool, "INSERT INTO health_data")
-    assert len(inserts) == 1
+    assert resp.json()["records_aggregated"] == 1
+    # The text-rendered "434 count" is parsed and aggregated into one daily row.
+    assert len(pool.aggregate_upserts()) == 1
+    assert pool.aggregate_for(datetime.now(timezone.utc).date())[AGG_STEPS] == 434
 
 
 @pytest.mark.asyncio
 async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_settings):
     from app.main import app
 
-    payload = {
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {
                 "type": "step_count",
                 "value": 5000,
@@ -1176,7 +1188,10 @@ async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_setting
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ],
-    }
+        _today_covered(),
+        user_id=None,
+    )
+    payload.pop("userId")
     body = _json_body(payload)
     pool = FakePool()
 
@@ -1190,7 +1205,7 @@ async def test_apple_health_webhook_accepts_user_and_token_from_url(mock_setting
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
+    assert resp.json()["records_aggregated"] == 1
 
 
 def test_plist_to_jsonable_normalizes_plist_only_types(mock_settings):
@@ -1222,6 +1237,8 @@ async def test_apple_health_webhook_accepts_binary_plist_payload(mock_settings):
     payload = {
         "sourceType": "apple_health",
         "dataType": "activity",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": "+00:00", "coveredDates": _today_covered()},
         "metrics": [
             {
                 "type": "step_count",
@@ -1246,7 +1263,7 @@ async def test_apple_health_webhook_accepts_binary_plist_payload(mock_settings):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
+    assert resp.json()["records_aggregated"] == 1
 
 
 @pytest.mark.asyncio
@@ -1256,6 +1273,8 @@ async def test_apple_health_webhook_accepts_xml_plist_payload(mock_settings):
     payload = {
         "sourceType": "apple_health",
         "dataType": "activity",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": "+00:00", "coveredDates": _today_covered()},
         "metrics": [
             {
                 "type": "step_count",
@@ -1278,7 +1297,7 @@ async def test_apple_health_webhook_accepts_xml_plist_payload(mock_settings):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
+    assert resp.json()["records_aggregated"] == 1
 
 
 @pytest.mark.asyncio
@@ -1288,6 +1307,8 @@ async def test_apple_health_webhook_echoes_plist_payload_with_plist_filename(moc
     payload = {
         "sourceType": "apple_health",
         "dataType": "activity",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": "+00:00", "coveredDates": _today_covered()},
         "metrics": [
             {
                 "type": "step_count",
@@ -1367,6 +1388,8 @@ async def test_apple_health_webhook_rejects_old_url_after_reconnect(mock_setting
     payload = {
         "sourceType": "apple_health",
         "dataType": "activity",
+        "schemaVersion": 2,
+        "snapshot": {"timezone": "+00:00", "coveredDates": _today_covered()},
         "metrics": [],
     }
     body = _json_body(payload)
@@ -1394,7 +1417,7 @@ async def test_apple_health_webhook_rejects_old_url_after_reconnect(mock_setting
 
     assert old_resp.status_code == 401
     assert new_resp.status_code == 200
-    assert new_resp.json()["records_processed"] == 0
+    assert new_resp.json()["records_aggregated"] == 0
 
 
 def test_is_health_auto_export_payload_detects_shape(mock_settings):
@@ -1455,11 +1478,9 @@ async def test_ingest_apple_health_payload_derives_sleep_duration_from_end_times
     from app.services.apple_health import ingest_apple_health_payload
 
     pool = FakePool()
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    # Sleep is attributed to the local day it ENDS (2026-05-20 in +03:00).
+    payload = _envelope(
+        [
             {
                 "type": "sleep_analysis",
                 "value": "0",
@@ -1469,7 +1490,9 @@ async def test_ingest_apple_health_payload_derives_sleep_duration_from_end_times
                 "stage": "Core",
             },
         ],
-    }
+        ["2026-05-20"],
+        tz="+03:00",
+    )
 
     result = await ingest_apple_health_payload(
         pool,
@@ -1477,16 +1500,14 @@ async def test_ingest_apple_health_payload_derives_sleep_duration_from_end_times
         now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert result["records_inserted"] == 1
-    inserts = _executed(pool, "INSERT INTO health_data")
-    assert len(inserts) == 1
-    _, args = inserts[0]
-    assert args[1] == "sleep_analysis"
-    # 23:04 → 06:34 is 7.5h, derived from the "end" field the Shortcut sends.
-    assert args[6] == 27000
-    additional_data = json.loads(args[7])
-    assert additional_data["stage"] == "Core"
-    assert additional_data["end"] == "2026-05-20T06:34:00+03:00"
+    assert result["records_aggregated"] == 1
+    # 23:04 → 06:34 is 7.5h, derived from the "end" field the Shortcut sends,
+    # aggregated into the ending day's sleep_seconds.
+    agg = pool.aggregate_for(date(2026, 5, 20))
+    assert agg is not None
+    assert agg[AGG_SLEEP_SECONDS] == 27000
+    assert result["daily"]["2026-05-20"]["sleep_hours"] == 7.5
+    assert result["daily"]["2026-05-20"]["records_by_type"] == {"sleep_analysis": 1}
 
 
 def test_convert_health_auto_export_extracts_sleep_from_hour_buckets(mock_settings):
@@ -1581,9 +1602,14 @@ async def test_apple_health_webhook_accepts_health_auto_export_format(mock_setti
             )
 
     assert resp.status_code == 200
-    # Two HAE data points with same type+unit+timestamp+value should dedupe.
-    # We only assert at least one was processed end-to-end.
-    assert resp.json()["records_received"] == 2
+    # HAE conversion synthesizes the schemaVersion-2 envelope (coveredDates
+    # "auto"); both same-second points are received and aggregated into one day.
+    body_json = resp.json()
+    assert body_json["records_received"] == 2
+    assert body_json["records_aggregated"] == 2
+    assert body_json["aggregate_rows_updated"] == 1
+    # Both step samples SUM into the day's total (no raw dedup).
+    assert pool.aggregate_for(datetime.now(timezone.utc).date())[AGG_STEPS] == 6200
 
 
 # ---------------------------------------------------------------------------
@@ -1596,56 +1622,56 @@ _REAL_PAYLOAD_PATH = Path(__file__).resolve().parent / "fixtures" / "apple-healt
 def _load_real_shortcut_payload() -> dict:
     payload = json.loads(_REAL_PAYLOAD_PATH.read_text(encoding="utf-8"))
     payload["userId"] = 999
+    # The redesign requires the schemaVersion-2 completeness envelope. In the
+    # snapshot timezone (+03:00) every sample attributes to one of these three
+    # local days.
+    payload["schemaVersion"] = 2
+    payload["snapshot"] = {
+        "timezone": "+03:00",
+        "coveredDates": ["2026-07-09", "2026-07-10", "2026-07-11"],
+    }
     return payload
 
 
 @pytest.mark.asyncio
 async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_settings):
-    """With the widened natural key (migration 008), every distinct metric in
-    the real shortcut export is stored — the 9 same-second samples that used to
-    collide now coexist as separate rows."""
+    """Every metric in the real shortcut export is aggregated into a daily row;
+    the same-second samples that used to collide on the raw natural key now all
+    contribute to their day's totals (raw retention is 0)."""
     from app.services.apple_health import ingest_apple_health_payload
 
     payload = _load_real_shortcut_payload()
     pool = FakePool()
 
-    # The sample spans 2026-07-08..2026-07-11; anchor "now" just after it so no
-    # metric trips the 30-day-old / future-dated validation guards.
+    # The samples span 2026-07-09..2026-07-11 in +03:00; anchor "now" just after
+    # so no metric trips the 30-day-old / future-dated validation guards.
     result = await ingest_apple_health_payload(
         pool,
         payload,
         now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
     )
 
-    # All 1239 land: the 6 step/energy pairs (different value) and 3 sleep pairs
-    # (different duration) that shared a second are now distinct on
-    # (..., recorded_at, value, COALESCE(duration_seconds, -1)).
+    # All 1239 samples are received and aggregated; nothing is retained raw.
     assert result["records_received"] == 1239
-    assert result["records_inserted"] == 1239
-    assert result["records_processed"] == 1239
-    assert result["records_skipped"] == 0
+    assert result["records_aggregated"] == 1239
     assert result["records_failed"] == 0
+    assert result["raw_stored"] == 0
 
-    # Completeness invariant: received is fully partitioned into
-    # stored + skipped + failed.
-    assert (
-        result["records_received"]
-        == result["records_inserted"] + result["records_skipped"] + result["records_failed"]
+    # One aggregate upsert per covered day; no health_data writes at all.
+    assert result["aggregate_rows_updated"] == 3
+    assert result["covered_dates"] == ["2026-07-09", "2026-07-10", "2026-07-11"]
+    assert len(pool.aggregate_upserts()) == 3
+    assert not [q for q, _ in pool.executed if "INSERT INTO health_data" in q]
+
+    # Every received sample is accounted for in a day's samples_received.
+    total_received = sum(
+        args[AGG_SAMPLES_RECEIVED] for args in pool.aggregate_upserts()
     )
+    assert total_received == 1239
 
-    inserted_rows = [q for q, _ in pool.executed if "INSERT INTO health_data" in q]
-    assert len(inserted_rows) == 1239
-    assert len(pool.health_rows) == 1239
-
-    # Prove the fix concretely: at least one (metric_type, recorded_at) second
-    # now holds more than one stored row — impossible under the old key.
-    from collections import Counter
-
-    per_second = Counter(
-        (row["metric_type"], row["recorded_at"]) for row in pool.health_rows
-    )
-    assert max(per_second.values()) == 2
-    assert sum(1 for n in per_second.values() if n == 2) == 9
+    # Same-second distinct samples all contribute rather than dropping one:
+    # 2026-07-11 aggregates the bulk of the export.
+    assert pool.aggregate_for(date(2026, 7, 11))[AGG_SAMPLES_RECEIVED] == 1102
 
     assert result["records_by_type"] == {
         "step_count": 515,
@@ -1658,8 +1684,8 @@ async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_se
 
 @pytest.mark.asyncio
 async def test_ingest_logs_completeness_breakdown_in_import_log(mock_settings):
-    """apple_health_import_logs captures received/processed/skipped columns and
-    the by-type breakdown in response_body for the real payload."""
+    """apple_health_import_logs captures received/processed/failed columns (9
+    columns, no records_skipped) and the by-type breakdown in response_body."""
     from app.services.apple_health import ingest_apple_health_payload
 
     payload = _load_real_shortcut_payload()
@@ -1674,18 +1700,20 @@ async def test_ingest_logs_completeness_breakdown_in_import_log(mock_settings):
     import_logs = _executed(pool, "INSERT INTO apple_health_import_logs")
     assert len(import_logs) == 1
     _, log_args = import_logs[0]
-    # columns: user_id, sync_id, http_status, received, processed, failed, error,
-    #          request_body, response_body, records_skipped
+    # 9 columns: user_id, sync_id, http_status, received, processed, failed,
+    #            error, request_body, response_body (no records_skipped column).
+    assert len(log_args) == 9
     assert log_args[:7] == (7, 3, 200, 1239, 1239, 0, None)
-    assert log_args[9] == 0  # records_skipped column
     response_body = json.loads(log_args[8])
-    assert response_body["records_skipped"] == 0
+    assert response_body["records_aggregated"] == 1239
+    assert response_body["raw_stored"] == 0
+    assert response_body["aggregate_rows_updated"] == 3
     assert response_body["records_by_type"] == {
         "step_count": 515,
         "active_energy": 509,
         "sleep_analysis": 215,
     }
-    assert "1239 records received, 1239 stored" in response_body["summary"]
+    assert "1239 samples received, 1239 aggregated into 3 daily rows, raw stored: 0" in response_body["summary"]
 
 
 @pytest.mark.asyncio
@@ -1693,16 +1721,14 @@ async def test_ingest_returns_parsed_data_summary(mock_settings):
     from app.services.apple_health import ingest_apple_health_payload
 
     pool = FakePool()
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {"type": "step_count", "value": 100, "unit": "count", "timestamp": "2026-05-20T10:00:00+00:00"},
             {"type": "step_count", "value": 200, "unit": "count", "timestamp": "2026-05-20T10:01:00+00:00"},
             {"type": "heart_rate", "value": 70, "unit": "count/min", "timestamp": "2026-05-20T10:02:00+00:00"},
         ],
-    }
+        ["2026-05-20"],
+    )
 
     result = await ingest_apple_health_payload(
         pool,
@@ -1711,25 +1737,26 @@ async def test_ingest_returns_parsed_data_summary(mock_settings):
     )
 
     assert result["records_by_type"] == {"step_count": 2, "heart_rate": 1}
-    assert result["summary"] == "3 records received, 3 stored: 2 steps, 1 HR samples"
+    assert result["summary"] == (
+        "3 samples received, 3 aggregated into 1 daily row, raw stored: 0: "
+        "2 steps, 1 HR samples"
+    )
 
 
 @pytest.mark.asyncio
 async def test_ingest_flags_metric_types_the_aggregator_does_not_map(mock_settings):
-    """Unmapped types are still stored, but called out so they are not assumed
-    to feed the daily summary."""
+    """Unmapped types are still aggregated into the day's breakdown, but called
+    out so they are not assumed to feed the daily summary columns."""
     from app.services.apple_health import ingest_apple_health_payload
 
     pool = FakePool()
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {"type": "step_count", "value": 100, "unit": "count", "timestamp": "2026-05-20T10:00:00+00:00"},
             {"type": "blood_glucose", "value": 5.4, "unit": "mmol/L", "timestamp": "2026-05-20T10:05:00+00:00"},
         ],
-    }
+        ["2026-05-20"],
+    )
 
     result = await ingest_apple_health_payload(
         pool,
@@ -1737,23 +1764,24 @@ async def test_ingest_flags_metric_types_the_aggregator_does_not_map(mock_settin
         now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert result["records_inserted"] == 2  # stored regardless of mapping
+    assert result["records_aggregated"] == 2  # counted regardless of mapping
+    assert result["records_by_type"] == {"step_count": 1, "blood_glucose": 1}
     assert result["unmapped_metric_types"] == ["blood_glucose"]
     assert "stored but not summarized: blood_glucose" in result["summary"]
 
 
-def test_build_ingestion_summary_formats_counts_and_skips(mock_settings):
+def test_build_ingestion_summary_formats_counts_and_aggregate_rows(mock_settings):
     from app.services.apple_health import build_ingestion_summary
 
     summary = build_ingestion_summary(
         {"step_count": 515, "active_energy": 509, "sleep_analysis": 215},
         received=1239,
-        inserted=1230,
-        skipped=9,
+        aggregated=1239,
         failed=0,
+        aggregate_rows=3,
     )
     assert summary == (
-        "1239 records received, 1230 stored, 9 skipped (duplicate): "
+        "1239 samples received, 1239 aggregated into 3 daily rows, raw stored: 0: "
         "515 steps, 509 active energy, 215 sleep"
     )
 
@@ -1764,13 +1792,14 @@ def test_build_ingestion_summary_handles_clean_import_and_unmapped(mock_settings
     summary = build_ingestion_summary(
         {"step_count": 10, "blood_glucose": 2},
         received=12,
-        inserted=12,
-        skipped=0,
+        aggregated=12,
         failed=0,
+        aggregate_rows=1,
         unmapped_types=["blood_glucose"],
     )
     assert summary == (
-        "12 records received, 12 stored: 10 steps, 2 blood glucose "
+        "12 samples received, 12 aggregated into 1 daily row, raw stored: 0: "
+        "10 steps, 2 blood glucose "
         "(stored but not summarized: blood_glucose)"
     )
 
@@ -1779,18 +1808,16 @@ def test_build_ingestion_summary_handles_clean_import_and_unmapped(mock_settings
 async def test_apple_health_webhook_sends_parsed_summary_to_telegram(mock_settings):
     from app.main import app
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {"type": "step_count", "value": 5000, "unit": "count",
              "timestamp": datetime.now(timezone.utc).isoformat()},
             {"type": "sleep_analysis", "value": "0", "unit": "s",
              "timestamp": (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat(),
              "end": datetime.now(timezone.utc).isoformat(), "stage": "Core"},
         ],
-    }
+        _today_covered(),
+    )
     body = _json_body(payload)
     pool = FakePool()
     send_message = AsyncMock()
@@ -1814,7 +1841,8 @@ async def test_apple_health_webhook_sends_parsed_summary_to_telegram(mock_settin
     assert args[0] == 999
     message = args[1]
     assert "Apple Health синхронізовано" in message
-    assert "Отримано 2 записів, збережено 2" in message
+    # New aggregate-model wording: samples received / aggregated into N day(s).
+    assert "Отримано 2 семплів, зведено 2" in message
     assert "1 кроки" in message
     assert "1 сон" in message
 
@@ -1823,15 +1851,13 @@ async def test_apple_health_webhook_sends_parsed_summary_to_telegram(mock_settin
 async def test_apple_health_webhook_survives_summary_notification_failure(mock_settings):
     from app.main import app
 
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {"type": "step_count", "value": 5000, "unit": "count",
              "timestamp": datetime.now(timezone.utc).isoformat()},
         ],
-    }
+        _today_covered(),
+    )
     body = _json_body(payload)
     pool = FakePool()
     send_message = AsyncMock(side_effect=RuntimeError("telegram down"))
@@ -1850,44 +1876,26 @@ async def test_apple_health_webhook_survives_summary_notification_failure(mock_s
             )
 
     assert resp.status_code == 200
-    assert resp.json()["records_processed"] == 1
+    assert resp.json()["records_aggregated"] == 1
     send_message.assert_awaited_once()
 
 
-class _SleepSummaryPool:
-    """Minimal pool feeding get_apple_health_summary the rows a sync stored."""
-
-    def __init__(self, health_rows):
-        self._rows = health_rows
-
-    async def fetchrow(self, query, *args):
-        # No FatSecret / WHOOP tokens for this user in the sleep-only test.
-        return None
-
-    async def fetch(self, query, *args):
-        assert "FROM health_data" in query
-        return self._rows
-
-
 @pytest.mark.asyncio
-async def test_sleep_in_bed_and_awake_same_start_persist_and_feed_aggregation(mock_settings):
-    """Regression: the 'In Bed' envelope + 'Awake' segment share a start
-    timestamp with identical value/unit. Before the widened key the multi-hour
-    In-Bed row was silently discarded as a duplicate, starving nightly sleep.
-    Now both persist as distinct rows AND the aggregation sees the 8h envelope.
+async def test_sleep_in_bed_and_awake_same_start_merge_into_daily_aggregate(mock_settings):
+    """The 'In Bed' envelope + 'Awake' segment share a start timestamp with
+    identical value/unit. Both contribute to the day's sleep breakdown, and the
+    aggregated sleep_seconds is the union of the overlapping intervals (the 8h
+    In-Bed envelope), not the sum — so a night is never double-counted nor
+    starved down to the 20-minute Awake blip.
     """
     from app.services.apple_health import (
         _merged_interval_seconds,
-        get_apple_health_summary,
         ingest_apple_health_payload,
     )
 
     sleep_start = "2026-07-11T05:00:00+00:00"
-    payload = {
-        "userId": 999,
-        "sourceType": "apple_health",
-        "dataType": "activity",
-        "metrics": [
+    payload = _envelope(
+        [
             {  # 20-minute Awake segment
                 "type": "sleep_analysis", "value": "0", "unit": "s",
                 "timestamp": sleep_start, "end": "2026-07-11T05:20:00+00:00",
@@ -1899,7 +1907,8 @@ async def test_sleep_in_bed_and_awake_same_start_persist_and_feed_aggregation(mo
                 "stage": "In Bed",
             },
         ],
-    }
+        ["2026-07-11"],
+    )
 
     pool = FakePool()
     result = await ingest_apple_health_payload(
@@ -1908,38 +1917,20 @@ async def test_sleep_in_bed_and_awake_same_start_persist_and_feed_aggregation(mo
         now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
     )
 
-    # Both segments stored as distinct rows — neither dropped as a duplicate.
-    assert result["records_inserted"] == 2
-    assert result["records_skipped"] == 0
-    assert result["records_received"] == result["records_inserted"] + result["records_skipped"] + result["records_failed"]
-    assert len(pool.health_rows) == 2
-    assert sorted(r["duration_seconds"] for r in pool.health_rows) == [1200, 28800]
+    # Both segments contribute to the day's breakdown — neither dropped.
+    assert result["records_aggregated"] == 2
+    assert result["records_by_type"] == {"sleep_analysis": 2}
+    assert result["daily"]["2026-07-11"]["records_by_type"] == {"sleep_analysis": 2}
 
-    # The union of the overlapping intervals is the In-Bed envelope (8h), not
-    # the 20-minute Awake segment.
+    # The aggregated sleep is the union of the overlapping intervals (8h), not
+    # the summed 8h20m nor the 20-minute Awake segment.
+    agg = pool.aggregate_for(date(2026, 7, 11))
+    assert agg[AGG_SLEEP_SECONDS] == 8 * 3600
+    assert result["daily"]["2026-07-11"]["sleep_hours"] == 8.0
+
+    # The merge helper it relies on, exercised directly.
     start = datetime(2026, 7, 11, 5, 0, tzinfo=timezone.utc)
     assert _merged_interval_seconds([
         (start, start + timedelta(minutes=20)),
         (start, start + timedelta(hours=8)),
     ]) == 8 * 3600
-
-    # End-to-end: feed the stored rows through the nightly-sleep aggregation.
-    summary_rows = [
-        {
-            "metric_type": r["metric_type"],
-            "value": r["value"],
-            "unit": r["unit"],
-            "recorded_at": r["recorded_at"],
-            "duration_seconds": r["duration_seconds"],
-        }
-        for r in pool.health_rows
-    ]
-    summary = await get_apple_health_summary(
-        _SleepSummaryPool(summary_rows),
-        7,
-        start_at=datetime(2026, 7, 11, 0, 0, tzinfo=timezone.utc),
-        end_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
-    )
-
-    assert summary["sleep_hours"] == 8.0
-    assert summary["metric_counts"]["sleep_analysis"] == 2

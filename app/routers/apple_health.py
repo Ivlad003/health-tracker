@@ -119,12 +119,18 @@ _UA_METRIC_LABELS = {
 
 
 def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
-    """Build the Ukrainian parsed-data summary message from an ingest result."""
+    """Build the Ukrainian parsed-data summary message from an ingest result.
+
+    Reports samples received/aggregated, how many daily aggregate rows were
+    updated, failures, and the raw-retention guarantee (``raw stored: 0``).
+    """
     received = result.get("records_received", 0)
-    inserted = result.get("records_inserted", result.get("records_processed", 0))
-    skipped = result.get("records_skipped", 0)
+    aggregated = result.get("records_aggregated", result.get("records_processed", 0))
+    aggregate_rows = result.get("aggregate_rows_updated", 0)
+    raw_stored = result.get("raw_stored", 0)
     failed = result.get("records_failed", 0)
     counts_by_type = result.get("records_by_type") or {}
+    covered = result.get("covered_dates") or []
 
     parts = [
         f"{count} {_UA_METRIC_LABELS.get(key, key.replace('_', ' '))}"
@@ -132,22 +138,21 @@ def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
     ]
     breakdown = ", ".join(parts) if parts else "немає метрик"
 
+    row_word = "день" if aggregate_rows == 1 else "днів"
     lines = [
         "📊 Apple Health синхронізовано",
-        f"Отримано {received} записів, збережено {inserted}.",
+        f"Отримано {received} семплів, зведено {aggregated} у {aggregate_rows} {row_word}.",
         f"Розпізнано: {breakdown}.",
+        f"Сирих семплів збережено: {raw_stored} (зберігаються лише добові підсумки).",
     ]
-    if skipped:
-        lines.append(
-            f"Пропущено {skipped} — це не втрата, а повторно надіслані "
-            "(уже збережені) семпли."
-        )
+    if covered:
+        lines.append("Дні: " + ", ".join(covered) + ".")
     if failed:
         lines.append(f"⚠️ Помилок: {failed}.")
     unmapped = result.get("unmapped_metric_types") or []
     if unmapped:
         lines.append(
-            "ℹ️ Збережено, але не входить у зведення: " + ", ".join(unmapped) + "."
+            "ℹ️ Пораховано, але не входить у зведення: " + ", ".join(unmapped) + "."
         )
     return "\n".join(lines)
 
@@ -416,11 +421,14 @@ async def sync_apple_health(
     try:
         result = await ingest_apple_health_payload(pool, payload)
         logger.info(
-            "AppleHealth OK user_id=%s sync_id=%s received=%d processed=%d failed=%d",
+            "AppleHealth OK user_id=%s sync_id=%s received=%d aggregated=%d "
+            "aggregate_rows=%d raw_stored=%d failed=%d",
             sync["user_id"],
             sync["sync_id"],
             result["records_received"],
-            result["records_processed"],
+            result["records_aggregated"],
+            result["aggregate_rows_updated"],
+            result["raw_stored"],
             result["records_failed"],
         )
         await _notify_ingest_summary_to_telegram(telegram_user_id, result)

@@ -5,9 +5,10 @@ import json
 import logging
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,122 @@ _METRIC_SUMMARY_LABELS = {
 # A single sleep sample longer than a day is bogus input; clamp it so one bad
 # interval cannot inflate the daily total.
 _MAX_SLEEP_SAMPLE_SECONDS = 24 * 3600
+
+# Apple Health raw-sample retention is 0 days: individual HealthKit samples are
+# aggregated in memory and only the processed daily result is persisted (in
+# health_daily_aggregates). This is the count of raw health_data rows written
+# per sync -- always zero -- surfaced in results/summaries so operators can
+# confirm the retention guarantee.
+RAW_ROWS_STORED = 0
+
+# The ingestion contract version the Shortcut must send. A payload without
+# schemaVersion 2 + snapshot.{timezone,coveredDates} is a legacy/partial payload
+# and is rejected (see _extract_snapshot_meta) rather than merged, because we
+# cannot tell which calendar days it fully covers and replacing a daily
+# aggregate from a partial window would undercount it.
+SNAPSHOT_SCHEMA_VERSION = 2
+
+_REIMPORT_GUIDANCE = (
+    "Re-import the latest Apple Health Shortcut from the bot and run it again — "
+    "this server now requires a complete calendar-day snapshot "
+    "(schemaVersion 2 with snapshot.timezone and snapshot.coveredDates)."
+)
+
+
+def _parse_timezone(tz_str: str) -> Any:
+    """Resolve a snapshot timezone string to a tzinfo.
+
+    Accepts an IANA name ("Europe/Kyiv") or a fixed UTC offset
+    ("+03:00", "+0300", "Z", "UTC"). Raises AppleHealthIngestionError on
+    anything else so an ambiguous timezone fails loudly instead of silently
+    defaulting and mis-attributing days.
+    """
+    raw = (tz_str or "").strip()
+    if not raw:
+        raise AppleHealthIngestionError("snapshot timezone is required")
+    if raw in {"Z", "z", "UTC", "utc"}:
+        return timezone.utc
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", raw)
+    if match:
+        sign = 1 if match.group(1) == "+" else -1
+        offset = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+        return timezone(sign * offset)
+    try:
+        return ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
+        raise AppleHealthIngestionError(
+            f"snapshot timezone is not a valid IANA name or UTC offset: {raw!r}"
+        ) from exc
+
+
+def _local_date(dt: datetime, tz: Any) -> date:
+    """Calendar date of an instant in the snapshot's timezone."""
+    return dt.astimezone(tz).date()
+
+
+def _parse_coverage_date(value: Any) -> date:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError) as exc:
+        raise AppleHealthIngestionError(
+            f"snapshot coveredDates entry is not an ISO date: {value!r}"
+        ) from exc
+
+
+def _extract_snapshot_meta(payload: dict[str, Any]) -> tuple[Any, str, set[date] | None, datetime | None]:
+    """Validate and extract the completeness envelope from a v2 payload.
+
+    Returns ``(tzinfo, timezone_str, covered_dates, generated_at)``. Raises
+    AppleHealthIngestionError (with re-import guidance) for any legacy or
+    partial/ambiguous payload:
+      * schemaVersion != 2, or missing snapshot object;
+      * missing/invalid timezone;
+      * missing/empty coveredDates, or a non-date entry.
+    """
+    if not isinstance(payload, dict):
+        raise AppleHealthIngestionError(f"payload must be an object. {_REIMPORT_GUIDANCE}")
+
+    try:
+        schema_version = int(payload.get("schemaVersion"))
+    except (TypeError, ValueError):
+        schema_version = None
+    if schema_version != SNAPSHOT_SCHEMA_VERSION:
+        raise AppleHealthIngestionError(
+            "Apple Health payload is missing the completeness envelope "
+            f"(schemaVersion {SNAPSHOT_SCHEMA_VERSION}). {_REIMPORT_GUIDANCE}"
+        )
+
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict):
+        raise AppleHealthIngestionError(
+            f"Apple Health payload is missing the snapshot metadata. {_REIMPORT_GUIDANCE}"
+        )
+
+    tz_str = str(snapshot.get("timezone") or "").strip()
+    if not tz_str:
+        raise AppleHealthIngestionError(
+            f"snapshot.timezone is required. {_REIMPORT_GUIDANCE}"
+        )
+    tzinfo = _parse_timezone(tz_str)
+
+    covered_raw = snapshot.get("coveredDates")
+    if covered_raw == "auto":
+        # Trusted-complete export (e.g. Health Auto Export): coverage is derived
+        # from the samples' own attribution days at ingest time.
+        covered_dates = None
+    elif isinstance(covered_raw, list) and covered_raw:
+        covered_dates = {_parse_coverage_date(entry) for entry in covered_raw}
+    else:
+        raise AppleHealthIngestionError(
+            f"snapshot.coveredDates must be a non-empty list of ISO dates. {_REIMPORT_GUIDANCE}"
+        )
+
+    generated_at = None
+    generated_raw = snapshot.get("generatedAt")
+    if generated_raw:
+        generated_at = _parse_datetime(str(generated_raw), "snapshot.generatedAt")
+
+    return tzinfo, tz_str, covered_dates, generated_at
 
 
 def verify_apple_health_token(provided_token: str | None, expected_token: str) -> bool:
@@ -253,86 +370,85 @@ async def get_apple_health_summary(
     start_at: datetime,
     end_at: datetime,
 ) -> dict[str, Any]:
-    """Aggregate Apple Health samples for assistant, sync, and briefing consumers.
+    """Roll up processed Apple Health daily aggregates for the given window.
 
-    Merge contract:
-    - Apple Health is primary for phone/watch-native metrics: steps, heart rate,
-      HRV (stress proxy), and imported sleep samples.
-    - WHOOP remains primary for proprietary metrics: strain, recovery, and
-      workout count.
-    - Calories burned use WHOOP when live WHOOP has a non-zero value; otherwise
-      Apple Health active energy is the fallback.
+    Reads from ``health_daily_aggregates`` (raw samples are no longer retained:
+    they are aggregated in memory at ingest time). Each aggregate row is keyed by
+    its local ``metric_date`` in the snapshot's stored ``timezone``; a row is
+    included when its local midnight falls inside ``[start_at, end_at)``, so a
+    "today" window expressed in UTC correctly selects the matching local day.
 
-    Sleep is attributed to the day the sample *ends* (a night usually starts
-    before midnight), so the fetch window is widened by one day and overlapping
-    samples (In Bed vs sleep stages, iPhone vs Watch) are merged as intervals
-    instead of summed.
+    Merge contract (unchanged for consumers):
+    - Apple Health is primary for steps, heart rate, HRV (stress proxy), sleep.
+    - WHOOP remains primary for strain, recovery, and workout count; calories
+      burned fall back to Apple Health active energy only when WHOOP is zero.
     """
-    fetch_start = start_at - timedelta(days=1)
     rows = await pool.fetch(
-        """SELECT metric_type, value, unit, recorded_at, duration_seconds
-           FROM health_data
+        """SELECT metric_date, timezone, steps, active_energy_kcal,
+                  avg_heart_rate, heart_rate_samples, avg_hrv_ms, hrv_samples,
+                  sleep_seconds, metrics, snapshot_generated_at, updated_at
+           FROM health_daily_aggregates
            WHERE user_id = $1
                  AND source = 'apple_health'
-                 AND recorded_at >= $2
-                 AND recorded_at < $3
-           ORDER BY recorded_at ASC""",
+                 AND metric_date >= $2
+                 AND metric_date <= $3
+           ORDER BY metric_date ASC""",
         user_id,
-        fetch_start,
-        end_at,
+        (start_at - timedelta(days=2)).date(),
+        (end_at + timedelta(days=2)).date(),
     )
 
     steps = 0.0
     active_energy = 0.0
-    heart_rates: list[float] = []
-    hrv_values: list[float] = []
-    sleep_intervals: list[tuple[datetime, datetime]] = []
+    hr_weighted = 0.0
+    hr_samples = 0
+    hrv_weighted = 0.0
+    hrv_samples = 0
+    sleep_seconds = 0.0
     counts: dict[str, int] = {}
     latest_metric_at = None
 
-    def _register(key: str, recorded_at: datetime) -> None:
-        nonlocal latest_metric_at
-        counts[key] = counts.get(key, 0) + 1
-        if latest_metric_at is None or recorded_at > latest_metric_at:
-            latest_metric_at = recorded_at
-
     for row in rows:
-        metric_type = str(row["metric_type"])
-        key = _metric_key(metric_type)
-        value = _to_float(row["value"])
-        unit = str(row["unit"] or "").lower()
-        recorded_at = row["recorded_at"]
-
-        if _is_metric(metric_type, _SLEEP_METRICS):
-            duration = min(
-                _sleep_duration_seconds(row, value, unit),
-                _MAX_SLEEP_SAMPLE_SECONDS,
-            )
-            if duration <= 0:
-                continue
-            ends_at = recorded_at + timedelta(seconds=duration)
-            if not (start_at <= ends_at < end_at):
-                continue
-            sleep_intervals.append((recorded_at, ends_at))
-            _register(key, recorded_at)
+        try:
+            row_tz = _parse_timezone(str(row["timezone"]))
+        except AppleHealthIngestionError:
+            row_tz = timezone.utc
+        local_midnight = datetime.combine(
+            row["metric_date"], datetime.min.time(), tzinfo=row_tz
+        )
+        if not (start_at <= local_midnight < end_at):
             continue
 
-        if recorded_at < start_at:
-            continue
-        _register(key, recorded_at)
+        steps += _to_float(row["steps"])
+        active_energy += _to_float(row["active_energy_kcal"])
+        sleep_seconds += _to_float(row["sleep_seconds"])
 
-        if _is_metric(metric_type, _STEP_METRICS):
-            steps += value
-        elif _is_metric(metric_type, _ACTIVE_ENERGY_METRICS):
-            active_energy += value
-        elif _is_metric(metric_type, _HRV_METRICS):
-            hrv_values.append(value)
-        elif _is_metric(metric_type, _HEART_RATE_METRICS):
-            heart_rates.append(value)
+        n_hr = int(row["heart_rate_samples"] or 0)
+        if n_hr and row["avg_heart_rate"] is not None:
+            hr_weighted += _to_float(row["avg_heart_rate"]) * n_hr
+            hr_samples += n_hr
+        n_hrv = int(row["hrv_samples"] or 0)
+        if n_hrv and row["avg_hrv_ms"] is not None:
+            hrv_weighted += _to_float(row["avg_hrv_ms"]) * n_hrv
+            hrv_samples += n_hrv
 
-    sleep_seconds = _merged_interval_seconds(sleep_intervals)
-    avg_heart_rate = round(sum(heart_rates) / len(heart_rates)) if heart_rates else 0
-    avg_hrv_ms = round(sum(hrv_values) / len(hrv_values)) if hrv_values else 0
+        metrics_blob = row["metrics"]
+        if isinstance(metrics_blob, str):
+            try:
+                metrics_blob = json.loads(metrics_blob)
+            except ValueError:
+                metrics_blob = {}
+        by_type = (metrics_blob or {}).get("records_by_type") if isinstance(metrics_blob, dict) else None
+        if isinstance(by_type, dict):
+            for key, count in by_type.items():
+                counts[key] = counts.get(key, 0) + int(count)
+
+        marker = row["snapshot_generated_at"] or row["updated_at"]
+        if marker is not None and (latest_metric_at is None or marker > latest_metric_at):
+            latest_metric_at = marker
+
+    avg_heart_rate = round(hr_weighted / hr_samples) if hr_samples else 0
+    avg_hrv_ms = round(hrv_weighted / hrv_samples) if hrv_samples else 0
     sleep_hours = round(sleep_seconds / 3600, 1) if sleep_seconds else 0
     active_energy_kcal = round(active_energy)
     total_steps = round(steps)
@@ -380,19 +496,20 @@ async def record_apple_health_import_log(
     records_received: int = 0,
     records_processed: int = 0,
     records_failed: int = 0,
-    records_skipped: int = 0,
+    records_skipped: int = 0,  # accepted for backward compatibility; not persisted
     error_message: str | None = None,
     request_summary: dict[str, Any] | None = None,
     response_summary: dict[str, Any] | None = None,
 ) -> None:
-    # records_skipped is bound last ($10) to match the column appended by
-    # migration 008 (ALTER TABLE ADD COLUMN lands it physically last).
+    # The daily-aggregate model has no per-sample "skip" concept, so the
+    # response_summary carries the full accounting and the base 007 columns are
+    # written (the records_skipped column from removed migration 008 no longer
+    # exists).
     await pool.execute(
         """INSERT INTO apple_health_import_logs
                (user_id, sync_id, http_status, records_received, records_processed,
-                records_failed, error_message, request_body, response_body,
-                records_skipped)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)""",
+                records_failed, error_message, request_body, response_body)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)""",
         user_id,
         sync_id,
         http_status,
@@ -402,7 +519,6 @@ async def record_apple_health_import_log(
         error_message,
         json.dumps(request_summary or {}),
         json.dumps(response_summary or {}),
-        records_skipped,
     )
 
 
@@ -532,12 +648,42 @@ def convert_health_auto_export(
                 "unit": unit,
                 "timestamp": _normalize_hae_timestamp(str(raw_ts)),
             })
+
+    # Health Auto Export is a complete historical export (the user picks a full
+    # date range), so we synthesize the v2 completeness envelope the ingestion
+    # contract requires. The timezone comes from the samples' own UTC offset;
+    # coveredDates is left as "auto" so ingestion derives it from every local day
+    # the (normalized) samples actually attribute to — including sleep that ends
+    # after midnight. Days are then aggregated and replaced exactly like a native
+    # snapshot; no raw samples are retained.
     return {
         "sourceType": "apple_health",
+        "schemaVersion": SNAPSHOT_SCHEMA_VERSION,
         "dataType": "auto_export",
         "userId": telegram_user_id,
+        "snapshot": {
+            "timezone": _first_sample_offset(flat),
+            "coveredDates": "auto",
+        },
         "metrics": flat,
     }
+
+
+def _first_sample_offset(metrics: list[dict[str, Any]]) -> str:
+    """UTC offset ("+03:00") of the first parseable sample, or "+00:00"."""
+    for metric in metrics:
+        try:
+            parsed = datetime.fromisoformat(str(metric.get("timestamp", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            continue
+        offset = parsed.utcoffset() or timedelta(0)
+        total_minutes = int(offset.total_seconds() // 60)
+        sign = "+" if total_minutes >= 0 else "-"
+        total_minutes = abs(total_minutes)
+        return f"{sign}{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+    return "+00:00"
 
 
 def _validate_metric_container(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -633,17 +779,17 @@ def build_ingestion_summary(
     counts_by_type: dict[str, int],
     *,
     received: int,
-    inserted: int,
-    skipped: int,
+    aggregated: int,
     failed: int,
+    aggregate_rows: int,
     unmapped_types: list[str] | None = None,
 ) -> str:
     """Human-readable one-line summary of what a sync parsed and stored.
 
-    Example: ``"1239 records received, 1239 stored: 515 steps, 509 active
-    energy, 215 sleep"``. Since migration 008 widened the natural key with
-    ``value`` + ``duration_seconds``, a skip can only be an identical resend of
-    an already-stored sample, so skips are reported simply as duplicates.
+    Example: ``"1239 samples received, 1239 aggregated into 3 daily rows, raw
+    stored: 0: 515 steps, 509 active energy, 215 sleep"``. Raw HealthKit samples
+    are never persisted (retention 0) — only the processed daily aggregate rows
+    are, so the summary reports samples in / aggregate rows out / raw stored 0.
     """
     breakdown_parts = [
         f"{count} {_metric_summary_label(key)}"
@@ -651,18 +797,148 @@ def build_ingestion_summary(
     ]
     breakdown = ", ".join(breakdown_parts) if breakdown_parts else "no metrics"
 
-    summary = f"{received} records received, {inserted} stored"
-    notes: list[str] = []
-    if skipped:
-        notes.append(f"{skipped} skipped (duplicate)")
+    row_word = "row" if aggregate_rows == 1 else "rows"
+    summary = (
+        f"{received} samples received, {aggregated} aggregated into "
+        f"{aggregate_rows} daily {row_word}, raw stored: {RAW_ROWS_STORED}"
+    )
     if failed:
-        notes.append(f"{failed} failed")
-    if notes:
-        summary += ", " + ", ".join(notes)
+        summary += f", {failed} failed"
     summary += f": {breakdown}"
     if unmapped_types:
         summary += f" (stored but not summarized: {', '.join(unmapped_types)})"
     return summary
+
+
+def attribution_date_for_metric(metric: dict[str, Any], tz: Any) -> date:
+    """Local calendar day a normalized metric is attributed to.
+
+    Sleep intervals are attributed to the local day they *end*; everything else
+    to the local day of ``recorded_at``. Mirrors the bucketing in
+    ``aggregate_metrics_by_day`` so callers (e.g. backfill) can pre-compute the
+    set of covered days.
+    """
+    recorded_at = metric["recorded_at"]
+    if _is_metric(str(metric["metric_type"]), _SLEEP_METRICS):
+        value = _to_float(metric["value"])
+        unit = str(metric["unit"] or "").lower()
+        duration = min(
+            _sleep_duration_seconds(metric, value, unit), _MAX_SLEEP_SAMPLE_SECONDS
+        )
+        if duration > 0:
+            return _local_date(recorded_at + timedelta(seconds=duration), tz)
+    return _local_date(recorded_at, tz)
+
+
+def _new_day_accumulator() -> dict[str, Any]:
+    return {
+        "steps": 0.0,
+        "active_energy": 0.0,
+        "heart_rates": [],
+        "hrv_values": [],
+        "sleep_intervals": [],
+        "counts": {},
+        "received": 0,
+        "aggregated": 0,
+    }
+
+
+def aggregate_metrics_by_day(
+    normalized_metrics: list[dict[str, Any]],
+    *,
+    tz: Any,
+    covered_dates: set[date],
+) -> dict[date, dict[str, Any]]:
+    """Aggregate normalized samples in memory, one bucket per local calendar day.
+
+    Attribution: non-sleep metrics land on the local date of their ``recorded_at``;
+    a sleep interval lands on the local date it *ends* (a night usually starts
+    before midnight). Same-second distinct samples (two step counts, or an
+    "Awake" and an "In Bed" segment sharing a start second) all contribute —
+    there is no natural-key collision because nothing is stored per sample.
+    Overlapping sleep intervals are merged (not summed) so a night is not
+    double-counted.
+
+    Every sample's attribution date MUST be in ``covered_dates``; a sample
+    outside the declared coverage means a partial/ambiguous snapshot and raises
+    AppleHealthIngestionError rather than being silently merged.
+    """
+    days: dict[date, dict[str, Any]] = {}
+
+    def _bucket(day: date) -> dict[str, Any]:
+        if day not in covered_dates:
+            raise AppleHealthIngestionError(
+                f"snapshot carries a {day.isoformat()} sample outside its declared "
+                f"coveredDates — partial/ambiguous snapshot rejected. {_REIMPORT_GUIDANCE}"
+            )
+        return days.setdefault(day, _new_day_accumulator())
+
+    for metric in normalized_metrics:
+        metric_type = str(metric["metric_type"])
+        key = _metric_key(metric_type)
+        value = _to_float(metric["value"])
+        unit = str(metric["unit"] or "").lower()
+        recorded_at = metric["recorded_at"]
+
+        if _is_metric(metric_type, _SLEEP_METRICS):
+            duration = min(
+                _sleep_duration_seconds(metric, value, unit),
+                _MAX_SLEEP_SAMPLE_SECONDS,
+            )
+            if duration <= 0:
+                # Received but contributes nothing (no derivable interval).
+                _bucket(_local_date(recorded_at, tz))["received"] += 1
+                continue
+            ends_at = recorded_at + timedelta(seconds=duration)
+            acc = _bucket(_local_date(ends_at, tz))
+            acc["received"] += 1
+            acc["aggregated"] += 1
+            acc["counts"][key] = acc["counts"].get(key, 0) + 1
+            acc["sleep_intervals"].append((recorded_at, ends_at))
+            continue
+
+        acc = _bucket(_local_date(recorded_at, tz))
+        acc["received"] += 1
+        acc["aggregated"] += 1
+        acc["counts"][key] = acc["counts"].get(key, 0) + 1
+
+        if _is_metric(metric_type, _STEP_METRICS):
+            acc["steps"] += value
+        elif _is_metric(metric_type, _ACTIVE_ENERGY_METRICS):
+            acc["active_energy"] += value
+        elif _is_metric(metric_type, _HRV_METRICS):
+            acc["hrv_values"].append(value)
+        elif _is_metric(metric_type, _HEART_RATE_METRICS):
+            acc["heart_rates"].append(value)
+        # Unmapped types still count toward the day's breakdown (counts) but roll
+        # up no numeric column — surfaced via unmapped_metric_types.
+
+    return days
+
+
+def _finalize_day_columns(acc: dict[str, Any]) -> dict[str, Any]:
+    """Turn a day accumulator into DB-ready column values (asyncpg types)."""
+    heart_rates = acc["heart_rates"]
+    hrv_values = acc["hrv_values"]
+    sleep_seconds = int(round(_merged_interval_seconds(acc["sleep_intervals"])))
+    avg_hr = (
+        Decimal(str(round(sum(heart_rates) / len(heart_rates), 2))) if heart_rates else None
+    )
+    avg_hrv = (
+        Decimal(str(round(sum(hrv_values) / len(hrv_values), 2))) if hrv_values else None
+    )
+    return {
+        "steps": int(round(acc["steps"])),
+        "active_energy_kcal": Decimal(str(round(acc["active_energy"], 2))),
+        "avg_heart_rate": avg_hr,
+        "heart_rate_samples": len(heart_rates),
+        "avg_hrv_ms": avg_hrv,
+        "hrv_samples": len(hrv_values),
+        "sleep_seconds": sleep_seconds,
+        "samples_received": acc["received"],
+        "samples_aggregated": acc["aggregated"],
+        "counts": acc["counts"],
+    }
 
 
 async def ingest_apple_health_payload(
@@ -671,23 +947,24 @@ async def ingest_apple_health_payload(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Normalize and store Apple Health metrics sent by an iOS Shortcut.
+    """Aggregate an Apple Health day-snapshot in memory and upsert daily rows.
 
-    Completeness contract: ``records_received`` is the number of metrics in the
-    payload; ``records_inserted`` (== ``records_processed``) is how many new
-    ``health_data`` rows were written. The gap is fully accounted for by
-    ``records_skipped`` plus ``records_failed`` — the invariant
-    ``received == inserted + skipped + failed`` always holds.
+    Contract (schemaVersion 2): the Shortcut posts a complete calendar-day
+    snapshot with an explicit ``snapshot.timezone`` and ``snapshot.coveredDates``
+    (the local days it fully covers, each queried from local midnight; the
+    current day is a complete-so-far snapshot that a later sync replaces).
+    Individual HealthKit samples are parsed and aggregated in memory, then the
+    processed result for each covered day is atomically upserted into
+    ``health_daily_aggregates`` keyed ``(user_id, source, metric_date)``. **No
+    raw samples are persisted** (``raw stored: 0``).
 
-    Skips are NOT failures. Since migration 008 widened the natural key to
-    ``health_data_natural_key`` = ``(user_id, source, metric_type, recorded_at,
-    value, duration_seconds)`` (UNIQUE ... NULLS NOT DISTINCT so NULL durations
-    still dedup), two genuinely-distinct samples that share the same second
-    (different step counts, or an "Awake" vs "In Bed" sleep segment with
-    different durations) now store as separate rows. A row is only skipped when
-    it collides on that full key — i.e. an identical resend of an already-stored
-    sample — so ``ON CONFLICT DO NOTHING`` keeps resends idempotent without ever
-    mutating a stored row.
+    Idempotency: the upsert *replaces* each day's row with EXCLUDED values, never
+    increments. An identical resend leaves values unchanged; a newer, fuller
+    snapshot for the same day overwrites it — no double counting.
+
+    Legacy or partial/ambiguous payloads (missing the envelope, or carrying
+    samples outside the declared coverage) are rejected with sanitized re-import
+    guidance instead of being merged.
     """
     received = len(payload.get("metrics", [])) if isinstance(payload.get("metrics"), list) else 0
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -699,11 +976,9 @@ async def ingest_apple_health_payload(
     user_id = sync["user_id"]
     sync_id = sync["sync_id"]
     request_summary = _sanitized_request_summary(payload)
-    inserted = 0
-    skipped = 0
-    failed = 0
 
     try:
+        tz, tz_str, covered_dates, generated_at = _extract_snapshot_meta(payload)
         metrics = _validate_metric_container(payload)
         normalized_metrics = [
             _normalize_metric(
@@ -713,73 +988,117 @@ async def ingest_apple_health_payload(
             )
             for metric in metrics
         ]
+        if covered_dates is None:
+            # "auto" coverage (trusted-complete export): every local day the
+            # samples attribute to is covered.
+            covered_dates = {
+                attribution_date_for_metric(m, tz) for m in normalized_metrics
+            }
+        days = aggregate_metrics_by_day(
+            normalized_metrics, tz=tz, covered_dates=covered_dates
+        )
     except AppleHealthIngestionError as exc:
-        failed = received or 1
         await record_apple_health_failure(
             pool,
             user_id=user_id,
             sync_id=sync_id,
             http_status=400,
             records_received=received,
-            records_processed=inserted,
-            records_failed=failed,
+            records_processed=0,
+            records_failed=received or 1,
             error_message=str(exc),
             request_summary=request_summary,
         )
         raise
 
-    for metric in normalized_metrics:
-        try:
-            # The widened natural key means a differing value/duration can no
-            # longer collide, so ON CONFLICT can only fire on a true duplicate
-            # (identical resend). A NULL from RETURNING is therefore a skip;
-            # there is no separate "conflict" case to track anymore.
-            row = await pool.fetchrow(
-                """INSERT INTO health_data
-                       (user_id, source, metric_type, metric_subtype, value, unit,
-                        recorded_at, duration_seconds, additional_data)
-                   VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7, $8::jsonb)
-                   ON CONFLICT ON CONSTRAINT health_data_natural_key DO NOTHING
-                   RETURNING id""",
-                user_id,
-                metric["metric_type"],
-                metric["metric_subtype"],
-                metric["value"],
-                metric["unit"],
-                metric["recorded_at"],
-                metric["duration_seconds"],
-                json.dumps(metric["additional_data"]),
-            )
-            if row is None:
-                skipped += 1
-                continue
-            inserted += 1
-        except AppleHealthIngestionError:
-            failed += 1
-            raise
-        except Exception as exc:
-            failed += 1
-            error = AppleHealthIngestionError("failed to process Apple Health metric")
-            await record_apple_health_failure(
-                pool,
-                user_id=user_id,
-                sync_id=sync_id,
-                http_status=500,
-                records_received=received,
-                records_processed=inserted,
-                records_failed=failed,
-                error_message=str(error),
-                request_summary=request_summary,
-            )
-            raise error from exc
-
     counts_by_type, unmapped_types = summarize_parsed_metrics(normalized_metrics)
+    aggregated = sum(acc["aggregated"] for acc in days.values())
+
+    # Upsert-replace every covered day, including days with zero samples (a
+    # declared-complete day with no activity is truthfully zero). Ordered for
+    # deterministic behaviour under replay.
+    daily_result: dict[str, Any] = {}
+    try:
+        for day in sorted(covered_dates):
+            cols = _finalize_day_columns(days.get(day, _new_day_accumulator()))
+            day_metrics_blob = {
+                "records_by_type": cols["counts"],
+                "unmapped_metric_types": [
+                    k for k in cols["counts"] if not _is_metric(k, _SUMMARY_MAPPED_METRICS)
+                ],
+            }
+            await pool.execute(
+                """INSERT INTO health_daily_aggregates
+                       (user_id, source, metric_date, timezone, steps,
+                        active_energy_kcal, avg_heart_rate, heart_rate_samples,
+                        avg_hrv_ms, hrv_samples, sleep_seconds, samples_received,
+                        samples_aggregated, metrics, snapshot_generated_at)
+                   VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                           $11, $12, $13::jsonb, $14)
+                   ON CONFLICT ON CONSTRAINT health_daily_aggregates_natural_key
+                   DO UPDATE SET
+                       timezone = EXCLUDED.timezone,
+                       steps = EXCLUDED.steps,
+                       active_energy_kcal = EXCLUDED.active_energy_kcal,
+                       avg_heart_rate = EXCLUDED.avg_heart_rate,
+                       heart_rate_samples = EXCLUDED.heart_rate_samples,
+                       avg_hrv_ms = EXCLUDED.avg_hrv_ms,
+                       hrv_samples = EXCLUDED.hrv_samples,
+                       sleep_seconds = EXCLUDED.sleep_seconds,
+                       samples_received = EXCLUDED.samples_received,
+                       samples_aggregated = EXCLUDED.samples_aggregated,
+                       metrics = EXCLUDED.metrics,
+                       snapshot_generated_at = EXCLUDED.snapshot_generated_at,
+                       updated_at = NOW()""",
+                user_id,
+                day,
+                tz_str,
+                cols["steps"],
+                cols["active_energy_kcal"],
+                cols["avg_heart_rate"],
+                cols["heart_rate_samples"],
+                cols["avg_hrv_ms"],
+                cols["hrv_samples"],
+                cols["sleep_seconds"],
+                cols["samples_received"],
+                cols["samples_aggregated"],
+                json.dumps(day_metrics_blob),
+                generated_at,
+            )
+            daily_result[day.isoformat()] = {
+                "steps": cols["steps"],
+                "active_energy_kcal": float(cols["active_energy_kcal"]),
+                "avg_heart_rate": float(cols["avg_heart_rate"]) if cols["avg_heart_rate"] is not None else 0,
+                "avg_hrv_ms": float(cols["avg_hrv_ms"]) if cols["avg_hrv_ms"] is not None else 0,
+                "sleep_hours": round(cols["sleep_seconds"] / 3600, 1) if cols["sleep_seconds"] else 0,
+                "samples_received": cols["samples_received"],
+                "records_by_type": cols["counts"],
+            }
+    except Exception as exc:
+        # A DB failure mid-upsert must be recorded and surfaced, not swallowed.
+        # Each day's upsert is atomic; a partial run leaves already-written days
+        # in place (each is an idempotent replace, so a retry converges).
+        error = AppleHealthIngestionError("failed to persist Apple Health daily aggregate")
+        await record_apple_health_failure(
+            pool,
+            user_id=user_id,
+            sync_id=sync_id,
+            http_status=500,
+            records_received=received,
+            records_processed=aggregated,
+            records_failed=received or 1,
+            error_message=str(error),
+            request_summary=request_summary,
+        )
+        raise error from exc
+
+    aggregate_rows = len(covered_dates)
     summary = build_ingestion_summary(
         counts_by_type,
         received=received,
-        inserted=inserted,
-        skipped=skipped,
-        failed=failed,
+        aggregated=aggregated,
+        failed=0,
+        aggregate_rows=aggregate_rows,
         unmapped_types=unmapped_types,
     )
 
@@ -788,11 +1107,9 @@ async def ingest_apple_health_payload(
            SET last_sync_at = NOW(),
                next_sync_at = NOW() + make_interval(hours => sync_frequency_hours),
                success_count = success_count + 1,
-               error_count = error_count + $2,
                last_error_message = NULL
            WHERE id = $1""",
         sync_id,
-        failed,
     )
     await record_apple_health_import_log(
         pool,
@@ -800,16 +1117,16 @@ async def ingest_apple_health_payload(
         sync_id=sync_id,
         http_status=200,
         records_received=received,
-        records_processed=inserted,
-        records_failed=failed,
-        records_skipped=skipped,
+        records_processed=aggregated,
+        records_failed=0,
+        records_skipped=0,
         request_summary=request_summary,
         response_summary={
             "records_received": received,
-            "records_processed": inserted,
-            "records_inserted": inserted,
-            "records_skipped": skipped,
-            "records_failed": failed,
+            "records_aggregated": aggregated,
+            "aggregate_rows_updated": aggregate_rows,
+            "raw_stored": RAW_ROWS_STORED,
+            "covered_dates": [d.isoformat() for d in sorted(covered_dates)],
             "records_by_type": counts_by_type,
             "unmapped_metric_types": unmapped_types,
             "summary": summary,
@@ -817,20 +1134,23 @@ async def ingest_apple_health_payload(
     )
 
     logger.info(
-        "Apple Health sync ingested: user_id=%s received=%d inserted=%d "
-        "skipped=%d failed=%d",
+        "Apple Health snapshot ingested: user_id=%s received=%d aggregated=%d "
+        "aggregate_rows=%d raw_stored=%d",
         user_id,
         received,
-        inserted,
-        skipped,
-        failed,
+        aggregated,
+        aggregate_rows,
+        RAW_ROWS_STORED,
     )
     return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "records_received": received,
-        "records_processed": inserted,
-        "records_inserted": inserted,
-        "records_skipped": skipped,
-        "records_failed": failed,
+        "records_aggregated": aggregated,
+        "aggregate_rows_updated": aggregate_rows,
+        "raw_stored": RAW_ROWS_STORED,
+        "records_failed": 0,
+        "covered_dates": [d.isoformat() for d in sorted(covered_dates)],
+        "daily": daily_result,
         "records_by_type": counts_by_type,
         "unmapped_metric_types": unmapped_types,
         "summary": summary,

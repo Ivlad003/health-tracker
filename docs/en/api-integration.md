@@ -305,26 +305,34 @@ Content-Type: application/json
 ```json
 {
   "sourceType": "apple_health",
-  "dataType": "activity",
+  "schemaVersion": 2,
+  "snapshot": {
+    "timezone": "+03:00",
+    "coveredDates": ["2026-07-10", "2026-07-11"]
+  },
   "metrics": [
     {
       "type": "step_count",
       "value": 5000,
       "unit": "count",
-      "timestamp": "2026-05-20T10:00:00Z",
-      "duration": 3600
+      "timestamp": "2026-07-11T10:00:00+03:00"
     },
     {
       "type": "sleep_analysis",
       "value": 0,
       "unit": "s",
-      "timestamp": "2026-05-19T23:04:00+03:00",
-      "end": "2026-05-20T06:34:00+03:00",
+      "timestamp": "2026-07-10T23:04:00+03:00",
+      "end": "2026-07-11T06:34:00+03:00",
       "stage": "Core"
     }
   ]
 }
 ```
+
+`snapshot.timezone` is an IANA name (e.g. `"Europe/Kyiv"`) or a fixed UTC
+offset (e.g. `"+03:00"`). `snapshot.coveredDates` lists the local calendar days
+this snapshot fully covers, each queried from local `00:00`; the current day is
+a complete-so-far snapshot that a later sync replaces.
 
 The generated URL already contains the Telegram user ID (`users.telegram_user_id`)
 and per-user token, so the Shortcut only needs the URL, `Content-Type:
@@ -333,7 +341,35 @@ fields to the Request Body** — they are already in the URL, and duplicating th
 in the body is a common Shortcut-setup mistake. The webhook still accepts the
 legacy `X-Apple-Health-Token` header and `userId` body field for backward
 compatibility. Metrics older than 30 days are rejected. Apple Health records are
-stored in the unified `health_data` table with `source = 'apple_health'`.
+no longer written to the unified `health_data` table. The server parses and
+aggregates the snapshot in memory and stores one processed daily row per
+(`user_id`, `source`, `metric_date`) in the new `health_daily_aggregates` table
+(migration `009_health_daily_aggregates.sql`, PG14/PG15-compatible; the earlier
+PG15-only `008_health_data_natural_key.sql` was withdrawn). Raw sample retention
+for Apple Health is **0** — no rows are written to `health_data`.
+
+#### Daily-aggregate model (raw retention 0)
+
+- **Snapshot envelope (required).** Each POST must carry `schemaVersion: 2` plus
+  `snapshot.timezone` and `snapshot.coveredDates`. `coveredDates` are the local
+  calendar days this snapshot fully covers, each queried from local `00:00`; the
+  current day is a complete-so-far snapshot that a later sync replaces.
+- **Idempotency by replacement.** Each covered day's aggregate is **replaced**,
+  not incremented. Replaying the same snapshot leaves values unchanged; a newer,
+  fuller snapshot for the same day overwrites it — no double counting.
+- **Attribution day must be covered.** Every sample's attribution day (the local
+  date of its `timestamp`; for sleep, the local date it **ends**) must fall
+  within `coveredDates`, otherwise the snapshot is rejected as partial/ambiguous.
+- **Legacy payloads are rejected, not merged.** Payloads missing
+  `schemaVersion: 2`, `snapshot.timezone`, or `snapshot.coveredDates` are
+  rejected with an actionable "Re-import the latest Shortcut…" error. This is
+  deliberate: the old rolling-window payload could not guarantee complete days.
+- **Health Auto Export still works.** For the HAE path the server synthesizes the
+  envelope automatically (`coveredDates: "auto"`, timezone taken from the
+  samples' offset), so that integration needs no changes.
+- **Sync response / Telegram summary.** The response now reports: samples
+  received, samples aggregated, aggregate rows updated, failures, and
+  `raw stored: 0`.
 
 The endpoint expects JSON, but if the body is not valid JSON it falls back to
 parsing it as an Apple property list (binary `bplist00` or XML plist). This
