@@ -86,9 +86,64 @@ async def _seed_user(conn, telegram_user_id: int = 999) -> tuple[int, int]:
         """INSERT INTO apple_health_sync (user_id, secret_key, sync_frequency_hours, is_active)
            VALUES ($1, $2, 6, TRUE) RETURNING id""",
         user_id,
-        "secret-key",
+        f"secret-key-{telegram_user_id}",
     )
     return user_id, sync_id
+
+
+async def _insert_raw(
+    conn,
+    user_id: int,
+    *,
+    metric_type: str,
+    value: float,
+    unit: str,
+    recorded_at: datetime,
+    subtype: str | None = None,
+    duration: int | None = None,
+) -> None:
+    """Seed a raw pre-cutover ``health_data`` row (source='apple_health')."""
+    await conn.execute(
+        """INSERT INTO health_data
+               (user_id, source, metric_type, metric_subtype, value, unit,
+                recorded_at, duration_seconds)
+           VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7)""",
+        user_id,
+        metric_type,
+        subtype,
+        value,
+        unit,
+        recorded_at,
+        duration,
+    )
+
+
+async def _seed_aggregate(
+    conn,
+    user_id: int,
+    day: date,
+    *,
+    steps: int,
+    active_energy: str,
+    samples_aggregated: int,
+    tz: str = "America/New_York",
+) -> None:
+    """Seed a pre-existing aggregate row, simulating one a post-cutover live sync
+    already wrote for ``day`` (the row backfill must never clobber)."""
+    await conn.execute(
+        """INSERT INTO health_daily_aggregates
+               (user_id, source, metric_date, timezone, steps,
+                active_energy_kcal, samples_received, samples_aggregated, metrics)
+           VALUES ($1, 'apple_health', $2, $3, $4, $5, $6, $7,
+                   '{"source": "live_sync"}'::jsonb)""",
+        user_id,
+        day,
+        tz,
+        steps,
+        active_energy,
+        samples_aggregated,
+        samples_aggregated,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -393,5 +448,159 @@ async def test_sample_outside_covered_dates_is_rejected():
             await ingest_apple_health_payload(
                 conn, payload, now=datetime(2026, 7, 12, tzinfo=timezone.utc)
             )
+    finally:
+        await conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Backfill data-safety (KRI-30 DB review follow-up)
+#
+# The one-time backfill reconstructs daily aggregates from pre-cutover raw rows,
+# then deletes those raw rows. Any aggregate row that already exists when it runs
+# was written by a post-cutover live sync and is authoritative — backfill must
+# only fill genuine gaps, never overwrite an existing row (whether that row is
+# populated or a legitimately zero-activity day the live sync recorded with
+# samples_aggregated=0). These reproduce the reviewer's clobber repro and the
+# genuinely-empty-row variant the architect asked to verify.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_backfill_does_not_clobber_existing_populated_aggregate():
+    from app.backfill_apple_health import backfill_all
+
+    conn = await _connect()
+    try:
+        user_id, _ = await _fresh_schema_with_user(conn)
+
+        # Day with a live-sync aggregate already present (must be preserved).
+        await _insert_raw(conn, user_id, metric_type="step_count", value=8,
+                          unit="count", recorded_at=datetime(2026, 7, 11, 9, 0, tzinfo=timezone.utc))
+        await _insert_raw(conn, user_id, metric_type="step_count", value=6,
+                          unit="count", recorded_at=datetime(2026, 7, 11, 9, 1, tzinfo=timezone.utc))
+        await _insert_raw(conn, user_id, metric_type="active_energy", value=12.5,
+                          unit="kcal", recorded_at=datetime(2026, 7, 11, 9, 2, tzinfo=timezone.utc))
+        await _seed_aggregate(conn, user_id, date(2026, 7, 11),
+                              steps=9999, active_energy="500.00", samples_aggregated=50)
+
+        # Day with NO pre-existing aggregate (genuine gap → backfill fills it).
+        await _insert_raw(conn, user_id, metric_type="step_count", value=100,
+                          unit="count", recorded_at=datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc))
+
+        await backfill_all(conn, timezone_str="UTC")
+
+        # The pre-existing row is byte-for-byte untouched (not the 14/12.50/3
+        # reconstruction the old DO UPDATE upsert would have written).
+        kept = await conn.fetchrow(
+            "SELECT steps, active_energy_kcal, samples_aggregated, timezone, metrics "
+            "FROM health_daily_aggregates WHERE metric_date = '2026-07-11'"
+        )
+        assert kept["steps"] == 9999
+        assert float(kept["active_energy_kcal"]) == 500.00
+        assert kept["samples_aggregated"] == 50
+        assert kept["timezone"] == "America/New_York"  # backfill runs UTC → proves untouched
+        blob = json.loads(kept["metrics"]) if isinstance(kept["metrics"], str) else kept["metrics"]
+        assert blob.get("source") == "live_sync"
+
+        # The genuine gap day WAS filled from the raw rows.
+        gap = await conn.fetchrow(
+            "SELECT steps, samples_aggregated, metrics "
+            "FROM health_daily_aggregates WHERE metric_date = '2026-07-10'"
+        )
+        assert gap["steps"] == 100
+        gap_blob = json.loads(gap["metrics"]) if isinstance(gap["metrics"], str) else gap["metrics"]
+        assert gap_blob.get("backfilled") is True
+
+        # Raw rows were still purged for the user (backfill completed).
+        raw_left = await conn.fetchval(
+            "SELECT count(*) FROM health_data WHERE user_id = $1 AND source = 'apple_health'",
+            user_id,
+        )
+        assert raw_left == 0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_clobber_genuinely_empty_aggregate():
+    # The subtle case: a live sync legitimately recorded a covered day as
+    # zero-activity (samples_aggregated=0). A `WHERE samples_aggregated = 0`
+    # conditional guard would treat this as "no real data yet" and overwrite it;
+    # DO NOTHING correctly preserves it.
+    from app.backfill_apple_health import backfill_all
+
+    conn = await _connect()
+    try:
+        user_id, _ = await _fresh_schema_with_user(conn)
+
+        await _insert_raw(conn, user_id, metric_type="step_count", value=14,
+                          unit="count", recorded_at=datetime(2026, 7, 11, 9, 0, tzinfo=timezone.utc))
+        # Pre-existing authoritative zero-activity row for the same day.
+        await _seed_aggregate(conn, user_id, date(2026, 7, 11),
+                              steps=0, active_energy="0.00", samples_aggregated=0)
+
+        await backfill_all(conn, timezone_str="UTC")
+
+        kept = await conn.fetchrow(
+            "SELECT steps, samples_aggregated, timezone, metrics "
+            "FROM health_daily_aggregates WHERE metric_date = '2026-07-11'"
+        )
+        assert kept["steps"] == 0  # NOT overwritten with the reconstructed 14
+        assert kept["samples_aggregated"] == 0
+        assert kept["timezone"] == "America/New_York"
+        blob = json.loads(kept["metrics"]) if isinstance(kept["metrics"], str) else kept["metrics"]
+        assert blob.get("source") == "live_sync"  # still the live-sync row, not backfilled
+
+        raw_left = await conn.fetchval(
+            "SELECT count(*) FROM health_data WHERE user_id = $1 AND source = 'apple_health'",
+            user_id,
+        )
+        assert raw_left == 0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_all_isolates_per_user_failure_and_reports_it():
+    # One user's failure must not abort the batch: later users are still
+    # processed and the failure is collected and reported.
+    from app.backfill_apple_health import backfill_all
+
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await apply_apple_health_migrations(conn)
+        bad_user, _ = await _seed_user(conn, telegram_user_id=1001)
+        good_user, _ = await _seed_user(conn, telegram_user_id=1002)
+        assert bad_user < good_user  # bad user is processed first (ORDER BY user_id)
+
+        # bad_user: a negative step reconstruction violates the steps>=0 CHECK,
+        # so its per-user transaction raises and rolls back.
+        await _insert_raw(conn, bad_user, metric_type="step_count", value=-5,
+                          unit="count", recorded_at=datetime(2026, 7, 11, 9, 0, tzinfo=timezone.utc))
+        # good_user: a clean day that must still be backfilled after the failure.
+        await _insert_raw(conn, good_user, metric_type="step_count", value=42,
+                          unit="count", recorded_at=datetime(2026, 7, 11, 9, 0, tzinfo=timezone.utc))
+
+        results, failures = await backfill_all(conn, timezone_str="UTC")
+
+        # The good user was still processed despite the earlier failure.
+        assert [r["user_id"] for r in results] == [good_user]
+        assert results[0]["aggregate_rows"] == 1
+        good_steps = await conn.fetchval(
+            "SELECT steps FROM health_daily_aggregates WHERE user_id = $1", good_user
+        )
+        assert good_steps == 42
+
+        # The failure was collected and reported, and its transaction rolled back
+        # (no aggregate row, raw rows still present so a re-run can retry it).
+        assert [f["user_id"] for f in failures] == [bad_user]
+        bad_agg = await conn.fetchval(
+            "SELECT count(*) FROM health_daily_aggregates WHERE user_id = $1", bad_user
+        )
+        assert bad_agg == 0
+        bad_raw = await conn.fetchval(
+            "SELECT count(*) FROM health_data WHERE user_id = $1 AND source = 'apple_health'",
+            bad_user,
+        )
+        assert bad_raw == 1
     finally:
         await conn.close()
