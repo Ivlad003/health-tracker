@@ -107,6 +107,78 @@ def _plist_to_jsonable(value: Any) -> Any:
     return value
 
 
+# Ukrainian labels for the parsed-data summary sent to the user's chat, keyed
+# by the normalized metric key returned in ingest result["records_by_type"].
+_UA_METRIC_LABELS = {
+    "step_count": "кроки",
+    "active_energy": "активна енергія",
+    "heart_rate": "пульс",
+    "heart_rate_variability": "ВСР (HRV)",
+    "sleep_analysis": "сон",
+}
+
+
+def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
+    """Build the Ukrainian parsed-data summary message from an ingest result."""
+    received = result.get("records_received", 0)
+    inserted = result.get("records_inserted", result.get("records_processed", 0))
+    skipped = result.get("records_skipped", 0)
+    duplicates = result.get("records_duplicate", 0)
+    conflicts = result.get("records_conflict", 0)
+    failed = result.get("records_failed", 0)
+    counts_by_type = result.get("records_by_type") or {}
+
+    parts = [
+        f"{count} {_UA_METRIC_LABELS.get(key, key.replace('_', ' '))}"
+        for key, count in sorted(counts_by_type.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    breakdown = ", ".join(parts) if parts else "немає метрик"
+
+    lines = [
+        "📊 Apple Health синхронізовано",
+        f"Отримано {received} записів, збережено {inserted}.",
+        f"Розпізнано: {breakdown}.",
+    ]
+    if skipped:
+        detail = []
+        if duplicates:
+            detail.append(f"{duplicates} дублікат(и)")
+        if conflicts:
+            detail.append(f"{conflicts} збіг за часом")
+        suffix = f" ({', '.join(detail)})" if detail else ""
+        lines.append(
+            f"Пропущено {skipped}{suffix} — це не втрата, "
+            "а повторні чи однакові за часом семпли."
+        )
+    if failed:
+        lines.append(f"⚠️ Помилок: {failed}.")
+    unmapped = result.get("unmapped_metric_types") or []
+    if unmapped:
+        lines.append(
+            "ℹ️ Збережено, але не входить у зведення: " + ", ".join(unmapped) + "."
+        )
+    return "\n".join(lines)
+
+
+async def _notify_ingest_summary_to_telegram(
+    telegram_user_id: int,
+    result: dict[str, Any],
+) -> None:
+    """Send the human-readable parsed-data summary to the owner's chat.
+
+    Best-effort: a Telegram failure must never break the sync response.
+    """
+    try:
+        from app.services.telegram_bot import send_message
+
+        await send_message(telegram_user_id, _format_ingest_summary_uk(result))
+    except Exception:
+        logger.exception(
+            "AppleHealth ingest summary notification failed for user %s",
+            telegram_user_id,
+        )
+
+
 async def _echo_payload_to_telegram(
     telegram_user_id: int,
     body: bytes,
@@ -359,6 +431,7 @@ async def sync_apple_health(
             result["records_processed"],
             result["records_failed"],
         )
+        await _notify_ingest_summary_to_telegram(telegram_user_id, result)
         return result
     except AppleHealthIngestionError as exc:
         logger.warning(

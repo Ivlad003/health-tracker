@@ -1,7 +1,7 @@
 import json
 import logging
 import plistlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -468,6 +468,9 @@ async def test_ingest_apple_health_payload_stores_recent_metrics(mock_settings):
         "records_duplicate": 0,
         "records_conflict": 0,
         "records_failed": 0,
+        "records_by_type": {"active_energy": 1, "step_count": 1},
+        "unmapped_metric_types": [],
+        "summary": "2 records received, 2 stored: 1 active energy, 1 steps",
     }
     inserts = [query for query, _ in pool.executed if "INSERT INTO health_data" in query]
     assert len(inserts) == 2
@@ -529,6 +532,9 @@ async def test_ingest_apple_health_payload_reports_identical_existing_metric_as_
         "records_duplicate": 1,
         "records_conflict": 0,
         "records_failed": 0,
+        "records_by_type": {"step_count": 1},
+        "unmapped_metric_types": [],
+        "summary": "1 records received, 0 stored, 1 skipped (1 duplicate): 1 steps",
     }
 
 
@@ -573,6 +579,9 @@ async def test_ingest_apple_health_payload_reports_same_timestamp_different_valu
         "records_duplicate": 0,
         "records_conflict": 1,
         "records_failed": 0,
+        "records_by_type": {"step_count": 1},
+        "unmapped_metric_types": [],
+        "summary": "1 records received, 0 stored, 1 skipped (1 same-timestamp conflict): 1 steps",
     }
 
 
@@ -608,6 +617,9 @@ async def test_ingest_apple_health_payload_does_not_count_database_insert_confli
         "records_duplicate": 0,
         "records_conflict": 1,
         "records_failed": 0,
+        "records_by_type": {"step_count": 1},
+        "unmapped_metric_types": [],
+        "summary": "1 records received, 0 stored, 1 skipped (1 same-timestamp conflict): 1 steps",
     }
 
 
@@ -1567,3 +1579,269 @@ async def test_apple_health_webhook_accepts_health_auto_export_format(mock_setti
     # Two HAE data points with same type+unit+timestamp+value should dedupe.
     # We only assert at least one was processed end-to-end.
     assert resp.json()["records_received"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Ingestion completeness accounting + parsed-data summary
+# ---------------------------------------------------------------------------
+
+_REAL_PAYLOAD_PATH = Path(__file__).resolve().parent / "fixtures" / "apple-health-payload.json"
+
+
+def _load_real_shortcut_payload() -> dict:
+    payload = json.loads(_REAL_PAYLOAD_PATH.read_text(encoding="utf-8"))
+    payload["userId"] = 999
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_ingest_accounts_for_every_record_in_real_shortcut_payload(mock_settings):
+    """Every metric in the real shortcut export is accounted for: stored, or
+    explicitly skipped as a same-key collision — never silently dropped."""
+    from app.services.apple_health import ingest_apple_health_payload
+
+    payload = _load_real_shortcut_payload()
+    pool = FakePool()
+
+    # The sample spans 2026-07-08..2026-07-11; anchor "now" just after it so no
+    # metric trips the 30-day-old / future-dated validation guards.
+    result = await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    # 1239 received; 9 collide on UNIQUE(user_id, source, metric_type,
+    # recorded_at) within this single payload (Apple emits several samples in
+    # the same minute), so only 1230 distinct rows can be stored.
+    assert result["records_received"] == 1239
+    assert result["records_inserted"] == 1230
+    assert result["records_processed"] == 1230
+    assert result["records_skipped"] == 9
+    assert result["records_duplicate"] == 3
+    assert result["records_conflict"] == 6
+    assert result["records_failed"] == 0
+
+    # Completeness invariant: nothing vanishes — received is fully partitioned
+    # into stored + skipped + failed.
+    assert (
+        result["records_received"]
+        == result["records_inserted"] + result["records_skipped"] + result["records_failed"]
+    )
+
+    # The 9 same-key collisions are detected on the pre-insert lookup, so only
+    # 1230 rows are actually written to health_data.
+    inserted_rows = [q for q, _ in pool.executed if "INSERT INTO health_data" in q]
+    assert len(inserted_rows) == 1230
+    assert len(pool.health_rows) == 1230
+
+    assert result["records_by_type"] == {
+        "step_count": 515,
+        "active_energy": 509,
+        "sleep_analysis": 215,
+    }
+    # All three types are aggregation-mapped, so nothing is flagged as unmapped.
+    assert result["unmapped_metric_types"] == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_logs_completeness_breakdown_in_import_log(mock_settings):
+    """apple_health_import_logs captures the received/processed columns and the
+    full skip breakdown in response_body for the real payload."""
+    from app.services.apple_health import ingest_apple_health_payload
+
+    payload = _load_real_shortcut_payload()
+    pool = FakePool()
+
+    await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    import_logs = _executed(pool, "INSERT INTO apple_health_import_logs")
+    assert len(import_logs) == 1
+    _, log_args = import_logs[0]
+    # columns: user_id, sync_id, http_status, received, processed, failed, error
+    assert log_args[:7] == (7, 3, 200, 1239, 1230, 0, None)
+    response_body = json.loads(log_args[8])
+    assert response_body["records_skipped"] == 9
+    assert response_body["records_duplicate"] == 3
+    assert response_body["records_conflict"] == 6
+    assert response_body["records_by_type"] == {
+        "step_count": 515,
+        "active_energy": 509,
+        "sleep_analysis": 215,
+    }
+    assert "1239 records received, 1230 stored" in response_body["summary"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_returns_parsed_data_summary(mock_settings):
+    from app.services.apple_health import ingest_apple_health_payload
+
+    pool = FakePool()
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {"type": "step_count", "value": 100, "unit": "count", "timestamp": "2026-05-20T10:00:00+00:00"},
+            {"type": "step_count", "value": 200, "unit": "count", "timestamp": "2026-05-20T10:01:00+00:00"},
+            {"type": "heart_rate", "value": 70, "unit": "count/min", "timestamp": "2026-05-20T10:02:00+00:00"},
+        ],
+    }
+
+    result = await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["records_by_type"] == {"step_count": 2, "heart_rate": 1}
+    assert result["summary"] == "3 records received, 3 stored: 2 steps, 1 HR samples"
+
+
+@pytest.mark.asyncio
+async def test_ingest_flags_metric_types_the_aggregator_does_not_map(mock_settings):
+    """Unmapped types are still stored, but called out so they are not assumed
+    to feed the daily summary."""
+    from app.services.apple_health import ingest_apple_health_payload
+
+    pool = FakePool()
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {"type": "step_count", "value": 100, "unit": "count", "timestamp": "2026-05-20T10:00:00+00:00"},
+            {"type": "blood_glucose", "value": 5.4, "unit": "mmol/L", "timestamp": "2026-05-20T10:05:00+00:00"},
+        ],
+    }
+
+    result = await ingest_apple_health_payload(
+        pool,
+        payload,
+        now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["records_inserted"] == 2  # stored regardless of mapping
+    assert result["unmapped_metric_types"] == ["blood_glucose"]
+    assert "stored but not summarized: blood_glucose" in result["summary"]
+
+
+def test_build_ingestion_summary_formats_counts_and_skips(mock_settings):
+    from app.services.apple_health import build_ingestion_summary
+
+    summary = build_ingestion_summary(
+        {"step_count": 515, "active_energy": 509, "sleep_analysis": 215},
+        received=1239,
+        inserted=1230,
+        skipped=9,
+        duplicates=3,
+        conflicts=6,
+        failed=0,
+    )
+    assert summary == (
+        "1239 records received, 1230 stored, "
+        "9 skipped (3 duplicate, 6 same-timestamp conflict): "
+        "515 steps, 509 active energy, 215 sleep"
+    )
+
+
+def test_build_ingestion_summary_handles_clean_import_and_unmapped(mock_settings):
+    from app.services.apple_health import build_ingestion_summary
+
+    summary = build_ingestion_summary(
+        {"step_count": 10, "blood_glucose": 2},
+        received=12,
+        inserted=12,
+        skipped=0,
+        duplicates=0,
+        conflicts=0,
+        failed=0,
+        unmapped_types=["blood_glucose"],
+    )
+    assert summary == (
+        "12 records received, 12 stored: 10 steps, 2 blood glucose "
+        "(stored but not summarized: blood_glucose)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_sends_parsed_summary_to_telegram(mock_settings):
+    from app.main import app
+
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {"type": "step_count", "value": 5000, "unit": "count",
+             "timestamp": datetime.now(timezone.utc).isoformat()},
+            {"type": "sleep_analysis", "value": "0", "unit": "s",
+             "timestamp": (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat(),
+             "end": datetime.now(timezone.utc).isoformat(), "stage": "Core"},
+        ],
+    }
+    body = _json_body(payload)
+    pool = FakePool()
+    send_message = AsyncMock()
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_message", send_message):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Apple-Health-Token": "user-secret",
+                },
+            )
+
+    assert resp.status_code == 200
+    send_message.assert_awaited_once()
+    args, _ = send_message.await_args
+    assert args[0] == 999
+    message = args[1]
+    assert "Apple Health синхронізовано" in message
+    assert "Отримано 2 записів, збережено 2" in message
+    assert "1 кроки" in message
+    assert "1 сон" in message
+
+
+@pytest.mark.asyncio
+async def test_apple_health_webhook_survives_summary_notification_failure(mock_settings):
+    from app.main import app
+
+    payload = {
+        "userId": 999,
+        "sourceType": "apple_health",
+        "dataType": "activity",
+        "metrics": [
+            {"type": "step_count", "value": 5000, "unit": "count",
+             "timestamp": datetime.now(timezone.utc).isoformat()},
+        ],
+    }
+    body = _json_body(payload)
+    pool = FakePool()
+    send_message = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+    with patch("app.routers.apple_health.get_pool", return_value=pool), \
+            patch("app.services.telegram_bot.send_message", send_message):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/health/apple-health/sync",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Apple-Health-Token": "user-secret",
+                },
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["records_processed"] == 1
+    send_message.assert_awaited_once()

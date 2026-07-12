@@ -39,6 +39,28 @@ _HRV_METRICS = {
     "hrv_sdnn",
 }
 
+# Metric types the summary/aggregation layer knows how to interpret. Storage is
+# type-agnostic (any metric_type is persisted), but these are the ones
+# get_apple_health_summary rolls up; anything outside this set is stored yet
+# not aggregated, and is flagged in the ingestion summary.
+_SUMMARY_MAPPED_METRICS = (
+    _STEP_METRICS
+    | _ACTIVE_ENERGY_METRICS
+    | _HEART_RATE_METRICS
+    | _SLEEP_METRICS
+    | _HRV_METRICS
+)
+
+# Human-readable labels for the parsed-data summary, keyed by the normalized
+# metric key produced by _metric_key().
+_METRIC_SUMMARY_LABELS = {
+    "step_count": "steps",
+    "active_energy": "active energy",
+    "heart_rate": "HR samples",
+    "heart_rate_variability": "HRV samples",
+    "sleep_analysis": "sleep",
+}
+
 # A single sleep sample longer than a day is bogus input; clamp it so one bad
 # interval cannot inflate the daily total.
 _MAX_SLEEP_SAMPLE_SECONDS = 24 * 3600
@@ -597,13 +619,91 @@ def _normalize_metric(
     }
 
 
+def _metric_summary_label(metric_key: str) -> str:
+    """Friendly label for a normalized metric key used in summaries."""
+    return _METRIC_SUMMARY_LABELS.get(metric_key, metric_key.replace("_", " "))
+
+
+def summarize_parsed_metrics(
+    normalized_metrics: list[dict[str, Any]],
+) -> tuple[dict[str, int], list[str]]:
+    """Count parsed metrics per normalized type and list any unmapped types.
+
+    Returns ``(counts_by_type, unmapped_types)`` where ``counts_by_type`` is
+    keyed by the normalized metric key (e.g. ``"step_count"``) and
+    ``unmapped_types`` are keys stored but not rolled up by the aggregation
+    layer (see ``_SUMMARY_MAPPED_METRICS``).
+    """
+    counts: dict[str, int] = {}
+    unmapped: list[str] = []
+    for metric in normalized_metrics:
+        key = _metric_key(str(metric["metric_type"]))
+        counts[key] = counts.get(key, 0) + 1
+        if key not in unmapped and not _is_metric(key, _SUMMARY_MAPPED_METRICS):
+            unmapped.append(key)
+    return counts, unmapped
+
+
+def build_ingestion_summary(
+    counts_by_type: dict[str, int],
+    *,
+    received: int,
+    inserted: int,
+    skipped: int,
+    duplicates: int,
+    conflicts: int,
+    failed: int,
+    unmapped_types: list[str] | None = None,
+) -> str:
+    """Human-readable one-line summary of what a sync parsed and stored.
+
+    Example: ``"1239 records received, 1230 stored, 9 skipped (3 duplicate,
+    6 same-timestamp conflict): 515 steps, 509 active energy, 215 sleep"``.
+    """
+    breakdown_parts = [
+        f"{count} {_metric_summary_label(key)}"
+        for key, count in sorted(counts_by_type.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    breakdown = ", ".join(breakdown_parts) if breakdown_parts else "no metrics"
+
+    summary = f"{received} records received, {inserted} stored"
+    notes: list[str] = []
+    if skipped:
+        detail = []
+        if duplicates:
+            detail.append(f"{duplicates} duplicate")
+        if conflicts:
+            detail.append(f"{conflicts} same-timestamp conflict")
+        suffix = f" ({', '.join(detail)})" if detail else ""
+        notes.append(f"{skipped} skipped{suffix}")
+    if failed:
+        notes.append(f"{failed} failed")
+    if notes:
+        summary += ", " + ", ".join(notes)
+    summary += f": {breakdown}"
+    if unmapped_types:
+        summary += f" (stored but not summarized: {', '.join(unmapped_types)})"
+    return summary
+
+
 async def ingest_apple_health_payload(
     pool: Any,
     payload: dict[str, Any],
     *,
     now: datetime | None = None,
-) -> dict[str, int]:
-    """Normalize and store Apple Health metrics sent by an iOS Shortcut."""
+) -> dict[str, Any]:
+    """Normalize and store Apple Health metrics sent by an iOS Shortcut.
+
+    Completeness contract: ``records_received`` is the number of metrics in the
+    payload; ``records_inserted`` (== ``records_processed``) is how many new
+    ``health_data`` rows were written. The gap is fully accounted for by
+    ``records_skipped`` (= ``records_duplicate`` + ``records_conflict``) plus
+    ``records_failed``. Skips are NOT failures: a duplicate is an identical
+    resend, a conflict is a different value colliding on the
+    ``UNIQUE(user_id, source, metric_type, recorded_at)`` key — including two
+    distinct samples that share the same (minute-truncated) timestamp inside a
+    single payload, which the schema cannot store separately.
+    """
     received = len(payload.get("metrics", [])) if isinstance(payload.get("metrics"), list) else 0
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     try:
@@ -701,6 +801,18 @@ async def ingest_apple_health_payload(
             )
             raise error from exc
 
+    counts_by_type, unmapped_types = summarize_parsed_metrics(normalized_metrics)
+    summary = build_ingestion_summary(
+        counts_by_type,
+        received=received,
+        inserted=inserted,
+        skipped=skipped,
+        duplicates=duplicates,
+        conflicts=conflicts,
+        failed=failed,
+        unmapped_types=unmapped_types,
+    )
+
     await pool.execute(
         """UPDATE apple_health_sync
            SET last_sync_at = NOW(),
@@ -729,6 +841,9 @@ async def ingest_apple_health_payload(
             "records_duplicate": duplicates,
             "records_conflict": conflicts,
             "records_failed": failed,
+            "records_by_type": counts_by_type,
+            "unmapped_metric_types": unmapped_types,
+            "summary": summary,
         },
     )
 
@@ -751,4 +866,7 @@ async def ingest_apple_health_payload(
         "records_duplicate": duplicates,
         "records_conflict": conflicts,
         "records_failed": failed,
+        "records_by_type": counts_by_type,
+        "unmapped_metric_types": unmapped_types,
+        "summary": summary,
     }
