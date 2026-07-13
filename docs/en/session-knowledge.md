@@ -285,4 +285,41 @@ docker build -t health-tracker .
 docker run --env-file .env -p 8000:8000 health-tracker
 ```
 
-Production startup uses the Dockerfile command as the single authoritative migration path for Apple Health. The container runs `python -m app.db_preflight --apply-apple-health-migration` before Uvicorn, then the FastAPI lifespan verifies the required Apple Health tables and indexes again before serving traffic.
+Production startup uses the Dockerfile command as the single authoritative
+migration path for Apple Health. The container runs
+`python -m app.db_preflight --apply-apple-health-migration` before Uvicorn,
+applies migrations `007`, `009`, and `010`, then the FastAPI lifespan verifies
+the required Apple Health tables and indexes again before serving traffic. The
+preflight holds one PostgreSQL advisory lock across migration and verification,
+so parallel replica starts cannot race DDL. `database/init-db.sh` skips every
+`*_rollback.sql` file and enables `ON_ERROR_STOP` for migration files.
+
+### Apple Health schema-v3 operational rules
+
+- The native Shortcut must send collector `shortcut`, an offset-aware
+  `generatedAt`, timezone, dates, and covered metric families. Re-import old
+  schema-v2 Shortcuts.
+- Native payloads cannot claim the `health_auto_export` collector. Coverage uses
+  exactly one encoding, at most 31 dates per family, and a 30-day/+1-day window.
+- Metric values and durations are finite, non-negative where applicable, and
+  magnitude-bounded before aggregation; database constraints also reject NaN.
+- Sleep counts unioned asleep stages. It excludes Awake and In Bed unless the
+  only usable fallback is In Bed minus Awake; Awake-only coverage is zero.
+- New imports persist only processed per-family rows. Raw request bodies are not
+  stored in `health_data` or forwarded to Telegram.
+- Run `python -m app.backfill_apple_health` first without deletion. Use
+  `--delete-raw` only after read-back and row-count verification; any residual
+  purge failure exits non-zero. Destructive mode refuses unsupported metrics
+  and blocks concurrent writers through the final residual check.
+- During rollout, readers timezone-filter candidates first, prefer the newest
+  in-window live collector per date/family, and then fill gaps from schema-v2,
+  backfill, and legacy raw sources.
+- HAE accepts one supported metric per automation, only for cumulative
+  Default/Today/Yesterday/Previous 7 Days periods, with Summarize Data and Batch
+  Requests disabled. Required custom headers are
+  `X-Health-Tracker-HAE-Mode: complete-unbatched-unaggregated-single-metric-v1`
+  and `X-Health-Tracker-Timezone`, plus a client-minted
+  `X-Health-Tracker-Generated-At` created before dispatch. Stock direct HAE REST
+  automations cannot supply this causal marker and fail closed; ingress-proxy
+  receipt timestamps are forbidden. Incremental, grouped, multi-metric, and
+  malformed snapshots also fail closed.

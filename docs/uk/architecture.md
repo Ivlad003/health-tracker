@@ -194,7 +194,32 @@ Docker-образ копіює `database/` у контейнер і викори
 python -m app.db_preflight --apply-apple-health-migration
 ```
 
-Ця prestart-команда застосовує міграцію Apple Health і перевіряє `apple_health_sync`, `health_data`, `apple_health_import_logs` та потрібні індекси Apple Health до старту Uvicorn. FastAPI lifespan повторює перевірку; якщо схема неповна, застосунок завершує старт із санітизованою помилкою до обслуговування трафіку.
+Ця prestart-команда застосовує міграції Apple Health `007`, `009` і `010`, а
+потім перевіряє `apple_health_sync`, `health_data`, `apple_health_import_logs`,
+`health_daily_aggregates`, `health_daily_metric_aggregates` та потрібні індекси
+до старту Uvicorn. FastAPI lifespan повторює перевірку; якщо схема неповна,
+застосунок завершує старт із санітизованою помилкою до обслуговування трафіку.
+PostgreSQL session advisory lock серіалізує всю послідовність apply-and-verify
+між replicas. Загальний runner `database/init-db.sh` застосовує лише forward
+`*.sql`, пропускає `*_rollback.sql` і змушує `psql` зупинятися на першій помилці.
+
+Apple Health schema v3 записує оброблені денні значення на межі
+`collector + metric_date + metric_family`. Одна транзакція разом фіксує всі
+рядки сімейств, лічильники sync і санітизований import log. Під час rollout
+expand/migrate/contract читачі фільтрують рядки за timezone-adjusted query window,
+окремо для кожного сімейства вибирають найновіший in-window live collector і
+доповнюють лише відсутні значення зі schema-v2 aggregates, backfill-рядків та
+legacy raw data.
+Ingress приймає лише native collector `shortcut` і конвертований
+`health_auto_export`, обмежує кожне сімейство 31 нещодавньою покритою датою та
+відхиляє non-finite/out-of-domain значення. Receipt time та mutable timestamps
+семплів HealthKit не визначають порядок HAE. Конвертований HAE-shaped request
+має містити client-minted offset-aware export timestamp, створений до network
+dispatch, а також один complete, unbatched, unaggregated metric, attested period
+і явний timezone. Стандартні прямі HAE REST automations fail closed, бо не
+надають такого causal marker.
+Destructive backfill тримає writer-blocking table lock до commit фінальної
+перевірки residual raw rows.
 
 ---
 

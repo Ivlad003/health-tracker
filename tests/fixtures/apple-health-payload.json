@@ -1,0 +1,190 @@
+{
+  "_fixture": {
+    "synthetic": true,
+    "schema": "apple-health-v3",
+    "description": "Deterministic synthetic health samples for ingestion tests; contains no user data."
+  },
+  "sourceType": "apple_health",
+  "dataType": "activity",
+  "schemaVersion": 3,
+  "snapshot": {
+    "collector": "shortcut",
+    "timezone": "+03:00",
+    "generatedAt": "2026-07-11T23:59:00+03:00",
+    "coveredDatesByFamily": {
+      "steps": [
+        "2026-07-09",
+        "2026-07-10",
+        "2026-07-11"
+      ],
+      "active_energy": [
+        "2026-07-09",
+        "2026-07-10",
+        "2026-07-11"
+      ],
+      "hrv": [
+        "2026-07-09",
+        "2026-07-10",
+        "2026-07-11"
+      ],
+      "sleep": [
+        "2026-07-09",
+        "2026-07-10"
+      ]
+    }
+  },
+  "metrics": [
+    {
+      "type": "step_count",
+      "value": 100,
+      "unit": "count",
+      "timestamp": "2026-07-09T09:00:00+03:00"
+    },
+    {
+      "type": "step_count",
+      "value": 50,
+      "unit": "count",
+      "timestamp": "2026-07-09T09:00:00+03:00"
+    },
+    {
+      "type": "active_energy",
+      "value": 12.5,
+      "unit": "kcal",
+      "timestamp": "2026-07-09T10:00:00+03:00"
+    },
+    {
+      "type": "heart_rate_variability",
+      "value": 42,
+      "unit": "ms",
+      "timestamp": "2026-07-09T08:00:00+03:00"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-08T22:30:00+03:00",
+      "end": "2026-07-09T06:30:00+03:00",
+      "stage": "In Bed"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-08T23:00:00+03:00",
+      "end": "2026-07-09T02:30:00+03:00",
+      "stage": "Core"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-09T02:15:00+03:00",
+      "end": "2026-07-09T03:30:00+03:00",
+      "stage": "Deep"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-09T03:30:00+03:00",
+      "end": "2026-07-09T06:00:00+03:00",
+      "stage": "REM"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-09T01:00:00+03:00",
+      "end": "2026-07-09T01:10:00+03:00",
+      "stage": "Awake"
+    },
+    {
+      "type": "step_count",
+      "value": 200,
+      "unit": "count",
+      "timestamp": "2026-07-10T09:00:00+03:00"
+    },
+    {
+      "type": "active_energy",
+      "value": 20.25,
+      "unit": "kcal",
+      "timestamp": "2026-07-10T10:00:00+03:00"
+    },
+    {
+      "type": "heart_rate_variability",
+      "value": 48,
+      "unit": "ms",
+      "timestamp": "2026-07-10T08:00:00+03:00"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-09T23:00:00+03:00",
+      "end": "2026-07-10T07:00:00+03:00",
+      "stage": "In Bed"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-09T23:00:00+03:00",
+      "end": "2026-07-10T03:00:00+03:00",
+      "stage": "Core"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-10T02:45:00+03:00",
+      "end": "2026-07-10T04:00:00+03:00",
+      "stage": "Deep"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-10T04:00:00+03:00",
+      "end": "2026-07-10T07:00:00+03:00",
+      "stage": "REM"
+    },
+    {
+      "type": "sleep_analysis",
+      "value": 0,
+      "unit": "s",
+      "timestamp": "2026-07-10T01:30:00+03:00",
+      "end": "2026-07-10T01:45:00+03:00",
+      "stage": "Awake"
+    },
+    {
+      "type": "step_count",
+      "value": 300,
+      "unit": "count",
+      "timestamp": "2026-07-11T12:00:00+03:00"
+    },
+    {
+      "type": "step_count",
+      "value": 25,
+      "unit": "count",
+      "timestamp": "2026-07-11T12:00:00+03:00"
+    },
+    {
+      "type": "active_energy",
+      "value": 30.75,
+      "unit": "kcal",
+      "timestamp": "2026-07-11T13:00:00+03:00"
+    },
+    {
+      "type": "heart_rate_variability",
+      "value": 55,
+      "unit": "ms",
+      "timestamp": "2026-07-11T08:00:00+03:00"
+    },
+    {
+      "type": "heart_rate_variability",
+      "value": 65,
+      "unit": "ms",
+      "timestamp": "2026-07-11T08:00:00+03:00"
+    }
+  ]
+}

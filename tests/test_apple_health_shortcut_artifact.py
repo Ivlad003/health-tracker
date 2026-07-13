@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import plistlib
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,6 +16,7 @@ SHORTCUT_SOURCE = (
     / "shortcuts"
     / "apple-health-sync.shortcut.plist"
 )
+SIGNED_SHORTCUT = SHORTCUT_SOURCE.with_name("apple-health-sync.shortcut")
 
 # Find Health Samples picker labels differ from HealthKit SDK names; these are
 # the labels the iOS picker actually shows (e.g. "Active Calories", not
@@ -58,6 +62,24 @@ def _query_type(query: dict) -> str:
     return type_filter["Values"]["Enumeration"]["Value"]
 
 
+def _dictionary_items(action: dict) -> dict[str, dict]:
+    items = action["WFWorkflowActionParameters"]["WFItems"]["Value"][
+        "WFDictionaryFieldValueItems"
+    ]
+    return {_text_value(item["WFKey"]): item for item in items}
+
+
+def _current_date_format(field: dict) -> dict:
+    attachment = field["Value"]["attachmentsByRange"]["{0, 1}"]
+    if attachment["Type"] != "CurrentDate":
+        raise AssertionError("expected a Current Date magic variable")
+    return next(
+        item
+        for item in attachment["Aggrandizements"]
+        if item["Type"] == "WFDateFormatVariableAggrandizement"
+    )
+
+
 class AppleHealthShortcutArtifactTests(unittest.TestCase):
     def test_source_uses_current_export_root_keys(self) -> None:
         """Keep the source compatible with the current Shortcuts signing service."""
@@ -92,22 +114,149 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
             # In Find Health Samples, 1002 is Shortcuts' native "Start Date is today".
             self.assertEqual(start_date_filter["Operator"], 1002)
 
-    def test_sleep_samples_cover_the_last_two_days(self) -> None:
-        """A night usually starts before midnight; "is today" would drop it."""
+    def test_sleep_samples_end_in_the_current_calendar_day(self) -> None:
+        """Include overnight samples while keeping the declared snapshot to today."""
         workflow = _load_workflow()
         sleep_query = next(
             query for query in _health_queries(workflow) if _query_type(query) == "Sleep"
         )
-        start_date_filter = next(
+        end_date_filter = next(
             template
             for template in _filter_templates(sleep_query)
-            if template["Property"] == "Start Date"
+            if template["Property"] == "End Date"
         )
 
-        # 1001 is "Start Date is in the last"; NSCalendar.Unit.day is 16.
-        self.assertEqual(start_date_filter["Operator"], 1001)
-        self.assertEqual(start_date_filter["Values"]["Number"], "2")
-        self.assertEqual(start_date_filter["Values"]["Unit"], 16)
+        # 1002 is Shortcuts' native "End Date is today" predicate.
+        self.assertEqual(end_date_filter["Operator"], 1002)
+        self.assertEqual(end_date_filter["Values"]["Number"], "1")
+        self.assertEqual(end_date_filter["Values"]["Unit"], 16)
+        self.assertNotEqual(end_date_filter["Values"]["Unit"], 16384)
+
+    def test_signed_artifact_core_matches_source_when_apple_tools_are_available(
+        self,
+    ) -> None:
+        """Verify the AEA signature and read back the distributable workflow."""
+        tools = {name: shutil.which(name) for name in ("aea", "aa", "openssl")}
+        if not all(tools.values()):
+            self.skipTest("Apple Archive verification tools are unavailable")
+
+        signed_bytes = SIGNED_SHORTCUT.read_bytes()
+        self.assertTrue(signed_bytes.startswith(b"AEA1"))
+        auth_length = int.from_bytes(signed_bytes[8:12], "little")
+        auth_data = plistlib.loads(signed_bytes[12 : 12 + auth_length])
+        certificate = auth_data["SigningCertificateChain"][0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            certificate_path = temp / "signing-certificate.der"
+            public_key_path = temp / "signing-public-key.pem"
+            archive_path = temp / "shortcut.aar"
+            extracted_path = temp / "extracted"
+            extracted_path.mkdir()
+            certificate_path.write_bytes(certificate)
+
+            subprocess.run(
+                [
+                    tools["openssl"],
+                    "x509",
+                    "-inform",
+                    "DER",
+                    "-in",
+                    str(certificate_path),
+                    "-pubkey",
+                    "-noout",
+                    "-out",
+                    str(public_key_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    tools["aea"],
+                    "decrypt",
+                    "-i",
+                    str(SIGNED_SHORTCUT),
+                    "-o",
+                    str(archive_path),
+                    "-sign-pub",
+                    str(public_key_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    tools["aa"],
+                    "extract",
+                    "-i",
+                    str(archive_path),
+                    "-d",
+                    str(extracted_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            source = _load_workflow()
+            signed = plistlib.loads((extracted_path / "Shortcut.wflow").read_bytes())
+            for key in (
+                "WFWorkflowActions",
+                "WFWorkflowImportQuestions",
+                "WFWorkflowIcon",
+                "WFWorkflowTypes",
+            ):
+                self.assertEqual(signed[key], source[key], key)
+
+    def test_payload_declares_a_single_day_schema_v3_snapshot(self) -> None:
+        """The signed client must satisfy the backend completeness contract."""
+        workflow = _load_workflow()
+        payload = next(
+            action
+            for action in workflow["WFWorkflowActions"]
+            if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.dictionary"
+            and action["WFWorkflowActionParameters"].get("CustomOutputName")
+            == "Sync Payload Base"
+        )
+        payload_items = _dictionary_items(payload)
+
+        self.assertEqual(_text_value(payload_items["schemaVersion"]["WFValue"]), "3")
+
+        snapshot_item = payload_items["snapshot"]
+        self.assertEqual(snapshot_item["WFItemType"], 1)
+        snapshot_items = {
+            _text_value(item["WFKey"]): item
+            for item in snapshot_item["WFValue"]["Value"]["Value"][
+                "WFDictionaryFieldValueItems"
+            ]
+        }
+
+        self.assertEqual(_text_value(snapshot_items["collector"]["WFValue"]), "shortcut")
+
+        covered_families = snapshot_items["coveredMetricFamilies"]
+        self.assertEqual(covered_families["WFItemType"], 2)
+        self.assertEqual(
+            [_text_value(item["WFValue"]) for item in covered_families["WFValue"]["Value"]],
+            ["steps", "active_energy", "sleep", "hrv"],
+        )
+
+        timezone_format = _current_date_format(snapshot_items["timezone"]["WFValue"])
+        self.assertEqual(timezone_format["WFDateFormatStyle"], "Custom")
+        self.assertEqual(timezone_format["WFDateFormat"], "XXXXX")
+
+        covered_dates = snapshot_items["coveredDates"]
+        self.assertEqual(covered_dates["WFItemType"], 2)
+        covered_date_items = covered_dates["WFValue"]["Value"]
+        self.assertEqual(len(covered_date_items), 1)
+        covered_date_format = _current_date_format(covered_date_items[0]["WFValue"])
+        self.assertEqual(covered_date_format["WFDateFormatStyle"], "ISO 8601")
+        self.assertFalse(covered_date_format["WFISO8601IncludeTime"])
+
+        generated_at_format = _current_date_format(
+            snapshot_items["generatedAt"]["WFValue"]
+        )
+        self.assertEqual(generated_at_format["WFDateFormatStyle"], "ISO 8601")
+        self.assertTrue(generated_at_format["WFISO8601IncludeTime"])
 
     def test_each_query_loops_and_appends_one_metric_to_the_metrics_variable(self) -> None:
         """Every query gets repeat → dictionary → Add to Variable "Metrics" wiring."""

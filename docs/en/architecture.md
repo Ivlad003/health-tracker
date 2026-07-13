@@ -194,7 +194,33 @@ The Docker image copies `database/` into the container and uses one production m
 python -m app.db_preflight --apply-apple-health-migration
 ```
 
-This prestart command applies the Apple Health migration and verifies `apple_health_sync`, `health_data`, `apple_health_import_logs`, and the required Apple Health indexes before Uvicorn starts. The FastAPI lifespan runs the same verifier again; if the schema is incomplete, startup exits with a sanitized error before the app serves traffic.
+This prestart command applies Apple Health migrations `007`, `009`, and `010`,
+then verifies `apple_health_sync`, `health_data`, `apple_health_import_logs`,
+`health_daily_aggregates`, `health_daily_metric_aggregates`, and the required
+indexes before Uvicorn starts. The FastAPI lifespan runs the same verifier
+again; if the schema is incomplete, startup exits with a sanitized error before
+the app serves traffic. A PostgreSQL session advisory lock serializes the whole
+apply-and-verify sequence across replicas. The general `database/init-db.sh`
+runner applies forward `*.sql` files only, skips `*_rollback.sql`, and makes
+`psql` stop on the first migration error.
+
+Apple Health schema v3 writes processed daily values at the
+`collector + metric_date + metric_family` boundary. One transaction commits all
+family rows, sync counters, and the sanitized import log together. Readers
+filter rows by their timezone-adjusted query window, select the newest in-window
+live collector independently per family, and fill only missing values from
+schema-v2 aggregates, backfill rows, and legacy raw data during the
+expand/migrate/contract rollout.
+The ingress boundary accepts only the native `shortcut` and converted
+`health_auto_export` collectors, bounds each family to 31 recent covered dates,
+and rejects non-finite/out-of-domain values. Receipt time and mutable HealthKit
+sample timestamps do not define HAE ordering. Converted HAE-shaped requests
+must carry a client-minted, offset-aware export timestamp created before network
+dispatch, plus one complete, unbatched, unaggregated metric, an attested period,
+and explicit timezone. Stock direct HAE REST automations fail closed because
+they do not supply that causal marker.
+Destructive backfill holds a writer-blocking table lock until the residual
+raw-row check commits.
 
 ---
 
