@@ -1,0 +1,69 @@
+name: Apple Health PostgreSQL
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  shortcut-artifact:
+    name: Signed Shortcut / macOS
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Require Apple Archive verification tools
+        run: command -v aea && command -v aa && command -v openssl
+
+      - name: Verify signed Shortcut readback
+        run: python -m unittest tests.test_apple_health_shortcut_artifact
+
+  test:
+    name: PostgreSQL 15 / Python 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: health_tracker
+          POSTGRES_PASSWORD: health_tracker
+          POSTGRES_DB: health_tracker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U health_tracker -d health_tracker_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APPLE_HEALTH_TEST_DATABASE_URL: postgresql://health_tracker:health_tracker@localhost:5432/health_tracker_test
+      DATABASE_URL: postgresql://health_tracker:health_tracker@localhost:5432/health_tracker_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run full test suite
+        run: python -m pytest -q

@@ -11,14 +11,19 @@ logger = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "database" / "migrations"
 
+# Session-level lock shared by every app replica. The value is the ASCII bytes
+# for "APPLEHDB" encoded as a positive signed bigint.
+APPLE_HEALTH_MIGRATION_LOCK_KEY = 0x4150504C45484442
+
 # Applied in order. Every migration is written to be idempotent (IF NOT EXISTS /
 # DO-block guards), so re-applying on an already-migrated database is a no-op.
-# 007 creates the Apple Health raw + shared tables; 009 adds the processed daily
-# aggregate table (raw Apple Health samples are no longer retained). Superseded
+# 007 creates the Apple Health raw + shared tables; 009 adds the schema-v2 daily
+# aggregate table; 010 adds causally ordered per-family aggregates. Superseded
 # migration 008 (PG15-only raw natural key) is intentionally absent.
 APPLE_HEALTH_MIGRATIONS = (
     MIGRATIONS_DIR / "007_apple_health_connector.sql",
     MIGRATIONS_DIR / "009_health_daily_aggregates.sql",
+    MIGRATIONS_DIR / "010_health_daily_metric_aggregates.sql",
 )
 
 # Kept for backward compatibility with callers/tests that imported the single
@@ -30,6 +35,7 @@ REQUIRED_APPLE_HEALTH_TABLES = {
     "health_data",
     "apple_health_import_logs",
     "health_daily_aggregates",
+    "health_daily_metric_aggregates",
 }
 
 REQUIRED_APPLE_HEALTH_INDEXES = {
@@ -47,12 +53,23 @@ REQUIRED_APPLE_HEALTH_INDEXES = {
     "idx_health_daily_aggregates_user_id",
     "idx_health_daily_aggregates_user_date",
     "idx_health_daily_aggregates_source",
+    "idx_health_daily_metric_aggregates_user_date",
+    "idx_health_daily_metric_aggregates_family_freshness",
+    "idx_health_daily_metric_aggregates_collector",
 }
 
 # Named UNIQUE constraints the app targets via ON CONFLICT ON CONSTRAINT.
-REQUIRED_APPLE_HEALTH_CONSTRAINTS = {
-    "health_daily_aggregates_natural_key",
+REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE = {
+    "health_daily_aggregates": {"health_daily_aggregates_natural_key"},
+    "health_daily_metric_aggregates": {
+        "health_daily_metric_aggregates_natural_key",
+        "health_daily_metric_aggregates_total_finite_check",
+        "health_daily_metric_aggregates_average_check",
+    },
 }
+REQUIRED_APPLE_HEALTH_CONSTRAINTS = set().union(
+    *REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE.values()
+)
 
 
 class AppleHealthSchemaError(RuntimeError):
@@ -126,17 +143,33 @@ async def verify_apple_health_schema(conn: asyncpg.Connection) -> None:
 
     constraint_rows = await conn.fetch(
         """
-        SELECT conname
-        FROM pg_constraint
-        WHERE conname = ANY($1::text[])
+        SELECT cls.relname AS table_name, con.conname
+        FROM pg_constraint AS con
+        JOIN pg_class AS cls ON cls.oid = con.conrelid
+        JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+        WHERE ns.nspname = 'public'
+          AND cls.relname = ANY($1::text[])
+          AND con.conname = ANY($2::text[])
         """,
+        sorted(REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE),
         sorted(REQUIRED_APPLE_HEALTH_CONSTRAINTS),
     )
-    existing_constraints = {row["conname"] for row in constraint_rows}
+    existing_constraints = {
+        (row["table_name"], row["conname"]) for row in constraint_rows
+    }
+    required_constraint_pairs = {
+        (table_name, constraint_name)
+        for table_name, names in REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE.items()
+        for constraint_name in names
+    }
 
     missing_tables = REQUIRED_APPLE_HEALTH_TABLES - existing_tables
     missing_indexes = REQUIRED_APPLE_HEALTH_INDEXES - existing_indexes
-    missing_constraints = REQUIRED_APPLE_HEALTH_CONSTRAINTS - existing_constraints
+    missing_constraint_pairs = required_constraint_pairs - existing_constraints
+    missing_constraints = {
+        f"{table_name}.{constraint_name}"
+        for table_name, constraint_name in missing_constraint_pairs
+    }
     if missing_tables or missing_indexes or missing_constraints:
         raise AppleHealthSchemaError(
             "Apple Health database schema is incomplete: "
@@ -150,11 +183,21 @@ async def run_preflight(apply_migration: bool) -> None:
 
     conn = await asyncpg.connect(dsn=settings.database_url)
     try:
-        if apply_migration:
-            await apply_apple_health_migrations(conn)
-            logger.info("Apple Health migrations applied or already present")
-        await verify_apple_health_schema(conn)
-        logger.info("Apple Health schema preflight passed")
+        await conn.execute(
+            "SELECT pg_advisory_lock($1::bigint)",
+            APPLE_HEALTH_MIGRATION_LOCK_KEY,
+        )
+        try:
+            if apply_migration:
+                await apply_apple_health_migrations(conn)
+                logger.info("Apple Health migrations applied or already present")
+            await verify_apple_health_schema(conn)
+            logger.info("Apple Health schema preflight passed")
+        finally:
+            await conn.execute(
+                "SELECT pg_advisory_unlock($1::bigint)",
+                APPLE_HEALTH_MIGRATION_LOCK_KEY,
+            )
     finally:
         await conn.close()
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import plistlib
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,6 +16,7 @@ SHORTCUT_SOURCE = (
     / "shortcuts"
     / "apple-health-sync.shortcut.plist"
 )
+SIGNED_SHORTCUT = SHORTCUT_SOURCE.with_name("apple-health-sync.shortcut")
 
 # Find Health Samples picker labels differ from HealthKit SDK names; these are
 # the labels the iOS picker actually shows (e.g. "Active Calories", not
@@ -124,8 +128,87 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
 
         # 1002 is Shortcuts' native "End Date is today" predicate.
         self.assertEqual(end_date_filter["Operator"], 1002)
+        self.assertEqual(end_date_filter["Values"]["Number"], "1")
+        self.assertEqual(end_date_filter["Values"]["Unit"], 16)
+        self.assertNotEqual(end_date_filter["Values"]["Unit"], 16384)
 
-    def test_payload_declares_a_single_day_schema_v2_snapshot(self) -> None:
+    def test_signed_artifact_core_matches_source_when_apple_tools_are_available(
+        self,
+    ) -> None:
+        """Verify the AEA signature and read back the distributable workflow."""
+        tools = {name: shutil.which(name) for name in ("aea", "aa", "openssl")}
+        if not all(tools.values()):
+            self.skipTest("Apple Archive verification tools are unavailable")
+
+        signed_bytes = SIGNED_SHORTCUT.read_bytes()
+        self.assertTrue(signed_bytes.startswith(b"AEA1"))
+        auth_length = int.from_bytes(signed_bytes[8:12], "little")
+        auth_data = plistlib.loads(signed_bytes[12 : 12 + auth_length])
+        certificate = auth_data["SigningCertificateChain"][0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            certificate_path = temp / "signing-certificate.der"
+            public_key_path = temp / "signing-public-key.pem"
+            archive_path = temp / "shortcut.aar"
+            extracted_path = temp / "extracted"
+            extracted_path.mkdir()
+            certificate_path.write_bytes(certificate)
+
+            subprocess.run(
+                [
+                    tools["openssl"],
+                    "x509",
+                    "-inform",
+                    "DER",
+                    "-in",
+                    str(certificate_path),
+                    "-pubkey",
+                    "-noout",
+                    "-out",
+                    str(public_key_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    tools["aea"],
+                    "decrypt",
+                    "-i",
+                    str(SIGNED_SHORTCUT),
+                    "-o",
+                    str(archive_path),
+                    "-sign-pub",
+                    str(public_key_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    tools["aa"],
+                    "extract",
+                    "-i",
+                    str(archive_path),
+                    "-d",
+                    str(extracted_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            source = _load_workflow()
+            signed = plistlib.loads((extracted_path / "Shortcut.wflow").read_bytes())
+            for key in (
+                "WFWorkflowActions",
+                "WFWorkflowImportQuestions",
+                "WFWorkflowIcon",
+                "WFWorkflowTypes",
+            ):
+                self.assertEqual(signed[key], source[key], key)
+
+    def test_payload_declares_a_single_day_schema_v3_snapshot(self) -> None:
         """The signed client must satisfy the backend completeness contract."""
         workflow = _load_workflow()
         payload = next(
@@ -137,7 +220,7 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
         )
         payload_items = _dictionary_items(payload)
 
-        self.assertEqual(_text_value(payload_items["schemaVersion"]["WFValue"]), "2")
+        self.assertEqual(_text_value(payload_items["schemaVersion"]["WFValue"]), "3")
 
         snapshot_item = payload_items["snapshot"]
         self.assertEqual(snapshot_item["WFItemType"], 1)
@@ -147,6 +230,15 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
                 "WFDictionaryFieldValueItems"
             ]
         }
+
+        self.assertEqual(_text_value(snapshot_items["collector"]["WFValue"]), "shortcut")
+
+        covered_families = snapshot_items["coveredMetricFamilies"]
+        self.assertEqual(covered_families["WFItemType"], 2)
+        self.assertEqual(
+            [_text_value(item["WFValue"]) for item in covered_families["WFValue"]["Value"]],
+            ["steps", "active_energy", "sleep", "hrv"],
+        )
 
         timezone_format = _current_date_format(snapshot_items["timezone"]["WFValue"])
         self.assertEqual(timezone_format["WFDateFormatStyle"], "Custom")

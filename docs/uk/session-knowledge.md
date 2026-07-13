@@ -285,4 +285,45 @@ docker build -t health-tracker .
 docker run --env-file .env -p 8000:8000 health-tracker
 ```
 
-Production startup використовує команду Dockerfile як єдиний авторитетний шлях міграції для Apple Health. Контейнер запускає `python -m app.db_preflight --apply-apple-health-migration` перед Uvicorn, а FastAPI lifespan повторно перевіряє потрібні таблиці та індекси Apple Health до обслуговування трафіку.
+Production startup використовує команду Dockerfile як єдиний авторитетний шлях
+міграції для Apple Health. Контейнер запускає
+`python -m app.db_preflight --apply-apple-health-migration` перед Uvicorn,
+застосовує міграції `007`, `009` і `010`, а FastAPI lifespan повторно перевіряє
+потрібні таблиці та індекси Apple Health до обслуговування трафіку. Preflight
+тримає один PostgreSQL advisory lock протягом migration і verification, тому
+паралельні старти replicas не змагаються за DDL. `database/init-db.sh` пропускає
+всі файли `*_rollback.sql` і вмикає `ON_ERROR_STOP` для migration files.
+
+### Операційні правила Apple Health schema v3
+
+- Native Shortcut має надсилати collector `shortcut`, offset-aware
+  `generatedAt`, timezone, дати й покриті сімейства метрик. Старі schema-v2
+  Shortcuts потрібно імпортувати заново.
+- Native payload не може видавати себе за collector `health_auto_export`.
+  Coverage використовує рівно один формат, не більш як 31 дату на сімейство та
+  вікно 30 днів у минуле / 1 день у майбутнє.
+- Значення метрик і durations мають бути finite, не від'ємними там, де це
+  потрібно, та обмеженими за magnitude до агрегації; DB constraints також
+  відхиляють NaN.
+- Сон рахується як об'єднання asleep-стадій. Awake та In Bed виключаються, крім
+  fallback In Bed мінус Awake, коли інших придатних даних немає; покриття лише
+  з Awake дорівнює нулю.
+- Нові імпорти зберігають лише оброблені рядки за сімействами. Сирі тіла запитів
+  не записуються в `health_data` і не пересилаються в Telegram.
+- Спочатку запускай `python -m app.backfill_apple_health` без видалення.
+  Використовуй `--delete-raw` лише після read-back і перевірки кількості рядків;
+  будь-яка residual purge помилка завершує процес із ненульовим кодом.
+  Destructive mode відмовляється від unsupported metrics і блокує concurrent
+  writers до фінальної residual-перевірки.
+- Під час rollout читачі спочатку timezone-фільтрують candidates, віддають
+  перевагу найновішому in-window live collector для кожної дати/сімейства, а
+  потім доповнюють пропуски зі schema v2, backfill і legacy raw джерел.
+- HAE приймає одну підтримувану метрику на automation і лише кумулятивні
+  periods Default/Today/Yesterday/Previous 7 Days з вимкненими Summarize Data
+  та Batch Requests. Обов'язкові custom headers:
+  `X-Health-Tracker-HAE-Mode: complete-unbatched-unaggregated-single-metric-v1`
+  та `X-Health-Tracker-Timezone`, а також client-minted
+  `X-Health-Tracker-Generated-At`, створений до dispatch. Стандартні прямі HAE
+  REST automations не можуть надати causal marker і fail closed; timestamps від
+  ingress proxy заборонені. Incremental, grouped, multi-metric та malformed
+  snapshots також fail closed.

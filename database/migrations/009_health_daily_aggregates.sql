@@ -46,6 +46,19 @@ CREATE TABLE IF NOT EXISTS health_daily_aggregates (
     CONSTRAINT health_daily_aggregates_sleep_check CHECK (sleep_seconds >= 0)
 );
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'health_daily_aggregates_natural_key'
+          AND conrelid = 'health_daily_aggregates'::regclass
+    ) THEN
+        ALTER TABLE health_daily_aggregates
+            ADD CONSTRAINT health_daily_aggregates_natural_key
+            UNIQUE (user_id, source, metric_date);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_health_daily_aggregates_user_id
     ON health_daily_aggregates(user_id);
 CREATE INDEX IF NOT EXISTS idx_health_daily_aggregates_user_date

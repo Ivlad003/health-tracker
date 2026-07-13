@@ -102,13 +102,13 @@ run_psql() {
 run_psql_file() {
     local file="$1"
     if command -v psql &> /dev/null; then
-        PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$file"
+        PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -f "$file"
     else
         docker run --rm -i \
             -e PGPASSWORD="$DB_PASS" \
             -v "$file:/tmp/migration.sql:ro" \
             postgres:15 \
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f /tmp/migration.sql
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -f /tmp/migration.sql
     fi
 }
 
@@ -134,6 +134,11 @@ for MIGRATION_FILE in "$SCRIPT_DIR"/migrations/*.sql; do
     if [ ! -f "$MIGRATION_FILE" ]; then
         continue
     fi
+
+    # Rollback scripts are operator-only recovery tools, never forward migrations.
+    case "$MIGRATION_NAME" in
+        *_rollback.sql) continue ;;
+    esac
 
     echo -e "${YELLOW}[...]${NC} Running migration: $MIGRATION_NAME..."
     if run_psql_file "$MIGRATION_FILE" 2>&1; then

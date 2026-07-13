@@ -6,8 +6,11 @@ import pytest
 
 
 class StatsPool:
-    def __init__(self, *, apple_rows=None, whoop_user=None):
+    def __init__(self, *, apple_rows=None, apple_v3_rows=None, apple_transition_rows=None, apple_raw_rows=None, whoop_user=None):
         self.apple_rows = apple_rows or []
+        self.apple_v3_rows = apple_v3_rows or []
+        self.apple_transition_rows = apple_transition_rows or []
+        self.apple_raw_rows = apple_raw_rows or []
         self.whoop_user = whoop_user
 
     async def fetchrow(self, query, *args):
@@ -18,20 +21,38 @@ class StatsPool:
         raise AssertionError(f"Unexpected fetchrow query: {query}")
 
     async def fetch(self, query, *args):
+        if "FROM health_daily_metric_aggregates" in query:
+            if "collector IN" in query:
+                return self.apple_transition_rows
+            return self.apple_v3_rows
         if "FROM health_daily_aggregates" in query:
             return self.apple_rows
+        if "FROM health_data" in query:
+            return self.apple_raw_rows
         raise AssertionError(f"Unexpected fetch query: {query}")
 
 
 class SummaryPool:
-    def __init__(self, rows):
-        self.rows = rows
+    def __init__(self, rows=None, *, v3_rows=None, transition_rows=None, raw_rows=None):
+        self.rows = rows or []
+        self.v3_rows = v3_rows or []
+        self.transition_rows = transition_rows or []
+        self.raw_rows = raw_rows or []
         self.fetch_args = None
+        self.queries = []
 
     async def fetch(self, query, *args):
-        assert "FROM health_daily_aggregates" in query
-        self.fetch_args = args
-        return self.rows
+        self.queries.append(query)
+        if "FROM health_daily_metric_aggregates" in query:
+            if "collector IN" in query:
+                return self.transition_rows
+            return self.v3_rows
+        if "FROM health_daily_aggregates" in query:
+            self.fetch_args = args
+            return self.rows
+        if "FROM health_data" in query:
+            return self.raw_rows
+        raise AssertionError(f"Unexpected fetch query: {query}")
 
 
 def daily_row(
@@ -63,6 +84,55 @@ def daily_row(
         "metrics": {"records_by_type": records_by_type or {}},
         "snapshot_generated_at": snapshot_generated_at,
         "updated_at": updated_at,
+    }
+
+
+def family_row(
+    metric_date,
+    family,
+    *,
+    tz="+03:00",
+    total=0,
+    average=None,
+    sample_count=0,
+    samples_received=0,
+    records_by_type=None,
+    snapshot_generated_at=None,
+    updated_at=None,
+):
+    return {
+        "metric_date": metric_date,
+        "metric_family": family,
+        "timezone": tz,
+        "total_value": total,
+        "average_value": average,
+        "sample_count": sample_count,
+        "samples_received": samples_received,
+        "metrics": {"records_by_type": records_by_type or {}},
+        "snapshot_generated_at": snapshot_generated_at,
+        "updated_at": updated_at,
+    }
+
+
+def raw_row(
+    metric_type,
+    value,
+    unit,
+    recorded_at,
+    *,
+    duration_seconds=None,
+    additional_data=None,
+    created_at=None,
+):
+    return {
+        "metric_type": metric_type,
+        "metric_subtype": None,
+        "value": value,
+        "unit": unit,
+        "recorded_at": recorded_at,
+        "duration_seconds": duration_seconds,
+        "additional_data": additional_data or {},
+        "created_at": created_at or recorded_at,
     }
 
 
@@ -124,6 +194,31 @@ async def test_get_apple_health_summary_reads_daily_aggregate_for_local_day(mock
 
 
 @pytest.mark.asyncio
+async def test_daily_reader_does_not_sum_adjacent_days_from_another_timezone(
+    mock_settings,
+):
+    from app.services.apple_health import get_apple_health_summary
+
+    start_at = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    pool = SummaryPool(
+        v3_rows=[
+            family_row(date(2026, 7, 10), "steps", tz="UTC", total=100),
+            family_row(date(2026, 7, 11), "steps", tz="UTC", total=200),
+        ]
+    )
+
+    summary = await get_apple_health_summary(
+        pool,
+        7,
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+    assert summary["steps"] == 200
+
+
+@pytest.mark.asyncio
 async def test_get_apple_health_summary_reads_sleep_hours_from_daily_aggregate(mock_settings):
     from app.services.apple_health import get_apple_health_summary
 
@@ -136,6 +231,132 @@ async def test_get_apple_health_summary_reads_sleep_hours_from_daily_aggregate(m
     summary = await get_apple_health_summary(pool, 7, start_at=start_at, end_at=end_at)
 
     assert summary["sleep_hours"] == 7.5
+
+
+@pytest.mark.asyncio
+async def test_get_apple_health_summary_overlays_v3_by_family_before_legacy(mock_settings):
+    from app.services.apple_health import get_apple_health_summary
+
+    start_at = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    marker = datetime(2026, 7, 11, 20, 0, tzinfo=timezone.utc)
+    pool = SummaryPool(
+        [
+            daily_row(
+                date(2026, 7, 11),
+                steps=999,
+                avg_hrv_ms=44,
+                hrv_samples=2,
+                sleep_seconds=27000,
+                records_by_type={
+                    "step_count": 1,
+                    "heart_rate_variability": 2,
+                    "sleep_analysis": 3,
+                },
+            )
+        ],
+        v3_rows=[
+            family_row(
+                date(2026, 7, 11),
+                "steps",
+                total=5000,
+                sample_count=1,
+                samples_received=1,
+                records_by_type={"step_count": 1},
+                snapshot_generated_at=marker,
+            )
+        ],
+    )
+
+    summary = await get_apple_health_summary(pool, 7, start_at=start_at, end_at=end_at)
+
+    assert summary["steps"] == 5000
+    assert summary["avg_hrv_ms"] == 44
+    assert summary["sleep_hours"] == 7.5
+    assert summary["latest_metric_at"] == marker
+    assert any("collector NOT IN" in query for query in pool.queries)
+
+
+@pytest.mark.asyncio
+async def test_get_apple_health_summary_treats_zero_v3_family_as_authoritative(mock_settings):
+    from app.services.apple_health import get_apple_health_summary
+
+    start_at = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    pool = SummaryPool(
+        [daily_row(date(2026, 7, 11), sleep_seconds=28800)],
+        v3_rows=[family_row(date(2026, 7, 11), "sleep", total=0)],
+        raw_rows=[
+            raw_row(
+                "sleep_analysis",
+                0,
+                "s",
+                datetime(2026, 7, 10, 22, 0, tzinfo=timezone.utc),
+                duration_seconds=7 * 3600,
+                additional_data={"stage": "Core"},
+            )
+        ],
+    )
+
+    summary = await get_apple_health_summary(pool, 7, start_at=start_at, end_at=end_at)
+
+    assert summary["sleep_hours"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_apple_health_summary_falls_back_to_raw_per_missing_family(mock_settings):
+    from app.services.apple_health import get_apple_health_summary
+
+    start_at = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    pool = SummaryPool(
+        raw_rows=[
+            raw_row(
+                "step_count",
+                1200,
+                "count",
+                datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc),
+            ),
+            raw_row(
+                "sleep_analysis",
+                0,
+                "s",
+                datetime(2026, 7, 10, 22, 0, tzinfo=timezone.utc),
+                duration_seconds=7 * 3600,
+                additional_data={"stage": "Core"},
+            ),
+        ]
+    )
+
+    summary = await get_apple_health_summary(pool, 7, start_at=start_at, end_at=end_at)
+
+    assert summary["steps"] == 1200
+    assert summary["sleep_hours"] == 7.0
+    assert summary["metric_counts"] == {"step_count": 1, "sleep_analysis": 1}
+
+
+@pytest.mark.asyncio
+async def test_get_apple_health_summary_normalizes_legacy_active_energy_kj(
+    mock_settings,
+):
+    from app.services.apple_health import get_apple_health_summary
+
+    start_at = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    pool = SummaryPool(
+        raw_rows=[
+            raw_row(
+                "active_energy",
+                418.4,
+                "kJ",
+                datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc),
+            )
+        ]
+    )
+
+    summary = await get_apple_health_summary(pool, 7, start_at=start_at, end_at=end_at)
+
+    assert summary["active_energy_kcal"] == 100
 
 
 @pytest.mark.asyncio

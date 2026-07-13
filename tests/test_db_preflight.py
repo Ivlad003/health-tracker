@@ -5,6 +5,7 @@ import pytest
 from app.db_preflight import (
     AppleHealthSchemaError,
     REQUIRED_APPLE_HEALTH_CONSTRAINTS,
+    REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE,
     REQUIRED_APPLE_HEALTH_INDEXES,
     REQUIRED_APPLE_HEALTH_TABLES,
     apply_apple_health_migration,
@@ -22,16 +23,34 @@ class FakeConnection:
         self.executed = []
         self.closed = False
 
-    async def execute(self, sql):
+    async def execute(self, sql, *args):
         self.executed.append(sql)
 
-    async def fetch(self, query, names):
+    async def fetch(self, query, *args):
+        names = args[-1]
         if "information_schema.tables" in query:
             return [{"table_name": name} for name in self.tables.intersection(names)]
         if "pg_indexes" in query:
             return [{"indexname": name} for name in self.indexes.intersection(names)]
         if "pg_constraint" in query:
-            return [{"conname": name} for name in self.constraints.intersection(names)]
+            table_names = set(args[0])
+            rows = []
+            for constraint in self.constraints:
+                if isinstance(constraint, tuple):
+                    table_name, name = constraint
+                else:
+                    name = constraint
+                    table_name = next(
+                        (
+                            table
+                            for table, expected in REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE.items()
+                            if name in expected
+                        ),
+                        "other_table",
+                    )
+                if table_name in table_names and name in names:
+                    rows.append({"table_name": table_name, "conname": name})
+            return rows
         return []
 
     async def close(self):
@@ -60,6 +79,29 @@ async def test_verify_apple_health_schema_fails_with_sanitized_missing_objects()
     assert "apple_health_sync" in message
     assert "idx_apple_health_sync_secret_key" in message
     assert "postgresql://" not in message
+
+
+@pytest.mark.asyncio
+async def test_verify_schema_rejects_constraint_name_on_wrong_relation():
+    constraint_pairs = {
+        (table_name, constraint_name)
+        for table_name, names in REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE.items()
+        for constraint_name in names
+    }
+    target = (
+        "health_daily_metric_aggregates",
+        "health_daily_metric_aggregates_natural_key",
+    )
+    constraint_pairs.remove(target)
+    constraint_pairs.add(("other_table", target[1]))
+    conn = FakeConnection(
+        tables=REQUIRED_APPLE_HEALTH_TABLES,
+        indexes=REQUIRED_APPLE_HEALTH_INDEXES,
+        constraints=constraint_pairs,
+    )
+
+    with pytest.raises(AppleHealthSchemaError, match="natural_key"):
+        await verify_apple_health_schema(conn)
 
 
 @pytest.mark.asyncio
@@ -93,23 +135,59 @@ async def test_run_preflight_applies_migration_before_verifying(monkeypatch):
 
     await run_preflight(apply_migration=True)
 
-    # run_preflight now applies BOTH 007 and 009: the base connector tables and
-    # the processed daily aggregate table.
+    # run_preflight applies 007, 009, and 010 in order.
     assert any("CREATE TABLE IF NOT EXISTS apple_health_sync" in sql for sql in conn.executed)
     assert any(
         "CREATE TABLE IF NOT EXISTS health_daily_aggregates" in sql for sql in conn.executed
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS health_daily_metric_aggregates" in sql
+        for sql in conn.executed
     )
     assert conn.closed is True
 
 
 @pytest.mark.asyncio
-async def test_apply_apple_health_migrations_applies_both_files():
+async def test_run_preflight_holds_advisory_lock_through_apply_and_verify(monkeypatch):
+    conn = FakeConnection(
+        tables=REQUIRED_APPLE_HEALTH_TABLES,
+        indexes=REQUIRED_APPLE_HEALTH_INDEXES,
+        constraints=REQUIRED_APPLE_HEALTH_CONSTRAINTS,
+    )
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://test:test@localhost/test")
+
+    async def fake_connect(dsn):
+        return conn
+
+    monkeypatch.setattr("app.db_preflight.asyncpg.connect", fake_connect)
+
+    await run_preflight(apply_migration=True)
+
+    lock_index = conn.executed.index("SELECT pg_advisory_lock($1::bigint)")
+    migration_index = next(
+        index
+        for index, sql in enumerate(conn.executed)
+        if "CREATE TABLE IF NOT EXISTS apple_health_sync" in sql
+    )
+    unlock_index = conn.executed.index("SELECT pg_advisory_unlock($1::bigint)")
+    assert lock_index < migration_index < unlock_index
+
+
+@pytest.mark.asyncio
+async def test_apply_apple_health_migrations_applies_all_files():
     conn = FakeConnection()
 
     await apply_apple_health_migrations(conn)
 
-    # Both ordered migration files are executed (007 connector + 009 aggregate).
+    # All ordered migration files are executed (007 connector + 009/010 aggregates).
     assert any("CREATE TABLE IF NOT EXISTS apple_health_sync" in sql for sql in conn.executed)
     assert any(
         "CREATE TABLE IF NOT EXISTS health_daily_aggregates" in sql for sql in conn.executed
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS health_daily_metric_aggregates" in sql
+        for sql in conn.executed
     )

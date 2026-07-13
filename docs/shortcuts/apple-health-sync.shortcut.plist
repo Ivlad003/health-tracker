@@ -114,7 +114,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>WFCommentActionText</key>
-				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, copy it to a temporary file ending in .shortcut and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. Four Find Health Samples queries (Steps, Active Calories, Sleep, Heart Rate Variability SDNN) each loop over their samples and append one metric dictionary to the Metrics variable, which becomes the metrics list of a single POST. Point-in-time queries use Start Date is today; Sleep uses End Date is today so an overnight interval is included without declaring yesterday as a complete day. This posts a COMPLETE current-calendar-day snapshot: the Shortcut adds schemaVersion 2 plus snapshot.timezone, snapshot.coveredDates, and snapshot.generatedAt alongside sourceType and the metrics list. Sleep samples send value 0 with start/end ISO timestamps because Shortcuts renders sleep Value and Duration as localized text; the server derives the duration from the end field and attributes each sleep sample to the local date it ENDS, which is the covered date. The server rejects legacy rolling-window payloads that lack the snapshot envelope. Server-side ingestion remains the source of truth for validation and normalization.</string>
+				<string>This is the editable source for Health Tracker Apple Health sync. Publish the signed docs/shortcuts/apple-health-sync.shortcut file. If this source changes, copy it to a temporary file ending in .shortcut and sign it with shortcuts sign --mode anyone. The import question replaces the webhook URL with the per-user URL from Telegram. Four Find Health Samples queries (Steps, Active Calories, Sleep, Heart Rate Variability SDNN) each loop over their samples and append one metric dictionary to the Metrics variable, which becomes the metrics list of a single POST. Point-in-time queries use Start Date is today; Sleep uses End Date is today so an overnight interval is included without declaring yesterday as a complete day. This posts a COMPLETE current-calendar-day snapshot: the Shortcut adds schemaVersion 3 plus snapshot.collector, snapshot.timezone, snapshot.coveredDates, snapshot.coveredMetricFamilies, and snapshot.generatedAt alongside sourceType and the metrics list. Sleep samples send value 0 with start/end ISO timestamps because Shortcuts renders sleep Value and Duration as localized text; the server derives the duration from the end field and attributes each sleep sample to the local date it ENDS, which is the covered date. The server rejects legacy rolling-window payloads that lack the snapshot envelope. Server-side ingestion remains the source of truth for validation and normalization.</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1366,7 +1366,7 @@
 									<key>Value</key>
 									<dict>
 										<key>string</key>
-										<string>2</string>
+										<string>3</string>
 									</dict>
 								</dict>
 							</dict>
@@ -1391,6 +1391,30 @@
 										<dict>
 											<key>WFDictionaryFieldValueItems</key>
 											<array>
+												<dict>
+													<key>WFItemType</key>
+													<integer>0</integer>
+													<key>WFKey</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>collector</string>
+														</dict>
+													</dict>
+													<key>WFValue</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>shortcut</string>
+														</dict>
+													</dict>
+												</dict>
 												<dict>
 													<key>WFItemType</key>
 													<integer>0</integer>
@@ -1484,6 +1508,84 @@
 																	</dict>
 																	<key>WFSerializationType</key>
 																	<string>WFTextTokenString</string>
+																</dict>
+															</dict>
+														</array>
+														<key>WFSerializationType</key>
+														<string>WFArrayParameterState</string>
+													</dict>
+												</dict>
+												<dict>
+													<key>WFItemType</key>
+													<integer>2</integer>
+													<key>WFKey</key>
+													<dict>
+														<key>WFSerializationType</key>
+														<string>WFTextTokenString</string>
+														<key>Value</key>
+														<dict>
+															<key>string</key>
+															<string>coveredMetricFamilies</string>
+														</dict>
+													</dict>
+													<key>WFValue</key>
+													<dict>
+														<key>Value</key>
+														<array>
+															<dict>
+																<key>WFItemType</key>
+																<integer>0</integer>
+																<key>WFValue</key>
+																<dict>
+																	<key>WFSerializationType</key>
+																	<string>WFTextTokenString</string>
+																	<key>Value</key>
+																	<dict>
+																		<key>string</key>
+																		<string>steps</string>
+																	</dict>
+																</dict>
+															</dict>
+															<dict>
+																<key>WFItemType</key>
+																<integer>0</integer>
+																<key>WFValue</key>
+																<dict>
+																	<key>WFSerializationType</key>
+																	<string>WFTextTokenString</string>
+																	<key>Value</key>
+																	<dict>
+																		<key>string</key>
+																		<string>active_energy</string>
+																	</dict>
+																</dict>
+															</dict>
+															<dict>
+																<key>WFItemType</key>
+																<integer>0</integer>
+																<key>WFValue</key>
+																<dict>
+																	<key>WFSerializationType</key>
+																	<string>WFTextTokenString</string>
+																	<key>Value</key>
+																	<dict>
+																		<key>string</key>
+																		<string>sleep</string>
+																	</dict>
+																</dict>
+															</dict>
+															<dict>
+																<key>WFItemType</key>
+																<integer>0</integer>
+																<key>WFValue</key>
+																<dict>
+																	<key>WFSerializationType</key>
+																	<string>WFTextTokenString</string>
+																	<key>Value</key>
+																	<dict>
+																		<key>string</key>
+																		<string>hrv</string>
+																	</dict>
 																</dict>
 															</dict>
 														</array>

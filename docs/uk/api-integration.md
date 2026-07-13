@@ -216,13 +216,17 @@ Authorization: Bearer {access_token}
 
 ## Apple Health Sync
 
-Apple Health не має backend Web API. Підтримані способи налаштування:
+Apple Health не має backend Web API. Підтриманий прямий спосіб налаштування:
 
 - **Native iOS Shortcuts, без встановлення додаткових застосунків** —
   рекомендований low-friction шлях для користувачів, які не хочуть сторонній
   застосунок.
-- **Health Auto Export iOS app** — простіший інтерфейс регулярного експорту,
-  але потрібно встановити сторонній застосунок *Health Auto Export — JSON+CSV*.
+
+JSON у форматі HAE приймається лише від розширеної клієнтської обгортки, яка
+може сформувати причинну часову мітку експорту до мережевого запиту. Стандартна
+REST-автоматизація *Health Auto Export — JSON+CSV* не підтримується як прямий
+клієнт, оскільки її користувацькі заголовки статичні й не містять часу створення
+експорту.
 
 Справжнього backend-only або zero-device-setup способу для Apple Health немає,
 бо дані Apple Health залишаються на iPhone користувача, доки iOS їх не надішле.
@@ -290,7 +294,7 @@ picker може відрізнятися залежно від версії iOS.
 Після зміни шаблону Shortcut наявні користувачі мають видалити раніше
 імпортований Shortcut, імпортувати його заново за тим самим посиланням і
 дозволити доступ до Health для типів даних (дозволи Health видаються окремо на
-кожен тип). Сервер відхиляє стару імпортовану копію без schema-v2 snapshot
+кожен тип). Сервер відхиляє стару імпортовану копію без schema-v3 snapshot
 envelope.
 
 Backend віддає підписаний artifact тут:
@@ -327,10 +331,12 @@ Content-Type: application/json
 ```json
 {
   "sourceType": "apple_health",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "snapshot": {
+    "collector": "shortcut",
     "timezone": "+03:00",
     "coveredDates": ["2026-07-11"],
+    "coveredMetricFamilies": ["steps", "active_energy", "sleep", "hrv"],
     "generatedAt": "2026-07-11T10:05:00+03:00"
   },
   "metrics": [
@@ -354,10 +360,16 @@ Content-Type: application/json
 
 `snapshot.timezone` — це назва IANA (наприклад, `"Europe/Kyiv"`) або фіксований
 зсув UTC (наприклад, `"+03:00"`). Готовий Shortcut форматує поточний зсув
-пристрою як `XXXXX`. Єдиний елемент `snapshot.coveredDates` — поточна локальна
-дата: точкові семпли використовують **Start Date is today**, а сон — **End Date
-is today**. Поточний день — це знімок «повний станом на зараз», який замінює
-пізніша синхронізація. `snapshot.generatedAt` фіксує час створення snapshot.
+пристрою як `XXXXX`. `snapshot.collector` — стабільний ідентифікатор відправника,
+а `snapshot.generatedAt` — offset-aware timestamp свіжості, за яким упорядковуються
+snapshots цього collector. Єдиний елемент `snapshot.coveredDates` — поточна
+локальна дата, а `coveredMetricFamilies` оголошує сімейства, повні станом на
+момент sync. Точкові семпли використовують **Start Date is today**, а сон —
+**End Date is today**.
+Приймаються лише live collectors `shortcut` і `health_auto_export`; native
+webhook payload має використовувати `shortcut`. Кожне сімейство може покривати
+не більш як 31 дату в межах 30 днів до ingestion або одного дня після нього,
+а payload має використовувати рівно один із двох форматів опису coverage.
 
 Згенерований URL вже містить Telegram user ID (`users.telegram_user_id`) і
 персональний token, тому в Shortcut достатньо вказати URL, `Content-Type:
@@ -367,38 +379,91 @@ application/json` і payload з метриками. **Не додавай пол
 `X-Apple-Health-Token` header і поле `userId` у body (для зворотної сумісності).
 Метрики старші за 30 днів відхиляються. Дані Apple Health більше **не**
 записуються в уніфіковану таблицю `health_data`. Сервер парсить і агрегує знімок
-у пам'яті та зберігає один оброблений денний рядок на (`user_id`, `source`,
-`metric_date`) у новій таблиці `health_daily_aggregates` (міграція
-`009_health_daily_aggregates.sql`, сумісна з PG14/PG15; попередня міграція
-`008_health_data_natural_key.sql` лише для PG15 була відкликана). Зберігання
-сирих семплів для Apple Health дорівнює **0** — у `health_data` не пишуться рядки.
+у пам'яті та зберігає один оброблений рядок на (`user_id`, `source`, `collector`,
+`metric_date`, `metric_family`) у таблиці `health_daily_metric_aggregates`
+(міграція `010_health_daily_metric_aggregates.sql`). Таблиця schema v2
+`health_daily_aggregates` залишається доступною для читання під час rollout.
+Зберігання сирих семплів для нових імпортів Apple Health дорівнює **0** — у
+`health_data` не пишуться рядки, а сире тіло запиту ніколи не пересилається в
+Telegram. Telegram отримує лише санітизований підсумок з лічильниками. Webhook
+потоково приймає не більш як 5 MiB, повертає HTTP 413 до парсингу більшого тіла
+та відображає malformed або надмірно вкладений JSON у HTTP 400.
 
-#### Модель денної агрегації (зберігання сирих даних 0)
+#### Модель агрегації за сімействами (зберігання сирих даних 0)
 
-- **Конверт знімка (обовʼязковий).** Кожен POST має містити `schemaVersion: 2`
-  плюс `snapshot.timezone` і `snapshot.coveredDates`. `coveredDates` — це
-  локальні календарні дні, які цей знімок повністю покриває. Готовий Shortcut
-  заявляє лише поточну локальну дату, запитує точкові метрики від локальної
-  `00:00` і включає інтервали сну, дата завершення яких дорівнює покритій даті.
-  Поточний день — це знімок «повний станом на зараз», який замінює пізніша
-  синхронізація.
-- **Ідемпотентність через заміну.** Агрегат кожного покритого дня **замінюється**,
-  а не інкрементується. Повторне надсилання того самого знімка не змінює
-  значення; новіший, повніший знімок для того самого дня перезаписує його — без
-  подвійного підрахунку.
-- **День атрибуції має бути покритий.** День атрибуції кожного семпла (локальна
-  дата його `timestamp`; для сну — локальна дата, коли він **завершується**) має
-  входити в `coveredDates`, інакше знімок відхиляється як частковий/неоднозначний.
+- **Конверт знімка (обовʼязковий).** Кожен POST має містити `schemaVersion: 3`,
+  `snapshot.collector`, offset-aware `snapshot.generatedAt`,
+  `snapshot.timezone` і або `coveredDates` разом із `coveredMetricFamilies`, або
+  `coveredDatesByFamily`. Готовий Shortcut оголошує поточну локальну дату та
+  чотири сімейства, які він фактично запитав.
+- **Повнота за сімействами.** Замінюються лише оголошені сімейства. Порожнє
+  покрите сімейство записує авторитетний нуль, не стираючи інші метрики,
+  зібрані іншим запитом чи інтеграцією.
+- **Свіжість та ідемпотентність.** Новіший snapshot того самого collector
+  замінює його рядок сімейства. Явне новіше спостереження підвищує freshness,
+  навіть якщо оброблений total не змінився. Той самий timestamp і вміст є replay,
+  старіший snapshot ігнорується як stale, а той самий timestamp свіжості з
+  іншими обробленими даними повертає HTTP 409. Для HAE freshness відстежується
+  окремо за family/date, тому новіший семпл одного сімейства не робить старі дані
+  іншого сімейства новішими.
+- **День атрибуції має бути покритий.** День атрибуції кожного семпла
+  (offset-aware локальна дата його timestamp; для сну — локальна дата end
+  timestamp) має бути оголошений для цього сімейства. Закодований у timestamp
+  offset зберігається під час переходів DST замість застосування одного
+  фіксованого offset до всього export. Неоголошені дні відхиляються як часткові
+  або неоднозначні.
 - **Застарілі payloads відхиляються, а не мержаться.** Payloads без
-  `schemaVersion: 2`, `snapshot.timezone` чи `snapshot.coveredDates` відхиляються
+  метаданих повноти й свіжості schema v3 відхиляються
   з дієвою помилкою «Re-import the latest Shortcut…». Це навмисно: старий payload
   зі змінним вікном не міг гарантувати повні дні.
-- **Health Auto Export і далі працює.** Для шляху HAE сервер синтезує конверт
-  автоматично (`coveredDates: "auto"`, timezone береться зі зсуву семплів), тож
-  ця інтеграція не потребує змін.
+- **HAE-shaped JSON працює за строгим raw-snapshot контрактом.** Кожен request
+  експортує рівно одну unaggregated метрику. Сервер виводить повне покриття цього
+  сімейства з attested date period та явного `X-Health-Tracker-Timezone`, тому
+  покритий день без точки записується як нуль, а не залишає застаріле значення.
+  Кожен request також має містити `X-Health-Tracker-Generated-At`, створений на
+  клієнті разом із export і до network dispatch. Receipt time та mutable
+  timestamps семплів HealthKit ніколи не визначають порядок snapshots.
+- **Сон враховує стадії.** Core, REM, Deep та інші asleep-стадії об'єднуються;
+  Awake та In Bed не збільшують тривалість сну. Якщо asleep-стадій немає,
+  fallback — об'єднання In Bed мінус Awake. День лише з Awake зберігає нуль.
+  Відомі українські назви стадій Apple нормалізуються до тих самих канонічних
+  стадій; невідома локалізована назва ігнорується та враховується в діагностиці,
+  а не вважається сном.
+- **Перехідне читання.** Статистика спочатку фільтрує candidate rows за запитаним
+  вікном у timezone кожного рядка, потім окремо для кожної дати й сімейства
+  вибирає найновіший in-window live collector. Відсутні значення доповнюються зі
+  schema-v2 aggregates, migration/backfill рядків і наостанок legacy raw samples.
+  Різні live collectors одного сімейства ніколи не сумуються.
 - **Відповідь синхронізації / підсумок у Telegram.** Відповідь тепер повідомляє:
-  отримано семплів, агреговано семплів, оновлено рядків агрегації, помилки та
-  `raw stored: 0`.
+  отримано й агреговано семплів, оновлено/replayed/stale рядків сімейств,
+  помилки та `raw stored: 0`.
+
+#### Backfill застарілих сирих даних
+
+Міграція `010` є адитивною. Спочатку виконай backfill застарілих рядків Apple
+Health без їх видалення:
+
+```bash
+python -m app.backfill_apple_health
+```
+
+Timezone за замовчуванням — `Europe/Kyiv`, а створені рядки мають collector
+`legacy_backfill`. Після перевірки читання застосунком і кількості рядків
+оператор може явно запустити contract phase:
+
+```bash
+python -m app.backfill_apple_health --delete-raw
+```
+
+Delete mode видаляє лише точні ID сирих рядків, заблокованих і перевірених у
+цьому запуску, звіряє набір повернутих ID та завершується з ненульовим кодом за
+будь-якої помилки backfill або residual purge. Він відмовляється видаляти
+непідтримувані raw metric types і тримає writer-blocking table lock до фінальної
+перевірки нульової кількості рядків. Неруйнівний режим за
+замовчуванням треба зберегти для rollback.
+Rollback-скрипти `009` і `010` також fail closed, якщо відповідна aggregate
+table містить рядки, та беруть exclusive lock до перевірки; експортуй дані або
+застосуй forward fix замість тихого видалення обробленої Health-історії.
 
 Endpoint очікує JSON, але якщо тіло не є валідним JSON, він пробує розпарсити
 його як Apple property list (бінарний `bplist00` або XML plist). Це покриває
@@ -441,9 +506,11 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
    без часу для покритої дати, custom format `XXXXX` для UTC offset та ISO 8601
    з часом для `generatedAt`. Поклади покриту дату в одноелементний **List**,
    потім створи Dictionary `snapshot` з `timezone`, `coveredDates` і
-   `generatedAt`. Додай фінальну дію **Dictionary** для request body:
+`generatedAt`. Також задай `collector` як `shortcut` і додай List
+   `coveredMetricFamilies`, що містить лише сімейства, які запитує цей Shortcut.
+   Додай фінальну дію **Dictionary** для request body:
    - `sourceType`: `apple_health`
-   - `schemaVersion`: `2`
+   - `schemaVersion`: `3`
    - `dataType`: `activity`
    - `snapshot`: Dictionary snapshot
    - `metrics`: list variable `metrics`
@@ -454,13 +521,15 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
    - Request Body: **JSON** або **Dictionary**, використай request body
      dictionary з кроку 8.
 10. Запусти Shortcut один раз вручну. Успішний перший sync повертає JSON на
-    кшталт `{"schema_version": 2, "records_received": 1,
-    "records_aggregated": 1, "aggregate_rows_updated": 1, "raw_stored": 0,
-    "records_failed": 0}`.
+    кшталт `{"schema_version": 3, "records_received": 1,
+    "records_aggregated": 1, "aggregate_rows_updated": 1,
+    "aggregate_rows_replayed": 0, "aggregate_rows_stale": 0,
+    "raw_stored": 0, "records_failed": 0}`.
 
-Для додаткових Health-метрик повтори той самий шаблон і зміни `type`, `unit` та
-`dataType`. Тримай timestamps у форматі ISO 8601, а кожну метрику — новішою за
-30 днів.
+Для іншого підтримуваного сімейства повтори той самий шаблон і оголоси його в
+`coveredMetricFamilies`. Підтримуються steps, active energy, heart rate, HRV і
+sleep. Тримай timestamps у форматі ISO 8601, а кожну метрику — новішою за 30
+днів. Непідтримувані типи потрапляють у діагностику, але не зберігаються.
 
 ### Health Auto Export iOS app (сторонній застосунок)
 
@@ -470,22 +539,32 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
 розгортає кожну точку `data[]` в окрему внутрішню метрику й пропускає її через
 ту саму пайплайн-обробку.
 
-Налаштування:
+Стандартна REST automation Health Auto Export **не підтримується як прямий
+schema-v3 sync client**: HAE документує статичні custom headers, але не надає
+causal timestamp, створений разом з export. Фіксоване значення
+`X-Health-Tracker-Generated-At` або `now()` на ingress proxy є небезпечними:
+другий варіант лише перейменовує receipt order. Для прямого sync з iPhone
+використовуй native Apple Shortcut вище.
 
-1. У Telegram виконай `/connect_apple_health` і скопіюй URL. Запусти команду
-   повторно пізніше, якщо потрібно відкликати старий URL і створити новий.
-2. Встанови **Health Auto Export — JSON+CSV** з App Store.
-3. Додай нову автоматизацію в застосунку:
-   - Output: **JSON (REST API)**
-   - URL: встав URL з кроку 1
-   - Aggregation: наприклад, hourly або daily
-   - Metrics: обери будь-які (або **All**)
-4. Запусти один раз для перевірки. Сервер поверне `{"records_received": N,
-   "records_aggregated": M, "aggregate_rows_updated": D, "raw_stored": 0,
-   ...}`.
+Advanced client-side wrapper може пересилати HAE-shaped JSON лише якщо він
+створює timestamp до dispatch і надсилає весь контракт:
 
-Цей шлях не потребує створення iOS Shortcut, але потребує встановлення й
-налаштування стороннього застосунку Health Auto Export.
+- `automation-period`: `default`, `none` (трактується як Default), `today`,
+  `yesterday` або `previous7days`; incremental/realtime periods відхиляються.
+- `automation-aggregation: none`, Batch Requests off і рівно одна підтримувана
+  метрика. HAE агрегує кілька вибраних метрик, тому multi-metric requests
+  відхиляються; sleep має складатися з unaggregated segments.
+- `X-Health-Tracker-HAE-Mode: complete-unbatched-unaggregated-single-metric-v1`.
+- `X-Health-Tracker-Timezone`: IANA timezone на кшталт `Europe/Kyiv` або
+  фіксований offset, наприклад `+03:00`.
+- `X-Health-Tracker-Generated-At`: offset-aware timestamp, створений разом із
+  цим export до відправлення HTTP request.
+
+Request має бути меншим за 5 MiB. Malformed points та aggregated sleep fail
+closed. Новіший valid marker може авторитетно очистити period через `data: []`;
+старіший marker є stale, а різний content під тим самим marker повертає `409`.
+Прийняті sleep segments зберігають `startDate`, `endDate` та `value`; `Awake` й
+`In Bed` ніколи не перемарковуються як asleep.
 
 ---
 
