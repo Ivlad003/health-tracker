@@ -2,10 +2,12 @@ import json
 import logging
 import platform
 import queue
+import re
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -108,11 +110,40 @@ class NewRelicLogHandler(logging.Handler):
         super().close()
 
 
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)\b(token|oauth_token|oauth_verifier|code|state|access_token|refresh_token)=([^&\s\"']+)"
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask credential-bearing query parameters (Apple Health token, OAuth codes)."""
+    return _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=***", text)
+
+
+class SecretRedactingFilter(logging.Filter):
+    """Redact secrets from log records before any handler formats them.
+
+    The Apple Health Shortcut authenticates with `?token=` in the URL, and
+    uvicorn's access log prints full request paths.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_secrets(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_secrets(arg) if isinstance(arg, str) else arg for arg in record.args
+            )
+        return True
+
+
 # --- Logging setup ---
 handlers: list[logging.Handler] = []
+_redactor = SecretRedactingFilter()
 
 stdout_handler = logging.StreamHandler(sys.stdout)
 stdout_handler.setFormatter(JSONFormatter())
+stdout_handler.addFilter(_redactor)
 handlers.append(stdout_handler)
 
 if settings.new_relic_license_key:
@@ -120,12 +151,17 @@ if settings.new_relic_license_key:
         api_key=settings.new_relic_license_key,
         app_name="app_bot_health",
     )
+    nr_handler.addFilter(_redactor)
     handlers.append(nr_handler)
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     handlers=handlers,
 )
+# uvicorn's access/error loggers use their own handlers (propagate=False), so
+# attach the redactor at the logger level as well.
+for _uvicorn_logger in ("uvicorn.access", "uvicorn.error"):
+    logging.getLogger(_uvicorn_logger).addFilter(_redactor)
 logger = logging.getLogger(__name__)
 
 
@@ -157,16 +193,49 @@ app = FastAPI(title="Health Tracker API", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict:
     return {"status": "ok"}
 
 
-from app.routers.utils import router as utils_router
-from app.routers.fatsecret import router as fatsecret_router
-from app.routers.whoop import router as whoop_router
-from app.routers.apple_health import router as apple_health_router
+# Routers import services that read settings; keep them after logging setup.
+from app.routers.utils import router as utils_router  # noqa: E402
+from app.routers.fatsecret import router as fatsecret_router  # noqa: E402
+from app.routers.whoop import router as whoop_router  # noqa: E402
+from app.routers.apple_health import router as apple_health_router  # noqa: E402
+from app.routers.webapp import router as webapp_router  # noqa: E402
+from app.routers.admin import router as admin_router  # noqa: E402
 
 app.include_router(utils_router)
 app.include_router(fatsecret_router)
 app.include_router(whoop_router)
 app.include_router(apple_health_router)
+app.include_router(webapp_router)
+app.include_router(admin_router)
+
+
+# Telegram Web App frontend. A built bundle in web/dist is served under /app/;
+# until the frontend exists, /app/ shows an "Open in Telegram" entry page
+# (a normal browser never gets an auth bypass: the API requires initData).
+_WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
+_WEBAPP_PLACEHOLDER = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Health Tracker</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:var(--tg-theme-bg-color,#0a0a0a);color:var(--tg-theme-text-color,#e4e4e7);
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;
+text-align:center}</style></head><body><div><h1>Health Tracker</h1>
+<p>Open this app from the Telegram bot (/app). / Відкрийте застосунок з Telegram-бота (/app).</p>
+</div></body></html>"""
+
+if _WEB_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/app", StaticFiles(directory=_WEB_DIST, html=True), name="webapp")
+else:
+    from fastapi.responses import HTMLResponse
+
+    @app.get("/app/", include_in_schema=False)
+    @app.get("/app", include_in_schema=False)
+    async def webapp_placeholder() -> HTMLResponse:
+        return HTMLResponse(_WEBAPP_PLACEHOLDER)

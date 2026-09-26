@@ -38,6 +38,35 @@ grant_type=client_credentials
 }
 ```
 
+Застосунок кешує цей client-credentials токен у пам'яті до моменту за 5 хвилин
+до `expires_in` (`get_oauth2_token()`), замість запиту нового токена на кожен
+пошук продукту.
+
+### Два набори облікових даних: OAuth 2.0 vs OAuth 1.0
+
+| | OAuth 2.0 (публічна база) | OAuth 1.0 (щоденник користувача) |
+|---|---|---|
+| Ключ | Client ID | Consumer Key (те саме значення) |
+| Секрет | `FATSECRET_CLIENT_SECRET` | `FATSECRET_SHARED_SECRET` (**інший**) |
+| Для чого | `foods.search`, `food.get.v4` | `food_entries.get.v2`, `food_entry.create.v2` |
+
+Підключення OAuth 1.0: `/connect_fatsecret` → `GET /fatsecret/connect?state=…`
+→ згода у FatSecret → `GET /fatsecret/callback?oauth_token&oauth_verifier&state`.
+`state` — HMAC-підписане значення з терміном дії 1 година, прив'язане до
+призначення `fatsecret` (той самий механізм, що й для WHOOP). Відповіді з
+токенами парсяться через `parse_qsl` і **ніколи не логуються** — вони містять
+постійні облікові дані користувача.
+
+FatSecret повертає HTTP 200 з тілом `{"error": {...}}` у разі помилки. Коди
+2/4/8/13/14 кидають `FatSecretAuthError` (токени очищаються, користувача
+просять перепідключитись); будь-яке інше тіло помилки кидає `FatSecretAPIError`.
+`food_entry.create.v2` повертає `False` на тіло помилки, і тоді бот зберігає
+запис у локальній таблиці `food_entries`, щоб він не загубився.
+
+`date` щоденника (днів від epoch) рахується за **локальною датою користувача**
+(`users.timezone`), а не UTC — раніше щоденник здавався порожнім з 00:00 до
+03:00 за Києвом.
+
 ### Пошук продуктів
 
 ```bash
@@ -92,6 +121,42 @@ Authorization: Bearer {access_token}
 
 ---
 
+### Запис у щоденник, історія та штрихкоди (облік їжі)
+
+Усі запити від імені користувача підписуються OAuth 1.0 (`app/services/fatsecret_api.py`). Повний процес — у [food-logging.md](food-logging.md).
+
+| Метод | Функція | Примітки |
+|---|---|---|
+| `food.get.v4` | `get_food_details()` | Структуровані порції з `serving_id`, метричною кількістю/одиницею, `number_of_units`, нутрієнтами |
+| `food_entry.create.v2` | `create_food_entry()` → `FoodEntryWriteResult` | `succeeded` лише з підтвердженим `food_entry_id`; тайм-аут після відправки, 5xx або «успіх» без id → `unknown` (звіряється, повторно не надсилається); `serving_id=0` відхиляється локально |
+| `food_entry.edit.v2` / `food_entry.delete.v2` | `edit_food_entry()` / `delete_food_entry()` | Потрібно `success.value = 1` |
+| `food_entries.get.v2` | `fetch_food_entries()` | Зберігає `food_entry_id`, `food_id`, `serving_id`, `number_of_units` |
+| `foods.get_recently_eaten.v2`, `foods.get_most_eaten.v2`, `foods.get_favorites.v2` | `get_recently_eaten()` тощо | Лише для порядку та виявлення в «Моїх продуктах» |
+| `food.find_id_for_barcode.v2` | `find_food_by_barcode()` | Платне доповнення Premier, OAuth2 scope `barcode`; використовується лише з `FATSECRET_BARCODE_ENABLED=true` |
+
+`number_of_units` рахує базові одиниці порції (порція «100 g» має `number_of_units=100`): одиниці для X г = X / metric_amount × number_of_units. Дати — **локальний** календарний день користувача, перетворений `fatsecret_date()`.
+
+**Дані, які можна зберігати:** ID зберігаються постійно; назви й харчова цінність від FatSecret кешуються ≤ 24 год (`FATSECRET_CACHE_HOURS`) і щогодини очищаються.
+
+---
+
+## Open Food Facts API
+
+Пошук упакованих продуктів за штрихкодом (`app/services/open_food_facts.py`):
+
+```bash
+GET https://world.openfoodfacts.org/api/v3.4/product/{code}?fields=code,product_name,brands,nutriments,...
+User-Agent: HealthTrackerBot/1.0 (contact: ...)
+```
+
+- Зафіксовано **API 3.4**: у 3.5+ `nutriments.*_100g` замінено новою структурою, яку upstream досі позначає як таку, що в розробці. Записана фікстура `tests/fixtures/off_v3_4_product_nutella.json` фіксує адаптер.
+- Не знайдено → HTTP 404 (кешується як промах на 1 год); знайдені кешуються на 7 днів у `external_lookup_cache`.
+- Коди нормалізуються за правилами OFF (прибрати провідні нулі; ≤7 цифр → 8, 9–12 → 13).
+- Спільний лімітер `OFF_READS_PER_MINUTE` (документація: 15 читань продуктів/хв/IP). Дані під ODbL; бот вказує джерело «Open Food Facts».
+- Значення `_100g` для рідин вважаються на 100 мл і ніколи не перетворюються на грами.
+
+---
+
 ## WHOOP API
 
 ### Автентифікація
@@ -104,9 +169,20 @@ GET https://api.prod.whoop.com/oauth/oauth2/auth
 ?client_id={CLIENT_ID}
 &redirect_uri={REDIRECT_URI}
 &response_type=code
-&scope=read:workout read:recovery read:sleep read:cycles
-&state={RANDOM_STATE}
+&scope=offline read:workout read:recovery read:sleep read:body_measurement
+&state={SIGNED_STATE}
 ```
+
+`state` генерує `app.security.sign_oauth_state(telegram_user_id, "whoop")`:
+`<telegram_id>.<issued_at>.<hmac>`, підписаний `OAUTH_STATE_SECRET` (або ключем,
+похідним від client secrets), прив'язаний до призначення `whoop` і дійсний
+1 годину. `/whoop/callback` відхиляє непідписані, підроблені, прострочені або
+чужі за призначенням значення з HTTP 400 ще до обміну коду. Це захищає від
+account-linking CSRF (прив'язки чужого WHOOP-акаунту до чату іншої людини).
+
+Після обміну коду callback визначає `whoop_user_id` з першого запису
+recovery → sleep → workouts; новий користувач без записів усе одно
+підключається (id зберігається як `NULL`).
 
 **Крок 2: Обмін коду на токен**
 ```bash
@@ -135,11 +211,30 @@ grant_type=refresh_token
 
 | Scope | Опис |
 |-------|------|
+| offline | Потрібен для отримання refresh token |
 | read:workout | Дані тренувань |
 | read:recovery | Показники відновлення |
 | read:sleep | Дані сну |
-| read:cycles | Фізіологічні цикли |
 | read:body_measurement | Виміри тіла |
+
+`read:cycles` повертає `invalid_scope` і не запитується; endpoint циклів
+працює з переліченими scopes. Рядок scopes живе в
+`app/services/whoop_sync.py` (`WHOOP_SCOPES`).
+
+### Оновлення токенів і кешування
+
+- `refresh_token_if_needed()` оновлює токен під per-user `asyncio.Lock`;
+  конкурентний виклик перевикористовує щойно виданий токен, а не витрачає
+  refresh token вдруге (WHOOP відкликає старіший, через що користувачів
+  раніше розлогінювало).
+- `get_whoop_context_for_user()` — єдина точка входу для live-даних: оновлює
+  токен, після 401 один раз повторює з примусовим оновленням, а якщо й це
+  не допомогло — очищає токени й кидає `TokenExpiredError`.
+- Live-контекст кешується на 120 с за ключем (токен, часовий пояс, локальна
+  дата), бо він потрібен кожному повідомленню, брифінгу й нагадуванню.
+  `/debug/whoop-raw` обходить кеш.
+- «Сьогодні» рахується в часовому поясі користувача (`users.timezone`,
+  fallback `DEFAULT_TIMEZONE`).
 
 ### Отримання тренувань
 
@@ -256,15 +351,55 @@ Shortcut.
 Shortcut, який не запуститься. iPad із desktop-style User-Agent `Macintosh`
 далі отримує підписаний Shortcut-файл.
 
-Готовий Shortcut виконує чотири запити **Find Health Samples** і об'єднує їх
+Готовий Shortcut виконує вісім запитів **Find Health Samples** і об'єднує їх
 результати в один POST:
 
-| Тип Health (назва у picker) | Надсилається як `type` | Unit | Фільтр дати |
-|---|---|---|---|
-| Steps | `step_count` | `count` | Start Date is today |
-| Active Calories | `active_energy` | `kcal` | Start Date is today |
-| Sleep | `sleep_analysis` | `s` | End Date is today |
-| Heart Rate Variability SDNN | `heart_rate_variability` | `ms` | Start Date is today |
+| Тип Health (назва у picker) | Надсилається як `type` | Сімейство | Unit | Фільтр дати |
+|---|---|---|---|---|
+| Steps | `step_count` | `steps` | `count` | Start Date is today |
+| Active Calories | `active_energy` | `active_energy` | `kcal` | Start Date is today |
+| Sleep | `sleep_analysis` | `sleep` | `s` | End Date is today |
+| Heart Rate Variability SDNN | `heart_rate_variability` | `hrv` | `ms` | Start Date is today |
+| Resting Heart Rate | `resting_heart_rate` | `resting_heart_rate` | `count/min` | Start Date is today |
+| Weight | `body_mass` | `body_mass` | властивість семпла **Unit** | Start Date is today |
+| Walking + Running Distance | `walking_running_distance` | `distance` | властивість семпла **Unit** | Start Date is today |
+| Exercise Minutes | `apple_exercise_time` | `exercise_time` | `min` | Start Date is today |
+
+Вага й дистанція відображаються в одиницях локалі пристрою (кг/фунти/стоуни,
+км/милі), тому Shortcut надсилає властивість семпла **Unit**, а не фіксований
+рядок. Якщо властивість рендериться порожньою, сервер бере одиницю з тексту
+Value (`"72,5 кг"`, `"3.1 mi"`).
+
+#### Розширені сімейства (міграція 011)
+
+| Сімейство | Агрегація | Канонічна одиниця | Прийнятні одиниці | Межа на семпл |
+|---|---|---|---|---|
+| `resting_heart_rate` | середнє + кількість семплів | count/min | count/min, bpm, уд/хв | 300 |
+| `body_mass` | середнє зважувань за день | kg | kg, кг, lb/lbs, g, st | 700 кг |
+| `distance` | сума | m | m/м, km/км, mi/миля, ft, yd | 1 000 км |
+| `exercise_time` | сума | min | min/хв, h/hr/год, s | 1440 хв |
+
+- Міграція `011_apple_health_extended_families.sql` замінює CHECK сімейств на
+  `health_daily_metric_aggregates_family_check_v2` (строга надмножина) і
+  додає індекс `idx_health_daily_metric_aggregates_user_family_date`. Docker
+  preflight застосовує її автоматично й не запускає застосунок без неї.
+  Захищений rollback відмовляється працювати, поки існують рядки розширених
+  сімейств.
+- Назви метрик Health Auto Export `resting_heart_rate`, `weight_body_mass`,
+  `walking_running_distance`, `apple_exercise_time` мапляться на ті самі
+  сімейства.
+- Читання: `get_apple_health_summary()` повертає `resting_heart_rate`,
+  `distance_km`, `exercise_minutes` і `body_mass_kg` (найсвіжіший день у вікні).
+  Люди рідко зважуються щодня, тому `get_today_stats()` бере fallback з
+  `get_latest_body_mass()` — найновіший непорожній рядок `body_mass` за 30 днів
+  — і повідомляє GPT дату виміру.
+- Покрите сімейство без семплів (дозвіл Health на цей тип не надано) зберігає
+  авторитетний нуль / `NULL` середнього; рядки ваги без семплів читачі ігнорують.
+- **Потрібна перевірка на пристрої.** Назви у picker *Resting Heart Rate*,
+  *Weight*, *Walking + Running Distance*, *Exercise Minutes* і властивість
+  семпла **Unit** додано без iPhone. Перед анонсом нового Shortcut імпортуй його
+  на пристрій, запусти один раз і перевір `/sync`. Якщо в запиті порожній Type —
+  вибери тип вручну в редакторі Shortcuts, експортуй, онови plist і перепідпиши.
 
 Точкові метрики надсилають лише зразки, для яких **Start Date is today** у
 локальному календарі iPhone, тож Shortcut не експортує всю історію Health або
@@ -336,7 +471,10 @@ Content-Type: application/json
     "collector": "shortcut",
     "timezone": "+03:00",
     "coveredDates": ["2026-07-11"],
-    "coveredMetricFamilies": ["steps", "active_energy", "sleep", "hrv"],
+    "coveredMetricFamilies": [
+      "steps", "active_energy", "sleep", "hrv",
+      "resting_heart_rate", "body_mass", "distance", "exercise_time"
+    ],
     "generatedAt": "2026-07-11T10:05:00+03:00"
   },
   "metrics": [
@@ -353,6 +491,12 @@ Content-Type: application/json
       "timestamp": "2026-07-10T23:04:00+03:00",
       "end": "2026-07-11T06:34:00+03:00",
       "stage": "Core"
+    },
+    {
+      "type": "body_mass",
+      "value": "72,4",
+      "unit": "кг",
+      "timestamp": "2026-07-11T07:02:00+03:00"
     }
   ]
 }
@@ -377,7 +521,10 @@ application/json` і payload з метриками. **Не додавай пол
 у Request Body** — вони вже у URL, і дублювання у тілі — типова помилка при
 налаштуванні Shortcut. Webhook також підтримує старий варіант:
 `X-Apple-Health-Token` header і поле `userId` у body (для зворотної сумісності).
-Метрики старші за 30 днів відхиляються. Дані Apple Health більше **не**
+Токен передається в query string, тому застосунок встановлює logging-фільтр
+(`SecretRedactingFilter` в `app/main.py`), що маскує `token=`, `code=`, `state=`,
+`oauth_token=` та `oauth_verifier=` у кожному рядку логів, включно з access-логами
+uvicorn. Метрики старші за 30 днів відхиляються. Дані Apple Health більше **не**
 записуються в уніфіковану таблицю `health_data`. Сервер парсить і агрегує знімок
 у пам'яті та зберігає один оброблений рядок на (`user_id`, `source`, `collector`,
 `metric_date`, `metric_family`) у таблиці `health_daily_metric_aggregates`
@@ -395,7 +542,7 @@ Telegram. Telegram отримує лише санітизований підсу
   `snapshot.collector`, offset-aware `snapshot.generatedAt`,
   `snapshot.timezone` і або `coveredDates` разом із `coveredMetricFamilies`, або
   `coveredDatesByFamily`. Готовий Shortcut оголошує поточну локальну дату та
-  чотири сімейства, які він фактично запитав.
+  вісім сімейств, які він фактично запитав.
 - **Повнота за сімействами.** Замінюються лише оголошені сімейства. Порожнє
   покрите сімейство записує авторитетний нуль, не стираючи інші метрики,
   зібрані іншим запитом чи інтеграцією.
@@ -527,9 +674,47 @@ Endpoint очікує JSON, але якщо тіло не є валідним JS
     "raw_stored": 0, "records_failed": 0}`.
 
 Для іншого підтримуваного сімейства повтори той самий шаблон і оголоси його в
-`coveredMetricFamilies`. Підтримуються steps, active energy, heart rate, HRV і
-sleep. Тримай timestamps у форматі ISO 8601, а кожну метрику — новішою за 30
+`coveredMetricFamilies`. Підтримуються steps, active energy, heart rate, HRV,
+sleep, resting heart rate, body mass, distance і exercise time. Тримай timestamps у форматі ISO 8601, а кожну метрику — новішою за 30
 днів. Непідтримувані типи потрапляють у діагностику, але не зберігаються.
+
+#### Тренування (міграція 013)
+
+Тренування — це **події**, а не денні підсумки, тому вони не проходять через
+coverage schema v3. Кожне тренування upsert-иться в `health_workouts` за
+стабільним ключем `(user_id, source, external_id)`: UUID із HealthKit / Health
+Auto Export (`id`), якщо він є, інакше `derived:<sha256(type|start)>`. Повторна
+відправка ідемпотентна; видалення тренування на телефоні **не** поширюється.
+
+| Відправник | Де | Поля |
+|---|---|---|
+| Native / Shortcut | масив `workouts` верхнього рівня (необов'язковий, поруч із `metrics` або окремо) | `type`, `start`, `end` (ISO 8601 зі зсувом), необов'язкові `duration` (с), `active_energy` + `active_energy_unit`, `distance` + `distance_unit`, `avg_heart_rate`, `max_heart_rate`, `id` |
+| Health Auto Export | `data.workouts` (HAE v2 JSON) | `id`, `name`, `start`, `end`, `duration`, `activeEnergyBurned {qty, units}`, `distance {qty, units}`, `heartRate {avg, max}` або `avgHeartRate`/`maxHeartRate` |
+
+Правила: не більше 200 тренувань на запит; timestamps обов'язково зі зсувом;
+початок у межах останніх 30 днів; тривалість 0–24 год; енергія (kcal/kJ) і
+дистанція (m/km/mi/ft/yd) конвертуються так само, як сімейства метрик; пульс
+0–300. Тренування валідуються **до** будь-якого запису, тож одне невалідне
+тренування відхиляє весь запит з HTTP 400. Запит HAE лише з тренуваннями
+(`data.metrics` порожній) не потребує snapshot-заголовків HAE. Відповідь
+містить `{"workouts": {"workouts_received", "workouts_inserted", "workouts_updated"}}`.
+
+Сьогоднішні тренування додаються в контекст GPT ("Apple Health workouts today:
+Running (30 min, 300 kcal, 5.00 km, avg HR 150)") і рахуються в `/sync`.
+
+> **Підписаний Shortcut поки не запитує тренування.** Дію Shortcuts
+> "Find Workouts" та її властивості неможливо перевірити без iPhone, а
+> неправильний ідентифікатор дії зламав би імпорт усього Shortcut. Використовуй
+> Health Auto Export (automation Workouts, JSON, той самий URL) або додай цикл
+> тренувань у власну копію Shortcut за таблицею полів вище.
+
+#### Зберігання секрету
+
+`apple_health_sync.secret_key` зберігає лише `sha256:<hex>` (міграція 014
+хешує наявні plaintext-токени на місці). Webhook хешує наданий токен і порівнює
+за сталий час, тож старі URL Shortcut продовжують працювати. Бот показує
+plaintext URL один раз — у відповіді `/connect_apple_health`; відновити його
+пізніше неможливо — перепідключись, щоб отримати новий.
 
 ### Health Auto Export iOS app (сторонній застосунок)
 
@@ -641,6 +826,7 @@ Content-Type: application/json
 | API | Ліміт |
 |-----|-------|
 | FatSecret | 5,000 запитів/день |
+| Open Food Facts | 15 читань продуктів/хв/IP (спільний лімітер) |
 | WHOOP | 100 запитів/хвилина |
 | OpenAI | Залежить від плану |
 
@@ -674,3 +860,35 @@ const retry = async (fn, maxRetries = 3, delay = 1000) => {
   }
 };
 ```
+
+---
+
+## Службові endpoints і безпека
+
+| Endpoint | Призначення |
+|---|---|
+| `GET /ip-check` | Вихідна IP сервера (whitelist FatSecret) |
+| `GET /debug/stats?telegram_user_id=` | Саме те, що отримує GPT для користувача |
+| `GET /debug/whoop-token?telegram_user_id=` | Стан WHOOP-токена + статус кожного endpoint (не очищає токени) |
+| `GET /debug/whoop-raw?telegram_user_id=` | Live WHOOP-контекст в обхід кешу |
+| `GET /fatsecret/diary?user_id=` | Щоденник FatSecret користувача |
+| `GET /food/search?q=` | Публічний пошук FatSecret |
+
+Усі вони вимагають `ADMIN_API_TOKEN` у заголовку `Authorization: Bearer <token>`
+або `X-Admin-Token: <token>`. Якщо `ADMIN_API_TOKEN` порожній, endpoints
+повертають **404**, тож неправильно налаштований деплой ніколи не розкриє
+дані здоров'я. Токени ніколи не повертаються — `/debug/whoop-token` показує
+лише останні чотири символи.
+
+Публічні endpoints: `GET /health`, `GET /whoop/callback`,
+`GET /fatsecret/connect`, `GET /fatsecret/callback` (усі вимагають валідний
+підписаний `state`), `GET /api/v1/health/apple-health/shortcut` і
+`POST /api/v1/health/apple-health/sync` (персональний токен).
+
+Кожен вихідний HTTP-запит використовує `HTTP_TIMEOUT_SECONDS` (за замовчуванням 15 с).
+
+### Облікові дані в БД
+
+- OAuth-токени WHOOP і FatSecret зберігаються у відкритому вигляді (від
+  шифрування в БД свідомо відмовились); захищайте доступ до бази та дампів.
+- Секрет webhook Apple Health зберігається як SHA-256 хеш (див. вище).

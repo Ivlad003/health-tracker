@@ -1,17 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import httpx
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.database import get_pool
+from app.timeutils import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
 WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
+WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
+# Confirmed working scopes (see docs/en/session-knowledge.md). `read:cycles`
+# returns invalid_scope; `offline` is required to receive a refresh token.
+WHOOP_SCOPES = "offline read:workout read:recovery read:sleep read:body_measurement"
+
+# Live WHOOP context is fetched on every message/briefing/reminder. A short
+# TTL cache keeps us well below WHOOP rate limits without serving stale data.
+WHOOP_CONTEXT_CACHE_TTL_SECONDS = 120
+_context_cache: dict[tuple[str, str, str], tuple[float, dict]] = {}
+
+# Per-user refresh locks: concurrent refreshes with the same refresh_token make
+# WHOOP revoke the older one, which logs the user out.
+_refresh_locks: dict[int, asyncio.Lock] = {}
+# user_id -> (access_token, expires_at) of the most recent successful refresh.
+_last_refreshed: dict[int, tuple[str, datetime]] = {}
 
 
 class TokenExpiredError(Exception):
@@ -27,47 +47,27 @@ def _parse_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def process_workouts(data: dict, user_id: int) -> list[dict]:
-    """Normalize WHOOP workout records for persistence."""
-    workouts = []
-    for record in data.get("records", []):
-        score = record.get("score", {}) or {}
-        kilojoules = score.get("kilojoule")
-        workouts.append(
-            {
-                "user_id": user_id,
-                "whoop_workout_id": str(record["id"]),
-                "sport_id": record.get("sport_id"),
-                "sport_name": record.get("sport_name", "Unknown"),
-                "score_state": record.get("score_state", "PENDING_SCORE"),
-                "kilojoules": kilojoules,
-                "calories": (kilojoules / 4.184) if kilojoules is not None else None,
-                "strain": score.get("strain"),
-                "avg_heart_rate": score.get("average_heart_rate"),
-                "max_heart_rate": score.get("max_heart_rate"),
-                "percent_recorded": score.get("percent_recorded"),
-                "distance_meter": score.get("distance_meter"),
-                "altitude_gain_meter": score.get("altitude_gain_meter"),
-                "zone_zero_seconds": score.get("zone_zero_milli", 0) // 1000,
-                "zone_one_seconds": score.get("zone_one_milli", 0) // 1000,
-                "zone_two_seconds": score.get("zone_two_milli", 0) // 1000,
-                "zone_three_seconds": score.get("zone_three_milli", 0) // 1000,
-                "zone_four_seconds": score.get("zone_four_milli", 0) // 1000,
-                "zone_five_seconds": score.get("zone_five_milli", 0) // 1000,
-                "started_at": _parse_dt(record["start"]),
-                "ended_at": _parse_dt(record["end"]),
-                "timezone_offset": record.get("timezone_offset"),
-                "whoop_created_at": _parse_dt(record["created_at"])
-                if record.get("created_at") else None,
-                "whoop_updated_at": _parse_dt(record["updated_at"])
-                if record.get("updated_at") else None,
-            }
-        )
-    return workouts
+def _http_timeout() -> httpx.Timeout:
+    return httpx.Timeout(settings.http_timeout_seconds)
+
+
+async def clear_whoop_tokens(pool: Any, user_id: int) -> None:
+    """Forget WHOOP credentials for a user (forces /connect_whoop)."""
+    await pool.execute(
+        """UPDATE users
+           SET whoop_access_token = NULL,
+               whoop_refresh_token = NULL,
+               whoop_token_expires_at = NULL,
+               updated_at = NOW()
+           WHERE id = $1""",
+        user_id,
+    )
+    _last_refreshed.pop(user_id, None)
+    logger.warning("Cleared WHOOP tokens for user_id=%s — re-auth required", user_id)
 
 
 async def refresh_token_if_needed(
-    user: dict, client: httpx.AsyncClient, pool, *, force: bool = False,
+    user: dict, client: httpx.AsyncClient, pool: Any, *, force: bool = False,
 ) -> str:
     """Check if token is expired, refresh if needed, return valid access_token.
 
@@ -78,9 +78,25 @@ async def refresh_token_if_needed(
     if not force and expires_at and expires_at > datetime.now(timezone.utc):
         return user["whoop_access_token"]
 
+    user_id = user["id"]
+    lock = _refresh_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        # Another coroutine may have refreshed while we waited: reuse its token
+        # instead of spending (and invalidating) the refresh token again.
+        latest = _last_refreshed.get(user_id)
+        if (
+            latest
+            and latest[0] != user["whoop_access_token"]
+            and latest[1] > datetime.now(timezone.utc)
+        ):
+            return latest[0]
+        return await _do_refresh(user, client, pool)
+
+
+async def _do_refresh(user: dict, client: httpx.AsyncClient, pool: Any) -> str:
     logger.info("Refreshing WHOOP token for user_id=%s", user["id"])
     resp = None
-    last_err = None
+    last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
             resp = await client.post(
@@ -93,41 +109,33 @@ async def refresh_token_if_needed(
                 },
             )
             break
-        except (httpx.ConnectError, httpx.ReadTimeout) as e:
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
             last_err = e
             if attempt < 2:
-                await asyncio.sleep(1 * (attempt + 1))
                 logger.warning("WHOOP token refresh retry %d for user_id=%s: %s",
                                attempt + 1, user["id"], e)
+                await asyncio.sleep(1 * (attempt + 1))
     if resp is None:
         logger.error("WHOOP token refresh failed after 3 retries for user_id=%s: %s",
-                      user["id"], last_err)
+                     user["id"], last_err)
+        assert last_err is not None
         raise last_err
     if resp.status_code in (400, 401, 403):
         logger.error(
-            "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
-            user["id"], resp.status_code, resp.text,
+            "WHOOP token refresh rejected for user_id=%s: status=%s body=%s",
+            user["id"], resp.status_code, resp.text[:200],
         )
-        await pool.execute(
-            """UPDATE users
-               SET whoop_access_token = NULL,
-                   whoop_refresh_token = NULL,
-                   whoop_token_expires_at = NULL,
-                   updated_at = NOW()
-               WHERE id = $1""",
-            user["id"],
-        )
-        logger.warning("Cleared WHOOP tokens for user_id=%s — re-auth required", user["id"])
+        await clear_whoop_tokens(pool, user["id"])
         raise TokenExpiredError("whoop")
     if resp.status_code != 200:
         logger.error(
             "WHOOP token refresh failed for user_id=%s: status=%s body=%s",
-            user["id"], resp.status_code, resp.text,
+            user["id"], resp.status_code, resp.text[:200],
         )
         resp.raise_for_status()
     tokens = resp.json()
-    logger.info("WHOOP token refreshed for user_id=%s, expires_in=%s",
-                user["id"], tokens.get("expires_in"))
+    expires_in = int(tokens.get("expires_in") or 3600)
+    logger.info("WHOOP token refreshed for user_id=%s, expires_in=%s", user["id"], expires_in)
 
     await pool.execute(
         """UPDATE users
@@ -137,25 +145,95 @@ async def refresh_token_if_needed(
                updated_at = NOW()
            WHERE id = $4""",
         tokens["access_token"],
-        tokens["refresh_token"],
-        tokens["expires_in"],
+        # WHOOP may omit refresh_token on refresh; keep the old one then.
+        tokens.get("refresh_token") or user["whoop_refresh_token"],
+        expires_in,
         user["id"],
     )
-
+    _last_refreshed[user["id"]] = (
+        tokens["access_token"],
+        datetime.now(timezone.utc) + timedelta(seconds=max(expires_in - 60, 0)),
+    )
     return tokens["access_token"]
 
 
-async def fetch_whoop_context(access_token: str) -> dict:
+_WHOOP_USER_SQL = """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
+                     FROM users WHERE id = $1 AND whoop_access_token IS NOT NULL"""
+
+
+async def get_whoop_context_for_user(
+    pool: Any,
+    user_id: int,
+    *,
+    tz: Optional[ZoneInfo] = None,
+    whoop_user: Optional[dict] = None,
+    use_cache: bool = True,
+) -> Optional[dict]:
+    """Return live WHOOP context for a user, handling refresh + 401 retry.
+
+    Returns None when WHOOP is not connected. Raises TokenExpiredError when
+    the user must reconnect (tokens are cleared in that case).
+    """
+    if whoop_user is None:
+        row = await pool.fetchrow(_WHOOP_USER_SQL, user_id)
+        if not row:
+            return None
+        whoop_user = dict(row)
+
+    async with httpx.AsyncClient(timeout=_http_timeout()) as client:
+        token = await refresh_token_if_needed(whoop_user, client, pool)
+        try:
+            return await fetch_whoop_context(token, tz=tz, use_cache=use_cache)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 401:
+                raise
+        logger.warning("WHOOP API 401 for user_id=%s, re-reading tokens and forcing refresh", user_id)
+        # Tokens may have been refreshed by the background job meanwhile.
+        fresh_user = await pool.fetchrow(_WHOOP_USER_SQL, user_id)
+        if not fresh_user:
+            raise TokenExpiredError("whoop")
+        token = await refresh_token_if_needed(dict(fresh_user), client, pool, force=True)
+        try:
+            return await fetch_whoop_context(token, tz=tz, use_cache=False)
+        except httpx.HTTPStatusError as e2:
+            if e2.response.status_code == 401:
+                await clear_whoop_tokens(pool, user_id)
+                raise TokenExpiredError("whoop") from e2
+            raise
+
+
+async def fetch_whoop_context(
+    access_token: str, *, tz: Optional[ZoneInfo] = None, use_cache: bool = True,
+) -> dict:
     """Fetch ALL WHOOP data directly from API for real-time GPT context.
 
     Fetches cycle, body measurement, workouts, recovery, and sleep in parallel.
     Uses timezone-aware "today" filtering so data matches user's current day.
     """
-    from datetime import timedelta
-    from zoneinfo import ZoneInfo
-
-    user_tz = ZoneInfo("Europe/Kyiv")
+    user_tz = tz or resolve_timezone(None)
     today_local = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    cache_key = (
+        hashlib.sha256(access_token.encode()).hexdigest(),
+        str(user_tz),
+        today_local.date().isoformat(),
+    )
+    if use_cache:
+        cached = _context_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < WHOOP_CONTEXT_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+
+    result = await _fetch_whoop_context_uncached(access_token, today_local)
+    # Drop expired entries so the cache cannot grow without bound.
+    now_mono = time.monotonic()
+    for key in [k for k, (ts, _) in _context_cache.items()
+                if now_mono - ts >= WHOOP_CONTEXT_CACHE_TTL_SECONDS]:
+        _context_cache.pop(key, None)
+    _context_cache[cache_key] = (now_mono, dict(result))
+    return result
+
+
+async def _fetch_whoop_context_uncached(access_token: str, today_local: datetime) -> dict:
     today_utc = today_local.astimezone(timezone.utc).isoformat()
     # 48h window: cycle needs it for estimation, recovery/sleep need it because
     # today's recovery is linked to yesterday's cycle (which started yesterday).
@@ -164,7 +242,7 @@ async def fetch_whoop_context(access_token: str) -> dict:
     headers = {"Authorization": f"Bearer {access_token}"}
 
     logger.info("WHOOP API: fetching 5 endpoints (cycle, body, workout, recovery, sleep)")
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=_http_timeout()) as client:
         cycle_resp, body_resp, workout_resp, recovery_resp, sleep_resp = (
             await asyncio.gather(
                 client.get(f"{WHOOP_API_BASE}/cycle", headers=headers,
@@ -215,11 +293,15 @@ async def fetch_whoop_context(access_token: str) -> dict:
     # --- Body measurement ---
     body_records = body_resp.json().get("records", []) if body_resp.status_code == 200 else []
     body_info = ""
+    body_weight_kg = 0.0
+    body_height_m = 0.0
     if body_records:
         b = body_records[0]
         weight = round(b.get("weight_kilogram", 0) or 0, 1)
         height = round(b.get("height_meter", 0) or 0, 2)
         max_hr = round(b.get("max_heart_rate", 0) or 0)
+        body_weight_kg = weight
+        body_height_m = height
         if weight:
             body_info = f"Weight: {weight} kg"
             if height:
@@ -359,10 +441,12 @@ async def fetch_whoop_context(access_token: str) -> dict:
         "recovery_info": recovery_info,
         "activities_info": activities_info,
         "body_info": body_info,
+        "body_weight_kg": body_weight_kg,
+        "body_height_m": body_height_m,
     }
 
 
-async def refresh_whoop_tokens():
+async def refresh_whoop_tokens() -> None:
     """Proactively refresh WHOOP tokens that expire within 10 minutes.
 
     Only refreshes tokens close to expiry to avoid race conditions with
@@ -375,7 +459,7 @@ async def refresh_whoop_tokens():
     pool = await get_pool()
     rows = await pool.fetch(
         """SELECT id, telegram_user_id, whoop_access_token,
-                  whoop_refresh_token, whoop_token_expires_at
+                  whoop_refresh_token, whoop_token_expires_at, language
            FROM users
            WHERE whoop_access_token IS NOT NULL
                  AND whoop_refresh_token IS NOT NULL
@@ -388,25 +472,26 @@ async def refresh_whoop_tokens():
         return
 
     refreshed = 0
-    for row in rows:
-        user = dict(row)
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                await refresh_token_if_needed(user, client, pool, force=True)
-            refreshed += 1
-        except TokenExpiredError:
-            logger.warning("WHOOP token expired for user_id=%s during refresh", user["id"])
-            try:
-                from app.services.telegram_bot import send_message
-                await send_message(
-                    user["telegram_user_id"],
-                    "⌚ WHOOP сесія закінчилась.\n"
-                    "\n"
-                    "🔑 Потрібно перепідключити → /connect_whoop",
-                )
-            except Exception:
-                logger.warning("Failed to notify user_id=%s about WHOOP expiry", user["id"])
-        except Exception:
-            logger.exception("Failed to refresh WHOOP token for user_id=%s", user["id"])
+    async with httpx.AsyncClient(timeout=_http_timeout()) as client:
+        for row in rows:
+            refreshed += await _refresh_one_scheduled(dict(row), client, pool)
 
     logger.info("WHOOP token refresh complete: %d/%d refreshed", refreshed, len(rows))
+
+
+async def _refresh_one_scheduled(user: dict, client: httpx.AsyncClient, pool: Any) -> int:
+    try:
+        await refresh_token_if_needed(user, client, pool, force=True)
+        return 1
+    except TokenExpiredError:
+        logger.warning("WHOOP token expired for user_id=%s during refresh", user["id"])
+        try:
+            from app.i18n import t
+            from app.services.telegram_bot import send_message
+
+            await send_message(user["telegram_user_id"], t("whoop_expired", user.get("language")))
+        except Exception:
+            logger.warning("Failed to notify user_id=%s about WHOOP expiry", user["id"])
+    except Exception:
+        logger.exception("Failed to refresh WHOOP token for user_id=%s", user["id"])
+    return 0

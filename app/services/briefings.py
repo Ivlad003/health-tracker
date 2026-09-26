@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, time, timezone
+from typing import Optional
 
 from openai import AsyncOpenAI
 from telegram import Bot
 
 from app.config import settings
 from app.database import get_pool
+from app.timeutils import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +20,62 @@ async def _get_users_with_telegram() -> list[dict]:
     """Fetch all users that have a telegram_user_id."""
     pool = await get_pool()
     rows = await pool.fetch(
-        """SELECT id, telegram_user_id, daily_calorie_goal, language
+        """SELECT id, telegram_user_id, daily_calorie_goal, language, timezone
            FROM users
            WHERE telegram_user_id IS NOT NULL"""
     )
     return [dict(r) for r in rows]
+
+
+def _users_at_local_hour(
+    users: list[dict], hour: Optional[int], now: Optional[datetime] = None,
+) -> list[dict]:
+    """Keep users whose local wall-clock hour equals `hour` (None = everyone)."""
+    if hour is None:
+        return users
+    current = now or datetime.now(timezone.utc)
+    return [
+        u for u in users
+        if current.astimezone(resolve_timezone(u.get("timezone"))).hour == hour
+    ]
+
+
+BRIEFING_WINDOW_MINUTES = 15
+
+
+async def _due_by_preferences(users: list[dict], kind: str, now: Optional[datetime] = None) -> list[dict]:
+    """Users whose configured local briefing time just passed, claimed once per
+    local date in ``notification_sends`` (restart/DST/replica safe)."""
+    from app.services.preferences import get_preferences
+
+    pool = await get_pool()
+    current = now or datetime.now(timezone.utc)
+    due = []
+    for user in users:
+        prefs, _ = await get_preferences(pool, user["id"])
+        enabled = prefs.briefing_morning_enabled if kind == "morning" else prefs.briefing_evening_enabled
+        if not enabled:
+            continue
+        at = prefs.briefing_morning_time if kind == "morning" else prefs.briefing_evening_time
+        hh, mm = (int(x) for x in at.split(":"))
+        local = current.astimezone(resolve_timezone(user.get("timezone")))
+        since = (local.hour * 60 + local.minute) - (hh * 60 + mm)
+        if not 0 <= since < BRIEFING_WINDOW_MINUTES:
+            continue
+        claimed = await pool.fetchval(
+            """INSERT INTO notification_sends (user_id, kind, local_date) VALUES ($1, $2, $3)
+               ON CONFLICT DO NOTHING RETURNING 1""",
+            user["id"], f"briefing_{kind}", local.date(),
+        )
+        if claimed:
+            due.append(user)
+    return due
+
+
+def _minutes_apart(a: time, b: time) -> int:
+    """Circular distance in minutes between two wall-clock times (23:58 vs 00:02 = 4)."""
+    diff = abs((a.hour * 60 + a.minute) - (b.hour * 60 + b.minute))
+    return min(diff, 24 * 60 - diff)
 
 
 async def _generate_briefing(prompt: str, data_summary: str) -> str:
@@ -39,31 +93,47 @@ async def _generate_briefing(prompt: str, data_summary: str) -> str:
 
 
 async def _send_telegram_message(telegram_user_id: int, text: str) -> None:
-    """Send a message via Telegram Bot API."""
-    bot = Bot(token=settings.telegram_bot_token)
+    """Send a message via the running bot application (fallback: one-off Bot)."""
     try:
-        await bot.send_message(chat_id=telegram_user_id, text=text)
+        from app.services import telegram_bot
+
+        if telegram_bot._application is not None:
+            await telegram_bot.send_message(telegram_user_id, text)
+            return
+        async with Bot(token=settings.telegram_bot_token) as bot:
+            await bot.send_message(chat_id=telegram_user_id, text=text)
     except Exception:
         logger.exception(
             "Failed to send briefing to telegram_user_id=%s", telegram_user_id
         )
 
 
-async def morning_briefing() -> None:
-    """Morning briefing job (8:00 Kyiv). Uses live API data."""
+async def morning_briefing(
+    only_local_hour: Optional[int] = None, use_preferences: bool = False,
+) -> None:
+    """Morning briefing job. Uses live API data.
+
+    The scheduler runs it hourly with only_local_hour=8 so every user gets it
+    at 08:00 in their own timezone; without a filter it targets everyone.
+    """
     if not settings.telegram_bot_token or not settings.openai_api_key:
         logger.warning("Missing tokens, skipping morning briefing")
         return
 
-    logger.info("Starting morning briefing")
     from app.services.ai_assistant import get_today_stats
 
-    users = await _get_users_with_telegram()
+    if use_preferences:
+        users = await _due_by_preferences(await _get_users_with_telegram(), "morning")
+    else:
+        users = _users_at_local_hour(await _get_users_with_telegram(), only_local_hour)
+    if not users:
+        return
+    logger.info("Starting morning briefing for %d users", len(users))
 
     for user in users:
         try:
             user_id = user["id"]
-            lang = user.get("language", "uk")
+            lang = user.get("language") or "uk"
             goal = user["daily_calorie_goal"] or 2000
 
             stats = await get_today_stats(user_id)
@@ -97,21 +167,28 @@ async def morning_briefing() -> None:
     logger.info("Morning briefing complete")
 
 
-async def evening_summary() -> None:
-    """Evening summary job (21:00 Kyiv). Uses live API data."""
+async def evening_summary(
+    only_local_hour: Optional[int] = None, use_preferences: bool = False,
+) -> None:
+    """Evening summary job (hourly with only_local_hour=21). Uses live API data."""
     if not settings.telegram_bot_token or not settings.openai_api_key:
         logger.warning("Missing tokens, skipping evening summary")
         return
 
-    logger.info("Starting evening summary")
     from app.services.ai_assistant import get_today_stats
 
-    users = await _get_users_with_telegram()
+    if use_preferences:
+        users = await _due_by_preferences(await _get_users_with_telegram(), "evening")
+    else:
+        users = _users_at_local_hour(await _get_users_with_telegram(), only_local_hour)
+    if not users:
+        return
+    logger.info("Starting evening summary for %d users", len(users))
 
     for user in users:
         try:
             user_id = user["id"]
-            lang = user.get("language", "uk")
+            lang = user.get("language") or "uk"
             goal = user["daily_calorie_goal"] or 2000
 
             stats = await get_today_stats(user_id)
@@ -135,6 +212,8 @@ async def evening_summary() -> None:
                 data_summary += f"{stats['whoop_activities']}. "
             if stats.get("apple_health_summary"):
                 data_summary += f"{stats['apple_health_summary']}. "
+            if stats.get("bmr_kcal"):
+                data_summary += f"Estimated BMR: {stats['bmr_kcal']} kcal/day. "
             data_summary += f"Language: {lang}."
 
             prompt = (
@@ -159,18 +238,14 @@ async def journal_reminders() -> None:
     if not settings.telegram_bot_token:
         return
 
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
-
     logger.info("Starting journal reminders check")
 
-    now_kyiv = datetime.now(ZoneInfo("Europe/Kyiv"))
-    current_time = now_kyiv.time()
+    now_utc = datetime.now(timezone.utc)
 
     pool = await get_pool()
     rows = await pool.fetch(
         """SELECT id, telegram_user_id, journal_time_1, journal_time_2,
-                  daily_calorie_goal, language
+                  daily_calorie_goal, language, timezone
            FROM users
            WHERE telegram_user_id IS NOT NULL
              AND journal_enabled = true"""
@@ -179,17 +254,15 @@ async def journal_reminders() -> None:
     from app.services.ai_assistant import get_today_stats
 
     def _time_matches(t, now_t) -> bool:
-        """Check if time t is within ±5 minutes of now_t."""
+        """Check if time t is within ±5 minutes of now_t (wraps midnight)."""
         if t is None:
             return False
-        # Compare as minutes since midnight
-        t_min = t.hour * 60 + t.minute
-        now_min = now_t.hour * 60 + now_t.minute
-        return abs(t_min - now_min) <= 5
+        return _minutes_apart(t, now_t) <= 5
 
     sent = 0
     for row in rows:
         try:
+            current_time = now_utc.astimezone(resolve_timezone(row["timezone"])).time()
             t1_match = _time_matches(row["journal_time_1"], current_time)
             t2_match = _time_matches(row["journal_time_2"], current_time)
 
@@ -211,9 +284,12 @@ async def journal_reminders() -> None:
             is_morning = t1_match
             stats = await get_today_stats(user_id)
 
+            from app.i18n import t
+
+            lang = row["language"]
             if is_morning:
                 # Morning: sleep + recovery context
-                parts = ["🌅 Доброго ранку!"]
+                parts = [t("reminder_morning", lang)]
                 if stats.get("whoop_sleep"):
                     sleep_short = stats["whoop_sleep"].split(",")[0] if stats["whoop_sleep"] else ""
                     parts.append(f"😴 {sleep_short}")
@@ -221,27 +297,27 @@ async def journal_reminders() -> None:
                     rec_short = stats["whoop_recovery"].split(",")[0] if stats["whoop_recovery"] else ""
                     parts.append(f"💚 {rec_short}")
                 if stats.get("apple_health_sleep_hours"):
-                    parts.append(f"❤️ Apple sleep: {stats['apple_health_sleep_hours']}h")
+                    parts.append(t("reminder_apple_sleep", lang, hours=stats["apple_health_sleep_hours"]))
                 if stats.get("apple_health_avg_hrv_ms"):
-                    parts.append(f"🧘 HRV (стрес-проксі): {stats['apple_health_avg_hrv_ms']} ms")
-                parts.append("\nЯк настрій? Які плани на день?")
+                    parts.append(t("reminder_hrv", lang, hrv=stats["apple_health_avg_hrv_ms"]))
+                parts.append(t("reminder_morning_q", lang))
                 text = "\n".join(parts)
             else:
                 # Evening: calorie + strain context
                 goal = row["daily_calorie_goal"] or 2000
-                parts = ["🌙 Як пройшов день?"]
+                parts = [t("reminder_evening", lang)]
                 cal_in = stats.get("today_calories_in", 0)
                 cal_out = stats.get("today_calories_out", 0)
                 if cal_in > 0 or cal_out > 0:
                     parts.append(f"📊 {cal_in}/{goal} kcal")
                     if cal_out > 0:
-                        parts[-1] += f", 🔥 {cal_out} спалено"
+                        parts[-1] += t("reminder_burned", lang, kcal=cal_out)
                 if stats.get("apple_health_steps"):
-                    parts.append(f"👣 {stats['apple_health_steps']} кроків")
+                    parts.append(t("reminder_steps", lang, steps=stats["apple_health_steps"]))
                 strain = stats.get("today_strain", 0)
                 if strain > 0:
                     parts.append(f"💪 Strain: {strain}")
-                parts.append("\nОпиши як себе почуваєш.")
+                parts.append(t("reminder_evening_q", lang))
                 text = "\n".join(parts)
 
             await _send_telegram_message(row["telegram_user_id"], text)

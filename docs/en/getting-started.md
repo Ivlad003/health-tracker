@@ -51,6 +51,20 @@ OPENAI_API_KEY=your_api_key
 
 # Database
 DATABASE_URL=postgresql://user:pass@localhost:5432/healthlog
+
+# App / security
+APP_BASE_URL=https://your-domain.com
+WHOOP_REDIRECT_URI=https://your-domain.com/whoop/callback
+FATSECRET_SHARED_SECRET=your_oauth1_shared_secret
+OAUTH_STATE_SECRET=long_random_string
+ADMIN_API_TOKEN=long_random_string   # enables /debug/*; empty = 404
+DEFAULT_TIMEZONE=Europe/Kyiv
+
+# Food logging / Web App (see docs/en/food-logging.md)
+OFF_USER_AGENT="HealthTrackerBot/1.0 (contact: you@example.com)"
+FATSECRET_HISTORY_IMPORT_DAYS=30
+WEBAPP_URL=https://your-domain.com/app/     # HTTPS, used for Web App buttons
+WEBAPP_ADMIN_TELEGRAM_IDS=123456789         # owner/admin bootstrap
 ```
 
 ### 3. Set Up the Database
@@ -60,7 +74,9 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/healthlog
 createdb healthlog
 
 # Run migrations
-psql -d healthlog -f database/migrations/001_initial_schema.sql
+bash database/init-db.sh   # applies 002+ in order (001 is NOT used), skips *_rollback.sql
+# or, for the Apple Health part only:
+python -m app.db_preflight --apply-apple-health-migration
 ```
 
 ### 4. Start the Application
@@ -96,10 +112,13 @@ uvicorn app.main:app --reload
 
 ### Logging Food with Voice
 
-1. Send a voice message to the bot
-2. Describe what you ate: "I had oatmeal with banana for breakfast"
-3. The bot will recognize products and show calories
-4. Confirm or edit
+1. Send a text or voice message: "cooked buckwheat 180 g"
+2. A previously confirmed product is logged immediately (with **Undo**); a new
+   food shows up to 3 candidates — pick one and the bot remembers it
+3. No weight given? The bot asks — reply "135 g" to its message
+4. Barcode photo with the caption "135 g" logs the exact packaged product;
+   for an unknown barcode send a nutrition-label photo as a reply
+5. After `/connect_fatsecret` your FatSecret diary history fills **My Products**
 
 ### Connecting WHOOP
 
@@ -112,14 +131,18 @@ uvicorn app.main:app --reload
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Start working |
-| `/help` | Help |
-| `/log` | Manual logging |
-| `/summary` | Daily summary |
-| `/week` | Weekly report |
-| `/settings` | Settings |
+| `/start`, `/help` | Guide |
+| `/connect_fatsecret`, `/connect_whoop`, `/connect_apple_health` | Connect services |
+| `/sync` | Check connections |
+| `/timezone`, `/language`, `/profile` | Timezone, language, BMR profile |
+| `/journal`, `/journal_time`, `/journal_on`, `/journal_off` | Journal |
+| `/gym_prompt` | Gym coaching profile |
+| `/app` | Open the Telegram Web App (needs an HTTPS `WEBAPP_URL`) |
+
+Food is logged by plain messages, voice and photos (no command needed).
 
 ## Next Steps
 
 - [API Integration](api-integration.md) - Detailed API documentation
 - [Architecture](architecture.md) - How the system works
+- [Food Logging](food-logging.md) - History, barcodes, label photos, Web App API

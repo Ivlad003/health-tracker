@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from telegram import BotCommand, Update
+import re
+
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -21,11 +29,8 @@ from app.services.ai_assistant import (
     transcribe_voice,
     get_today_stats,
 )
-from app.services.fatsecret_api import (
-    search_food,
-    get_food_servings,
-    create_food_diary_entry,
-)
+from app.services import food_bot
+from app.services import food_logging as ledger
 from app.services.gym_service import (
     log_exercises,
     get_last_exercise,
@@ -37,10 +42,43 @@ from app.services.journal_service import (
     get_journal_summary_data,
 )
 from app.services.apple_health import ensure_apple_health_sync
+from app.security import sign_oauth_state
+from app.services.whoop_sync import WHOOP_AUTH_URL, WHOOP_SCOPES
+from app.timeutils import resolve_timezone
+from app.i18n import SUPPORTED_LANGUAGES, normalize_language, t
 
 logger = logging.getLogger(__name__)
 
 _application: Application | None = None
+# telegram_user_id -> "uk" | "en" (filled by _ensure_user and /language).
+_language_cache: dict[int, str] = {}
+
+
+def _lang(update: Update) -> str:
+    """Language for replies: stored users.language, else Telegram language_code."""
+    user = update.effective_user
+    cached = _language_cache.get(user.id)
+    if cached:
+        return cached
+    return normalize_language(getattr(user, "language_code", None))
+
+
+async def user_language(telegram_user_id: int) -> str:
+    """Language for proactive messages (callbacks, jobs). Never raises."""
+    cached = _language_cache.get(telegram_user_id)
+    if cached:
+        return cached
+    try:
+        pool = await get_pool()
+        value = await pool.fetchval(
+            "SELECT language FROM users WHERE telegram_user_id = $1", telegram_user_id,
+        )
+    except Exception:
+        logger.debug("Language lookup failed for %s", telegram_user_id, exc_info=True)
+        return normalize_language(None)
+    lang = normalize_language(value if isinstance(value, str) else None)
+    _language_cache[telegram_user_id] = lang
+    return lang
 
 
 async def send_message(telegram_user_id: int, text: str) -> None:
@@ -53,260 +91,87 @@ async def send_message(telegram_user_id: int, text: str) -> None:
     )
 
 
-def _is_pure_gram_serving(desc: str) -> bool:
-    """Check if serving description is a pure gram amount like '100g' or '1 g'."""
-    d = desc.strip().lower()
-    if not d.endswith("g"):
+async def _ensure_user(
+    telegram_user_id: int,
+    username: str | None,
+    language_code: str | None = None,
+) -> dict:
+    """Get or create user by telegram_user_id (new users inherit Telegram language)."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id, daily_calorie_goal, language FROM users WHERE telegram_user_id = $1",
+        telegram_user_id,
+    )
+    if not row:
+        row = await pool.fetchrow(
+            """INSERT INTO users (telegram_user_id, telegram_username, language)
+               VALUES ($1, $2, $3)
+               RETURNING id, daily_calorie_goal, language""",
+            telegram_user_id,
+            username or "",
+            normalize_language(language_code),
+        )
+        logger.info("Created new user: telegram_user_id=%s, db_id=%s", telegram_user_id, row["id"])
+    lang = normalize_language(row["language"])
+    _language_cache[telegram_user_id] = lang
+    return {"id": row["id"], "daily_calorie_goal": row["daily_calorie_goal"], "language": lang}
+
+
+def _reply_markup(reply: food_bot.BotReply, lang: str) -> InlineKeyboardMarkup | None:
+    rows = [
+        [InlineKeyboardButton(label, callback_data=data) for label, data in row]
+        for row in reply.buttons
+    ]
+    if reply.webapp_url:
+        rows.append([InlineKeyboardButton(
+            t("food_btn_open_app", lang), web_app=WebAppInfo(url=reply.webapp_url),
+        )])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def _send_food_reply(message, reply: food_bot.BotReply, lang: str, user_id: int) -> None:
+    sent = await message.reply_text(reply.text, reply_markup=_reply_markup(reply, lang))
+    if reply.draft_id and sent is not None:
+        pool = await get_pool()
+        await ledger.set_reply_message(pool, reply.draft_id, user_id, sent.message_id)
+
+
+_QUANTITY_ONLY_RE = re.compile(
+    r"^\s*\d{1,5}(?:[.,]\d{1,2})?\s*(?:г|гр|грам\w*|g|gr|grams?|кг|kg)\s*\.?\s*$", re.IGNORECASE,
+)
+
+
+async def _try_draft_reply(update: Update, user_id: int, lang: str, text: str) -> bool:
+    """Route a quantity reply to its draft. Returns True when handled."""
+    message = update.message
+    pool = await get_pool()
+    ctx = await ledger.load_user_context(pool, user_id)
+    ctx.language = lang
+    reply_to = message.reply_to_message
+    if reply_to is not None:
+        draft = await ledger.find_reply_draft(pool, user_id, message.chat_id, reply_to.message_id)
+        if draft is not None:
+            reply = await food_bot.apply_reply_text(pool, ctx, draft, text)
+            if reply is not None:
+                await _send_food_reply(message, reply, lang, user_id)
+                return True
         return False
-    try:
-        float(d[:-1].strip())
+    if not _QUANTITY_ONLY_RE.match(text):
+        return False
+    draft, count = await food_bot.pending_weight_draft(pool, ctx)
+    if count == 0:
+        return False
+    if draft is None:
+        await message.reply_text(t("food_which_draft", lang))
         return True
-    except ValueError:
+    reply = await food_bot.apply_reply_text(pool, ctx, draft, text)
+    if reply is None:
         return False
+    await _send_food_reply(message, reply, lang, user_id)
+    return True
 
 
-def _parse_fatsecret_description(description: str) -> dict:
-    """Parse FatSecret food_description string into numeric values.
-
-    Example: "Per 100g - Calories: 165kcal | Fat: 3.57g | Carbs: 0.00g | Protein: 31.02g"
-    """
-    result = {"calories": 0.0, "fat": 0.0, "carbs": 0.0, "protein": 0.0, "serving_size": 100.0}
-    if not description:
-        return result
-
-    try:
-        if " - " not in description:
-            return result
-        serving_part, nutrients_part = description.split(" - ", 1)
-
-        # Parse "Per XXg"
-        serving_part = serving_part.replace("Per ", "")
-        for unit in ("g", "ml", "oz"):
-            if unit in serving_part.lower():
-                num_str = serving_part.lower().replace(unit, "").strip()
-                try:
-                    result["serving_size"] = float(num_str) if num_str else 100.0
-                except ValueError:
-                    result["serving_size"] = 100.0
-                break
-
-        for part in nutrients_part.split("|"):
-            part = part.strip()
-            if "Calories:" in part:
-                result["calories"] = float(part.split(":")[1].replace("kcal", "").strip())
-            elif "Fat:" in part:
-                result["fat"] = float(part.split(":")[1].replace("g", "").strip())
-            elif "Carbs:" in part:
-                result["carbs"] = float(part.split(":")[1].replace("g", "").strip())
-            elif "Protein:" in part:
-                result["protein"] = float(part.split(":")[1].replace("g", "").strip())
-    except (ValueError, IndexError):
-        logger.warning("Failed to parse FatSecret description: %s", description)
-
-    return result
-
-
-async def _ensure_user(telegram_user_id: int, username: str | None) -> dict:
-    """Get or create user by telegram_user_id."""
-    pool = await get_pool()
-    row = await pool.fetchrow(
-        "SELECT id, daily_calorie_goal FROM users WHERE telegram_user_id = $1",
-        telegram_user_id,
-    )
-    if row:
-        return {"id": row["id"], "daily_calorie_goal": row["daily_calorie_goal"]}
-
-    row = await pool.fetchrow(
-        """INSERT INTO users (telegram_user_id, telegram_username)
-           VALUES ($1, $2)
-           RETURNING id, daily_calorie_goal""",
-        telegram_user_id,
-        username or "",
-    )
-    logger.info("Created new user: telegram_user_id=%s, db_id=%s", telegram_user_id, row["id"])
-    return {"id": row["id"], "daily_calorie_goal": row["daily_calorie_goal"]}
-
-
-async def _handle_log_food(user_id: int, food_items: list[dict]) -> dict:
-    """Look up each food item in FatSecret, store in food_entries, sync to FatSecret diary.
-
-    Returns dict with 'items' list and 'fs_connected' flag.
-    """
-    pool = await get_pool()
-    logged = []
-
-    # Check if user has FatSecret connected for two-way sync
-    user_row = await pool.fetchrow(
-        "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
-        user_id,
-    )
-    fs_token = user_row["fatsecret_access_token"] if user_row else ""
-    fs_secret = user_row["fatsecret_access_secret"] if user_row else ""
-    fs_connected = bool(fs_token and fs_secret)
-
-    for item in food_items:
-        name_en = item.get("name_en", "")
-        name_original = item.get("name_original", name_en)
-        quantity_g = item.get("quantity_g", 100)
-        meal_type = item.get("meal_type", "snack")
-
-        if meal_type not in ("breakfast", "lunch", "dinner", "snack"):
-            meal_type = "snack"
-
-        calories = 0.0
-        protein = 0.0
-        fat = 0.0
-        carbs = 0.0
-        food_id = ""
-        food_name_fs = ""
-
-        try:
-            result = await search_food(name_en, max_results=1)
-            foods = result.get("results", [])
-            if foods:
-                food_id = foods[0].get("food_id", "")
-                food_name_fs = foods[0].get("name", name_en)
-                nutrients = _parse_fatsecret_description(foods[0].get("description", ""))
-                desc_serving_size = nutrients.get("serving_size", 100.0) or 100.0
-                factor = quantity_g / desc_serving_size
-                calories = round(nutrients["calories"] * factor, 1)
-                protein = round(nutrients["protein"] * factor, 1)
-                fat = round(nutrients["fat"] * factor, 1)
-                carbs = round(nutrients["carbs"] * factor, 1)
-        except Exception:
-            logger.warning("FatSecret lookup failed for '%s'", name_en)
-
-        # Sync to FatSecret diary if connected (FatSecret is source of truth)
-        synced_to_fs = False
-        if fs_connected and food_id:
-            try:
-                servings = await get_food_servings(food_id)
-                if servings:
-                    # Filter out derived servings (serving_id=0) — they
-                    # cannot be used with food_entry.create
-                    real_servings = [
-                        s for s in servings
-                        if str(s["serving_id"]) != "0"
-                    ]
-                    if not real_servings:
-                        real_servings = servings  # fallback if all derived
-
-                    # All gram-based real servings
-                    all_gram = [
-                        s for s in real_servings
-                        if s["metric_serving_unit"] == "g"
-                        and s["metric_serving_amount"] > 0
-                    ]
-                    # Pure gram servings (description like "1g", "100g")
-                    pure_gram = [
-                        s for s in all_gram
-                        if _is_pure_gram_serving(s["description"])
-                    ]
-                    # 1g serving: search ALL gram servings
-                    one_g = next(
-                        (s for s in all_gram if s["metric_serving_amount"] == 1.0),
-                        None,
-                    )
-                    hundred_g = next(
-                        (s for s in pure_gram if s["metric_serving_amount"] == 100.0),
-                        None,
-                    )
-                    if one_g:
-                        serving = one_g
-                    elif hundred_g:
-                        serving = hundred_g
-                    elif pure_gram:
-                        serving = min(pure_gram, key=lambda s: s["metric_serving_amount"])
-                    elif all_gram:
-                        serving = all_gram[0]
-                    else:
-                        serving = real_servings[0]
-                    if not one_g:
-                        logger.warning(
-                            "No 1g serving for food_id=%s, using %s (%.1fg). "
-                            "Available: %s",
-                            food_id, serving["description"],
-                            serving["metric_serving_amount"],
-                            ", ".join(
-                                f"{s['description']}(id={s['serving_id']}, "
-                                f"{s['metric_serving_amount']}g, "
-                                f"units={s['number_of_units']})"
-                                for s in servings[:10]
-                            ),
-                        )
-                    # FatSecret number_of_units = base units in the serving.
-                    # E.g. "100 g" → number_of_units=100 (100 units of 1g).
-                    # To log X grams: send (X / metric_serving_amount) * number_of_units.
-                    metric_amount = serving["metric_serving_amount"] or 100.0
-                    serving_units = serving.get("number_of_units", 1.0) or 1.0
-                    units = (quantity_g / metric_amount) * serving_units
-                    logger.info(
-                        "FatSecret sync: food_id=%s serving=%s metric=%sg "
-                        "serving_units=%.1f units=%.2f for %dg",
-                        food_id, serving["description"], metric_amount,
-                        serving_units, units, quantity_g,
-                    )
-                    await create_food_diary_entry(
-                        access_token=fs_token,
-                        access_secret=fs_secret,
-                        food_id=food_id,
-                        food_entry_name=food_name_fs,
-                        serving_id=serving["serving_id"],
-                        number_of_units=round(units, 2),
-                        meal_type=meal_type,
-                    )
-                    synced_to_fs = True
-            except Exception:
-                logger.warning("Failed to sync '%s' to FatSecret diary", name_en)
-
-        # Only store locally if not synced to FatSecret (fallback)
-        if not synced_to_fs:
-            await pool.execute(
-                """INSERT INTO food_entries
-                       (user_id, food_name, calories, protein, fat, carbs,
-                        serving_size, serving_unit, meal_type, source_text)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::meal_type, $10)""",
-                user_id,
-                name_original,
-                Decimal(str(calories)),
-                Decimal(str(protein)),
-                Decimal(str(fat)),
-                Decimal(str(carbs)),
-                Decimal(str(quantity_g)),
-                "g",
-                meal_type,
-                name_en,
-            )
-
-        logged.append({
-            "name": name_original,
-            "calories": round(calories),
-            "synced_to_fs": synced_to_fs,
-        })
-
-    return {"items": logged, "fs_connected": fs_connected}
-
-
-async def _handle_delete_entry(user_id: int) -> str | None:
-    """Delete the most recent food entry. Returns deleted food description or None."""
-    pool = await get_pool()
-    row = await pool.fetchrow(
-        """DELETE FROM food_entries
-           WHERE id = (
-               SELECT id FROM food_entries
-               WHERE user_id = $1
-               ORDER BY created_at DESC
-               LIMIT 1
-           )
-           RETURNING food_name, calories""",
-        user_id,
-    )
-    if row:
-        return f"{row['food_name']} ({row['calories']} kcal)"
-    return None
-
-
-async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
+async def _handle_gym(user_id: int, gpt_result: dict, lang: str = "uk") -> str | None:
     """Handle gym intent: log exercises, show last workout, show progress."""
     action = gpt_result.get("gym_action", "log")
 
@@ -317,7 +182,7 @@ async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
             line = f"  {ex['name']}"
             parts = []
             if ex.get("weight_kg"):
-                parts.append(f"{ex['weight_kg']}кг")
+                parts.append(f"{ex['weight_kg']}{t('kg', lang)}")
             if ex.get("sets") and ex.get("reps"):
                 parts.append(f"{ex['sets']}×{ex['reps']}")
             if parts:
@@ -326,37 +191,37 @@ async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
                 p = ex["prev"]
                 prev_parts = []
                 if p.get("weight_kg"):
-                    prev_parts.append(f"{p['weight_kg']}кг")
+                    prev_parts.append(f"{p['weight_kg']}{t('kg', lang)}")
                 if p.get("sets") and p.get("reps"):
                     prev_parts.append(f"{p['sets']}×{p['reps']}")
                 if prev_parts:
-                    line += f"\n    ↩️ Минулого разу ({p['date']}): {', '.join(prev_parts)}"
+                    line += t("gym_prev", lang, date=p["date"], parts=", ".join(prev_parts))
             lines.append(line)
-        return "✅ Записано:\n" + "\n".join(lines)
+        return t("gym_logged", lang) + "\n".join(lines)
 
     elif action == "last":
         key = gpt_result.get("exercise_key", "")
         if not key:
-            return "🏋️ Вкажи вправу. Наприклад: «що робив на жимі?»"
+            return t("gym_need_exercise_last", lang)
         ex = await get_last_exercise(user_id, key)
         if not ex:
-            return f"🏋️ Немає записів для «{key}». Запиши тренування — тоді покажу."
+            return t("gym_no_records", lang, key=key)
         # GPT already has recent gym context and generated a response
         return None
 
     elif action == "progress":
         key = gpt_result.get("exercise_key", "")
         if not key:
-            return "🏋️ Вкажи вправу. Наприклад: «прогрес присідань»"
+            return t("gym_need_exercise_progress", lang)
         history = await get_exercise_progress(user_id, key)
         if not history:
-            return f"🏋️ Немає записів для «{key}». Потрібно мінімум 2 тренування для прогресу."
+            return t("gym_no_progress", lang, key=key)
         lines = []
         for entry in history:
             date_str = entry["created_at"].strftime("%d.%m")
             parts = []
             if entry.get("weight_kg"):
-                parts.append(f"{entry['weight_kg']}кг")
+                parts.append(f"{entry['weight_kg']}{t('kg', lang)}")
             if entry.get("sets") and entry.get("reps"):
                 parts.append(f"{entry['sets']}×{entry['reps']}")
             lines.append(f"  {date_str} — {', '.join(parts)}")
@@ -366,23 +231,33 @@ async def _handle_gym(user_id: int, gpt_result: dict) -> str | None:
             diff = last_w - first_w
             pct = round(diff / first_w * 100, 1) if first_w else 0
             sign = "+" if diff >= 0 else ""
-            lines.append(f"\n  📈 {sign}{diff}кг ({sign}{pct}%)")
-        return "🏋️ Прогрес:\n" + "\n".join(lines)
+            lines.append(f"\n  📈 {sign}{diff}{t('kg', lang)} ({sign}{pct}%)")
+        return t("gym_progress", lang) + "\n".join(lines)
 
     return None
 
 
 async def _handle_calorie_goal(user_id: int, calorie_goal: int) -> None:
-    """Update user's daily calorie goal."""
+    """Update the daily calorie goal (date-effective from the user's today)."""
+    from datetime import datetime as _dt
+
+    from app.services.preferences import set_goal
+
     pool = await get_pool()
-    await pool.execute(
-        "UPDATE users SET daily_calorie_goal = $1 WHERE id = $2",
-        calorie_goal,
-        user_id,
-    )
+    tz_name = await pool.fetchval("SELECT timezone FROM users WHERE id = $1", user_id)
+    today = _dt.now(resolve_timezone(tz_name)).date()
+    try:
+        await set_goal(pool, user_id, calories=calorie_goal, effective_date=today)
+    except Exception:
+        logger.warning("Goal history write failed; updating current goal only", exc_info=True)
+        await pool.execute(
+            "UPDATE users SET daily_calorie_goal = $1 WHERE id = $2", calorie_goal, user_id,
+        )
 
 
-async def _handle_journal(user_id: int, gpt_result: dict, message_text: str) -> str | None:
+async def _handle_journal(
+    user_id: int, gpt_result: dict, message_text: str, lang: str = "uk",
+) -> str | None:
     """Handle journal intent: save entry, show history, show summary."""
     action = gpt_result.get("journal_action", "entry")
 
@@ -401,7 +276,7 @@ async def _handle_journal(user_id: int, gpt_result: dict, message_text: str) -> 
     elif action == "history":
         entries = await get_journal_history(user_id, days=7)
         if not entries:
-            return "📓 Щоденник порожній. Просто напиши як справи!"
+            return t("journal_empty", lang)
         lines = []
         for e in entries:
             date_str = e["created_at"].strftime("%d.%m %H:%M")
@@ -409,12 +284,12 @@ async def _handle_journal(user_id: int, gpt_result: dict, message_text: str) -> 
             mood = f" 😊{e['mood_score']}" if e["mood_score"] else ""
             energy = f" ⚡{e['energy_level']}" if e["energy_level"] else ""
             lines.append(f"  {date_str}{mood}{energy}\n    {text}")
-        return "📓 Щоденник (7 днів):\n\n" + "\n\n".join(lines)
+        return t("journal_title", lang) + "\n\n".join(lines)
 
     elif action == "summary":
         data = await get_journal_summary_data(user_id, days=7)
         if data["entries_count"] == 0:
-            return "📓 Немає записів за останній тиждень."
+            return t("journal_no_week", lang)
         # GPT has recent journal context and will generate a natural summary
         return None
 
@@ -429,8 +304,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     telegram_user_id = update.effective_user.id
     username = update.effective_user.username
 
-    user = await _ensure_user(telegram_user_id, username)
+    user = await _ensure_user(
+        telegram_user_id, username, getattr(update.effective_user, "language_code", None),
+    )
     user_id = user["id"]
+    lang = _lang(update)
     daily_calorie_goal = user["daily_calorie_goal"] or 2000
 
     logger.info("Incoming message from user_id=%s (tg=%s), type=%s",
@@ -447,9 +325,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info("Whisper transcription for user %s: %s", telegram_user_id, message_text)
         except Exception:
             logger.exception("Voice transcription failed for user %s", telegram_user_id)
-            await update.message.reply_text(
-                "🎙 Не вдалося обробити голосове повідомлення. Спробуй ще раз."
-            )
+            await update.message.reply_text(t("voice_failed", lang))
             return
     elif update.message.text:
         message_text = update.message.text
@@ -461,6 +337,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not cleaned:
         return
 
+    try:
+        if await _try_draft_reply(update, user_id, lang, message_text):
+            return
+    except Exception:
+        logger.exception("Draft reply handling failed for user %s", telegram_user_id)
+
     await save_conversation_message(user_id, "user", message_text)
 
     logger.info("Processing message for user_id=%s: '%s'",
@@ -470,9 +352,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         gpt_result = await classify_and_respond(user_id, daily_calorie_goal, message_text)
     except Exception:
         logger.exception("GPT call failed for user %s", telegram_user_id)
-        await update.message.reply_text(
-            "😔 Щось пішло не так. Спробуй ще раз через хвилинку."
-        )
+        await update.message.reply_text(t("gpt_failed", lang))
         return
 
     intent = gpt_result["intent"]
@@ -485,43 +365,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if intent == "log_food" and gpt_result["food_items"]:
-            log_result = await _handle_log_food(user_id, gpt_result["food_items"])
-            logged = log_result["items"]
-            just_logged_cals = sum(item["calories"] for item in logged)
-            stats = await get_today_stats(user_id)
-            expired_services = stats.get("expired_services", [])
-            # FatSecret API has a delay — just-synced entries may not appear yet.
-            # Add logged calories to compensate.
-            total_in = stats["today_calories_in"] + just_logged_cals
-            total_out = stats["today_calories_out"]
-            src = stats.get("calories_source", "none")
-            src_label = " (FatSecret)" if src == "fatsecret" else ""
-            balance_line = f"\n\n📊 {total_in} / {daily_calorie_goal} kcal{src_label}"
-            if total_out > 0:
-                burned_src = stats.get("calories_burned_source", "none")
-                burned_label = "Apple Health" if burned_src == "apple_health" else "WHOOP"
-                balance_line += f"  🔥 {total_out} спалено ({burned_label})"
-            response_text += balance_line
-            # Warn if any items failed to sync to FatSecret
-            failed_sync = [i["name"] for i in logged if not i["synced_to_fs"]]
-            if failed_sync and log_result["fs_connected"]:
-                response_text += (
-                    "\n⚠️ Не синхронізовано з FatSecret: "
-                    + ", ".join(failed_sync)
-                )
+            pool = await get_pool()
+            ctx = await ledger.load_user_context(pool, user_id)
+            ctx.language = lang
+            reply = await food_bot.handle_food_items(
+                pool, ctx, gpt_result["food_items"],
+                chat_id=update.message.chat_id,
+                message_id=update.message.message_id,
+                origin="bot_voice" if update.message.voice else "bot_text",
+            )
+            await save_conversation_message(user_id, "assistant", reply.text, intent)
+            await _send_food_reply(update.message, reply, lang, user_id)
+            logger.info("Food reply sent to user_id=%s", user_id)
+            return
 
         elif intent == "delete_entry":
-            deleted = await _handle_delete_entry(user_id)
+            pool = await get_pool()
+            ctx = await ledger.load_user_context(pool, user_id)
+            ctx.language = lang
+            deleted = await food_bot.undo_last(pool, ctx)
             if not deleted:
-                response_text = "🤷 Немає записів для видалення."
+                response_text = t("nothing_to_delete", lang)
+            else:
+                response_text = t("food_undone", lang, name=deleted)
 
         elif intent == "gym":
-            gym_response = await _handle_gym(user_id, gpt_result)
+            gym_response = await _handle_gym(user_id, gpt_result, lang)
             if gym_response:
                 response_text = gym_response
 
         elif intent == "journal":
-            journal_response = await _handle_journal(user_id, gpt_result, message_text)
+            journal_response = await _handle_journal(user_id, gpt_result, message_text, lang)
             if journal_response:
                 response_text = journal_response
 
@@ -535,7 +409,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     except Exception:
         logger.exception("Intent handler failed for user %s, intent=%s", telegram_user_id, intent)
-        response_text = response_text or "😔 Виникла помилка при обробці запиту."
+        # Never echo GPT's "added ..." when nothing was recorded.
+        response_text = (
+            t("intent_failed", lang) if intent in ("log_food", "delete_entry")
+            else (response_text or t("intent_failed", lang))
+        )
 
     # Append reconnect hints for expired tokens
     if expired_services:
@@ -544,10 +422,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reconnect_lines.append("  ⌚ WHOOP → /connect_whoop")
         if "fatsecret" in expired_services:
             reconnect_lines.append("  🥗 FatSecret → /connect_fatsecret")
-        response_text += (
-            "\n\n🔑 Сесія закінчилась, потрібно перепідключити:\n"
-            + "\n".join(reconnect_lines)
-        )
+        response_text += t("reconnect_header", lang) + "\n".join(reconnect_lines)
 
     await save_conversation_message(user_id, "assistant", response_text, intent)
     await update.message.reply_text(response_text)
@@ -555,74 +430,102 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 user_id, intent, len(response_text))
 
 
-HELP_TEXT = (
-    "👋 Привіт! Я твій персональний помічник з здоров'я.\n"
-    "\n"
-    "🍎 Що я вмію:\n"
-    "  ▸ Записувати їжу — просто напиши що з'їв\n"
-    "     Наприклад: «200г курячої грудки з рисом»\n"
-    "  ▸ 🏋️ Записувати тренування — «жим 80кг 3×8»\n"
-    "  ▸ 📊 Що робив минулого разу — «що робив на жимі?»\n"
-    "  ▸ 📈 Прогрес — «прогрес присідань»\n"
-    "  ▸ 📓 Щоденник — просто опиши свій стан\n"
-    "  ▸ 📓 Історія — «покажи щоденник»\n"
-    "  ▸ 🎙 Голосові — скажи що з'їв або зробив голосом\n"
-    "  ▸ 📊 Калорії за день з FatSecret + WHOOP\n"
-    "  ▸ 😴 Дані WHOOP — сон, відновлення, тренування\n"
-    "  ▸ 🗑 Видалити останній запис — «видали останнє»\n"
-    "  ▸ 🎯 Встановити ціль — «встанови ціль 2500 ккал»\n"
-    "\n"
-    "🔗 Підключення сервісів:\n"
-    "  ⌚ WHOOP → /connect_whoop\n"
-    "  ❤️ Apple Health → /connect_apple_health\n"
-    "  🧭 Інструкція Apple Health → /apple_health_help\n"
-    "  🥗 FatSecret → /connect_fatsecret\n"
-    "  🔄 Синхронізувати → /sync\n"
-    "  🏋️ Gym промпт → /gym_prompt\n"
-    "  📓 Щоденник → /journal, /journal_time, /journal_off, /journal_on\n"
-    "\n"
-    "⏰ Авто-зведення: 08:00 🌅 та 21:00 🌙 (Київ)\n"
-    "\n"
-    "Просто пиши мені як другу — я розумію 🇺🇦 та 🇬🇧!"
-)
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Food photos: barcode, nutrition label, packaging or plate (+ caption grams)."""
+    message = update.message
+    if not message or not update.effective_user:
+        return
+    user = await _ensure_user(
+        update.effective_user.id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    lang = _lang(update)
+    file_obj = None
+    unique_id = None
+    size = 0
+    if message.photo:
+        photo = message.photo[-1]  # largest size keeps barcode resolution
+        file_obj, unique_id, size = photo, photo.file_unique_id, photo.file_size or 0
+    elif message.document and (message.document.mime_type or "").lower() in (
+        "image/jpeg", "image/png", "image/webp",
+    ):
+        doc = message.document
+        file_obj, unique_id, size = doc, doc.file_unique_id, doc.file_size or 0
+    if file_obj is None:
+        return
+    if size and size > settings.media_max_bytes:
+        await message.reply_text(t("food_image_too_large", lang))
+        return
+    try:
+        tg_file = await file_obj.get_file()
+        data = bytes(await tg_file.download_as_bytearray())
+    except Exception:
+        logger.exception("Photo download failed for user %s", update.effective_user.id)
+        await message.reply_text(t("food_photo_failed", lang))
+        return
+    pool = await get_pool()
+    ctx = await ledger.load_user_context(pool, user["id"])
+    ctx.language = lang
+    try:
+        reply = await food_bot.handle_photo(
+            pool, ctx, data,
+            caption=message.caption or "",
+            chat_id=message.chat_id,
+            message_id=message.message_id,
+            media_group_id=message.media_group_id,
+            reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
+            file_unique_id=unique_id,
+        )
+    except Exception:
+        logger.exception("Photo handling failed for user %s", update.effective_user.id)
+        await message.reply_text(t("food_photo_failed", lang))
+        return
+    if reply is not None:
+        await _send_food_reply(message, reply, lang, user["id"])
 
 
-APPLE_HEALTH_HELP_TEXT = (
-    "🧭 Як підключити Apple Health\n"
-    "\n"
-    "Рекомендований шлях — готовий Shortcut для Apple Shortcuts на iPhone або iPad. "
-    "Це вбудований додаток Apple, нічого додатково встановлювати не треба.\n"
-    "\n"
-    "Shortcut синхронізує: 👣 кроки, 🔥 активні калорії, 😴 сон і 🧘 HRV "
-    "(варіабельність пульсу — використовуємо як стрес-проксі: нижчий за звичний "
-    "HRV ≈ вищий стрес).\n"
-    "\n"
-    "1. У Telegram натисни /connect_apple_health.\n"
-    "2. Відкрий готовий Shortcut `Health Tracker Apple Health Sync` саме на iPhone або iPad. "
-    "На Mac дія Find Health Samples не підтримується.\n"
-    "3. Під час імпорту встав URL з повідомлення бота в Import Question.\n"
-    "4. Запусти Shortcut один раз, дозволь доступ до Health і Network. "
-    "Health питає дозвіл окремо для кожного типу даних (кроки, калорії, сон, HRV) "
-    "— дозволь усі, які хочеш синхронізувати.\n"
-    "5. У Shortcuts → Automation створи Personal Automation Time of Day і вибери "
-    "цей Shortcut для регулярного запуску.\n"
-    "\n"
-    "Після першого запуску перевір статус командою /sync.\n"
-    "\n"
-    "⚠️ Якщо ти імпортував Shortcut раніше (стара версія надсилала лише кроки), "
-    "видали його і імпортуй заново за тим самим посиланням, потім знову дозволь "
-    "доступ до Health — інакше бот і далі отримуватиме тільки кроки.\n"
-    "\n"
-    "Apple не дозволяє повністю zero-touch sync: імпорт Shortcut, дозволи Health/Network "
-    "і Personal Automation завжди підтверджуються на конкретному iPhone/iPad. "
-    "Якщо готовий Shortcut не підходить, ручний варіант і Health Auto Export описані "
-    "в документації.\n"
-    "\n"
-    "userId і token не додавай у Body — вони вже є в URL з бота.\n"
-    "\n"
-    "Якщо випадково переслав URL або хочеш скинути доступ, запусти "
-    "/connect_apple_health ще раз. Бот створить новий URL, а старий перестане працювати."
-)
+async def handle_food_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline buttons on food drafts/entries. Ownership + version checked server-side."""
+    query = update.callback_query
+    if query is None or not update.effective_user:
+        return
+    await query.answer()
+    user = await _ensure_user(
+        update.effective_user.id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    lang = _lang(update)
+    pool = await get_pool()
+    ctx = await ledger.load_user_context(pool, user["id"])
+    ctx.language = lang
+    try:
+        reply = await food_bot.handle_callback(pool, ctx, query.data or "")
+    except Exception:
+        logger.exception("Food callback failed for user %s", update.effective_user.id)
+        reply = food_bot.BotReply(t("intent_failed", lang))
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass  # message too old / already edited
+    if query.message is not None:
+        await _send_food_reply(query.message, reply, lang, user["id"])
+
+
+async def handle_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/app — open the Telegram Web App."""
+    if not update.message or not update.effective_user:
+        return
+    lang = _lang(update)
+    url = food_bot.webapp_link()
+    if not url:
+        await update.message.reply_text(t("app_unavailable", lang))
+        return
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton(t("app_button", lang), web_app=WebAppInfo(url=url))]])
+    await update.message.reply_text(t("app_open", lang), reply_markup=markup)
+
+
+HELP_TEXT = t("help", "uk")
+APPLE_HEALTH_HELP_TEXT = t("apple_help", "uk")
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -630,7 +533,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message or not update.effective_user:
         return
 
-    await update.message.reply_text(HELP_TEXT, disable_web_page_preview=True)
+    await update.message.reply_text(t("help", _lang(update)), disable_web_page_preview=True)
 
 
 async def handle_apple_health_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -638,7 +541,7 @@ async def handle_apple_health_help(update: Update, context: ContextTypes.DEFAULT
     if not update.message or not update.effective_user:
         return
 
-    await update.message.reply_text(APPLE_HEALTH_HELP_TEXT, disable_web_page_preview=True)
+    await update.message.reply_text(t("apple_help", _lang(update)), disable_web_page_preview=True)
 
 
 async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -647,21 +550,20 @@ async def handle_connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     telegram_id = update.effective_user.id
-    url = (
-        f"https://api.prod.whoop.com/oauth/oauth2/auth?"
-        f"client_id={settings.whoop_client_id}"
-        f"&redirect_uri={settings.whoop_redirect_uri}"
-        f"&response_type=code"
-        f"&scope=offline%20read%3Acycles%20read%3Aworkout%20read%3Arecovery%20read%3Asleep%20read%3Abody_measurement"
-        f"&state={telegram_id}"
+    url = f"{WHOOP_AUTH_URL}?" + urlencode(
+        {
+            "client_id": settings.whoop_client_id,
+            "redirect_uri": settings.whoop_redirect_uri,
+            "response_type": "code",
+            "scope": WHOOP_SCOPES,
+            # Signed + expiring: a bare Telegram id let anyone bind their own
+            # WHOOP account to someone else's chat.
+            "state": sign_oauth_state(telegram_id, "whoop"),
+        },
+        quote_via=quote,
     )
     await update.message.reply_text(
-        f"⌚ Підключити WHOOP\n"
-        f"\n"
-        f"Сон, відновлення, активність — все буде доступно після авторизації.\n"
-        f"\n"
-        f"👉 {url}",
-        disable_web_page_preview=True,
+        t("connect_whoop", _lang(update), url=url), disable_web_page_preview=True,
     )
 
 
@@ -671,14 +573,10 @@ async def handle_connect_fatsecret(update: Update, context: ContextTypes.DEFAULT
         return
 
     telegram_id = update.effective_user.id
-    url = f"{settings.app_base_url}/fatsecret/connect?state={telegram_id}"
+    state = quote(sign_oauth_state(telegram_id, "fatsecret"), safe="")
+    url = f"{settings.app_base_url}/fatsecret/connect?state={state}"
     await update.message.reply_text(
-        f"🥗 Підключити FatSecret\n"
-        f"\n"
-        f"Щоденник їжі — синхронізується автоматично.\n"
-        f"\n"
-        f"👉 {url}",
-        disable_web_page_preview=True,
+        t("connect_fatsecret", _lang(update), url=url), disable_web_page_preview=True,
     )
 
 
@@ -687,7 +585,7 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
     if not update.message or not update.effective_user:
         return
 
-    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
     pool = await get_pool()
     sync = await ensure_apple_health_sync(
         pool,
@@ -702,31 +600,12 @@ async def handle_connect_apple_health(update: Update, context: ContextTypes.DEFA
     shortcut_url = f"{webhook_url}?{shortcut_params}"
     shortcut_import_url = f"{settings.app_base_url}/api/v1/health/apple-health/shortcut"
     await update.message.reply_text(
-        "❤️ Apple Health\n"
-        "\n"
-        "Apple Health не має backend API, тому дані має надсилати сам iPhone або iPad. "
-        "Рекомендований шлях — імпортувати готовий iOS Shortcuts template.\n"
-        "\n"
-        "1) Готовий Shortcut для iOS Shortcuts (кроки, активні калорії, сон, "
-        "HRV як стрес-проксі):\n"
-        "⚠️ Відкрий посилання саме на iPhone або iPad. На Mac дія "
-        "Find Health Samples не підтримується.\n"
-        f"👉 {shortcut_import_url}\n"
-        "Назва: Health Tracker Apple Health Sync\n"
-        "Під час імпорту встав цей URL в Import Question:\n"
-        f"{shortcut_url}\n"
-        "\n"
-        "Після імпорту запусти Shortcut один раз на iPhone або iPad і дозволь доступ до "
-        "Health/Network. Для авто-sync створи Personal Automation → Time of Day → "
-        "Run Shortcut. Apple вимагає, щоб ця automation була налаштована на "
-        "конкретному iPhone/iPad.\n"
-        "\n"
-        "2) Fallback з встановленням додатку: Health Auto Export — JSON+CSV. "
-        "У ньому вкажи цей самий URL і Output: JSON (REST API).\n"
-        "\n"
-        "Не додавай userId/token у Request Body — вони вже є в URL. "
-        "Якщо URL потрапив не туди, запусти /connect_apple_health ще раз: "
-        "бот створить новий token, а старий URL перестане працювати.",
+        t(
+            "connect_apple",
+            _lang(update),
+            shortcut_import_url=shortcut_import_url,
+            shortcut_url=shortcut_url,
+        ),
         disable_web_page_preview=True,
     )
 
@@ -736,7 +615,7 @@ async def handle_journal_time(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message or not update.effective_user:
         return
 
-    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
     text = (update.message.text or "").replace("/journal_time", "", 1).strip()
 
     if not text:
@@ -748,55 +627,52 @@ async def handle_journal_time(update: Update, context: ContextTypes.DEFAULT_TYPE
         t1 = row["journal_time_1"].strftime("%H:%M") if row and row["journal_time_1"] else "10:00"
         t2 = row["journal_time_2"].strftime("%H:%M") if row and row["journal_time_2"] else "20:00"
         enabled = row["journal_enabled"] if row else True
-        status = "увімкнено" if enabled else "вимкнено"
+        lang = _lang(update)
+        status = t("enabled", lang) if enabled else t("disabled", lang)
         await update.message.reply_text(
-            f"📓 Нагадування щоденника: {status}\n"
-            f"  🌅 {t1}  🌙 {t2}\n\n"
-            f"Змінити: /journal_time 09:00 21:00\n"
-            f"Вимкнути: /journal_off\n"
-            f"Увімкнути: /journal_on"
+            t("journal_status", lang, status=status, t1=t1, t2=t2)
         )
         return
 
     import re
     times = re.findall(r'\d{1,2}:\d{2}', text)
     if len(times) < 2:
-        await update.message.reply_text("Вкажи два часи: /journal_time 10:00 20:00")
+        await update.message.reply_text(t("journal_need_two", _lang(update)))
         return
 
     from datetime import time as dt_time
     try:
         h1, m1 = map(int, times[0].split(":"))
         h2, m2 = map(int, times[1].split(":"))
-        t1 = dt_time(h1, m1)
-        t2 = dt_time(h2, m2)
+        time_1 = dt_time(h1, m1)
+        time_2 = dt_time(h2, m2)
     except (ValueError, IndexError):
-        await update.message.reply_text("Невірний формат часу. Приклад: /journal_time 10:00 20:00")
+        await update.message.reply_text(t("journal_bad_format", _lang(update)))
         return
 
     pool = await get_pool()
     await pool.execute(
         "UPDATE users SET journal_time_1 = $1, journal_time_2 = $2, journal_enabled = true WHERE id = $3",
-        t1, t2, user["id"],
+        time_1, time_2, user["id"],
     )
-    await update.message.reply_text(f"✅ Нагадування: 🌅 {times[0]}  🌙 {times[1]}")
+    await update.message.reply_text(t("journal_set", _lang(update), t1=times[0], t2=times[1]))
 
 
 async def handle_journal_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /journal_off — disable journal reminders."""
     if not update.message or not update.effective_user:
         return
-    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
     pool = await get_pool()
     await pool.execute("UPDATE users SET journal_enabled = false WHERE id = $1", user["id"])
-    await update.message.reply_text("📓 Нагадування щоденника вимкнено.\nУвімкнути: /journal_on")
+    await update.message.reply_text(t("journal_off", _lang(update)))
 
 
 async def handle_journal_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /journal_on — enable journal reminders."""
     if not update.message or not update.effective_user:
         return
-    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
     pool = await get_pool()
     await pool.execute("UPDATE users SET journal_enabled = true WHERE id = $1", user["id"])
     row = await pool.fetchrow(
@@ -804,7 +680,7 @@ async def handle_journal_on(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     t1 = row["journal_time_1"].strftime("%H:%M") if row and row["journal_time_1"] else "10:00"
     t2 = row["journal_time_2"].strftime("%H:%M") if row and row["journal_time_2"] else "20:00"
-    await update.message.reply_text(f"✅ Нагадування увімкнено: 🌅 {t1}  🌙 {t2}")
+    await update.message.reply_text(t("journal_on", _lang(update), t1=t1, t2=t2))
 
 
 async def handle_journal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -812,11 +688,11 @@ async def handle_journal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.message or not update.effective_user:
         return
 
-    user = await _ensure_user(update.effective_user.id, update.effective_user.username)
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
     entries = await get_journal_history(user["id"], days=7)
 
     if not entries:
-        await update.message.reply_text("📓 Щоденник порожній. Просто напиши як справи!")
+        await update.message.reply_text(t("journal_empty", _lang(update)))
         return
 
     lines = []
@@ -830,7 +706,7 @@ async def handle_journal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             tags = " " + " ".join(f"#{t}" for t in e["tags"])
         lines.append(f"  {date_str}{mood}{energy}{tags}\n    {text}")
 
-    await update.message.reply_text("📓 Щоденник (7 днів):\n\n" + "\n\n".join(lines))
+    await update.message.reply_text(t("journal_title", _lang(update)) + "\n\n".join(lines))
 
 
 async def handle_gym_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -839,7 +715,11 @@ async def handle_gym_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     telegram_user_id = update.effective_user.id
-    user = await _ensure_user(telegram_user_id, update.effective_user.username)
+    user = await _ensure_user(
+        telegram_user_id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    lang = _lang(update)
 
     text = update.message.text or ""
     prompt_text = text.replace("/gym_prompt", "", 1).strip()
@@ -847,16 +727,121 @@ async def handle_gym_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     pool = await get_pool()
     if not prompt_text:
         row = await pool.fetchrow("SELECT gym_prompt FROM users WHERE id = $1", user["id"])
-        current = row["gym_prompt"] if row and row["gym_prompt"] else "не встановлено"
-        await update.message.reply_text(
-            f"🏋️ Поточний gym промпт:\n{current}\n\n"
-            f"Щоб змінити: /gym_prompt <текст>\n"
-            f"Приклад: /gym_prompt Я тренуюсь для пауерліфтингу, фокус на базових вправах"
-        )
+        current = row["gym_prompt"] if row and row["gym_prompt"] else t("gym_prompt_unset", lang)
+        await update.message.reply_text(t("gym_prompt_current", lang, current=current))
         return
 
     await pool.execute("UPDATE users SET gym_prompt = $1 WHERE id = $2", prompt_text, user["id"])
-    await update.message.reply_text(f"✅ Gym промпт встановлено:\n{prompt_text}")
+    await update.message.reply_text(t("gym_prompt_set", lang, text=prompt_text))
+
+
+async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /timezone [IANA name] — show or set the user's timezone."""
+    if not update.message or not update.effective_user:
+        return
+
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    user = await _ensure_user(update.effective_user.id, update.effective_user.username, getattr(update.effective_user, "language_code", None))
+    pool = await get_pool()
+    args = (update.message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        row = await pool.fetchrow("SELECT timezone FROM users WHERE id = $1", user["id"])
+        current = resolve_timezone(row["timezone"] if row else None).key
+        await update.message.reply_text(t("tz_current", _lang(update), tz=current))
+        return
+
+    name = args[1].strip()
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        await update.message.reply_text(t("tz_unknown", _lang(update)))
+        return
+    await pool.execute(
+        "UPDATE users SET timezone = $1, updated_at = NOW() WHERE id = $2",
+        name,
+        user["id"],
+    )
+    await update.message.reply_text(t("tz_set", _lang(update), tz=name))
+
+
+async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /language [uk|en] — show or set the reply language."""
+    if not update.message or not update.effective_user:
+        return
+    user = await _ensure_user(
+        update.effective_user.id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    args = (update.message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        await update.message.reply_text(t("lang_current", _lang(update)))
+        return
+    choice = args[1].strip().lower()
+    if choice not in SUPPORTED_LANGUAGES:
+        await update.message.reply_text(t("lang_unknown", _lang(update)))
+        return
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE users SET language = $1, updated_at = NOW() WHERE id = $2", choice, user["id"],
+    )
+    _language_cache[update.effective_user.id] = choice
+    await update.message.reply_text(t("lang_set", choice))
+
+
+async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /profile [birth_year m|f height_cm] — BMR inputs."""
+    if not update.message or not update.effective_user:
+        return
+    from app.services.apple_health import get_latest_body_mass
+    from app.services.bmr import compute_bmr, parse_profile_args
+
+    user = await _ensure_user(
+        update.effective_user.id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    lang = _lang(update)
+    pool = await get_pool()
+    args = (update.message.text or "").split(maxsplit=1)
+
+    if len(args) == 2:
+        profile = parse_profile_args(args[1])
+        if profile is None:
+            await update.message.reply_text(t("profile_bad", lang))
+            return
+        await pool.execute(
+            """UPDATE users SET birth_year = $1, sex = $2, height_cm = $3, updated_at = NOW()
+               WHERE id = $4""",
+            profile["birth_year"], profile["sex"], profile["height_cm"], user["id"],
+        )
+
+    row = await pool.fetchrow(
+        "SELECT birth_year, sex, height_cm FROM users WHERE id = $1", user["id"],
+    )
+    latest = await get_latest_body_mass(pool, user["id"])
+    weight = latest["kg"] if latest else None
+    bmr = compute_bmr(
+        birth_year=row["birth_year"] if row else None,
+        sex=row["sex"] if row else None,
+        height_cm=float(row["height_cm"]) if row and row["height_cm"] else None,
+        weight_kg=weight,
+    )
+    bmr_text = t("bmr_value", lang, kcal=bmr) if bmr else t("bmr_need_weight", lang)
+    if len(args) == 2:
+        await update.message.reply_text(t("profile_set", lang, bmr=bmr_text))
+        return
+    not_set = t("not_set", lang)
+    await update.message.reply_text(
+        t(
+            "profile_current",
+            lang,
+            birth_year=(row["birth_year"] if row and row["birth_year"] else not_set),
+            sex=(t(row["sex"], lang) if row and row["sex"] else not_set),
+            height=(f"{row['height_cm']} cm" if row and row["height_cm"] else not_set),
+            weight=(f"{weight} kg" if weight else not_set),
+            bmr=bmr_text,
+        )
+    )
 
 
 async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -865,10 +850,14 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     telegram_user_id = update.effective_user.id
-    user = await _ensure_user(telegram_user_id, update.effective_user.username)
+    user = await _ensure_user(
+        telegram_user_id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
     user_id = user["id"]
+    lang = _lang(update)
 
-    await update.message.reply_text("🔄 Перевіряю з'єднання...")
+    await update.message.reply_text(t("sync_checking", lang))
 
     stats = await get_today_stats(user_id)
     results = []
@@ -881,23 +870,23 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if whoop_row:
         if "whoop" in stats.get("expired_services", []):
-            results.append("⌚ WHOOP — 🔑 сесія закінчилась → /connect_whoop")
+            results.append(t("sync_whoop_expired", lang))
         elif stats["today_calories_out"] > 0 or stats["whoop_sleep"] or stats["whoop_recovery"]:
             parts = []
             if stats.get("calories_burned_source") == "whoop" and stats["today_calories_out"] > 0:
-                parts.append(f"{stats['today_calories_out']} kcal спалено")
+                parts.append(t("sync_whoop_burned", lang, kcal=stats["today_calories_out"]))
             if stats["whoop_recovery"]:
                 parts.append("recovery ✓")
             if stats["whoop_sleep"]:
                 parts.append("sleep ✓")
             if parts:
-                results.append(f"⌚ WHOOP — ✅ {', '.join(parts)}")
+                results.append(t("sync_whoop_ok", lang, parts=", ".join(parts)))
             else:
-                results.append("⌚ WHOOP — ✅ підключено (дані ще збираються)")
+                results.append(t("sync_whoop_pending", lang))
         else:
-            results.append("⌚ WHOOP — ✅ підключено (дані ще збираються)")
+            results.append(t("sync_whoop_pending", lang))
     else:
-        results.append("⌚ WHOOP — ⚠️ не підключено")
+        results.append(t("sync_whoop_off", lang))
 
     apple_health_row = await pool.fetchrow(
         """SELECT last_sync_at
@@ -912,23 +901,19 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             count_text = ", ".join(
                 f"{metric}: {count}" for metric, count in sorted(metric_counts.items())
             )
+            line = t("sync_apple_counts", lang, counts=count_text)
             if latest_metric_at:
-                results.append(
-                    f"❤️ Apple Health — ✅ імпортовано сьогодні: {count_text}; "
-                    f"останній показник {latest_metric_at:%d.%m %H:%M}"
-                )
-            else:
-                results.append(f"❤️ Apple Health — ✅ імпортовано сьогодні: {count_text}")
+                line += t("sync_apple_latest", lang, latest=f"{latest_metric_at:%d.%m %H:%M}")
+            if stats.get("apple_health_workout_count"):
+                line += t("sync_apple_workouts", lang, count=stats["apple_health_workout_count"])
+            results.append(line)
         elif apple_health_row["last_sync_at"]:
             last_sync = apple_health_row["last_sync_at"]
-            results.append(
-                f"❤️ Apple Health — ✅ остання синхронізація {last_sync:%d.%m %H:%M}, "
-                "показників за сьогодні ще немає"
-            )
+            results.append(t("sync_apple_last_sync", lang, last=f"{last_sync:%d.%m %H:%M}"))
         else:
-            results.append("❤️ Apple Health — ✅ підключено, очікую перший sync")
+            results.append(t("sync_apple_waiting", lang))
     else:
-        results.append("❤️ Apple Health — ⚠️ не підключено")
+        results.append(t("sync_apple_off", lang))
 
     # FatSecret status
     fs_row = await pool.fetchrow(
@@ -937,14 +922,54 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if fs_row:
         if "fatsecret" in stats.get("expired_services", []):
-            results.append("🥗 FatSecret — 🔑 сесія закінчилась → /connect_fatsecret")
+            results.append(t("sync_fs_expired", lang))
         else:
-            cals = stats["today_calories_in"]
-            results.append(f"🥗 FatSecret — ✅ {cals} kcal сьогодні")
+            results.append(t("sync_fs_ok", lang, kcal=stats["today_calories_in"]))
     else:
-        results.append("🥗 FatSecret — ⚠️ не підключено")
+        results.append(t("sync_fs_off", lang))
 
-    await update.message.reply_text("✅ Перевірка завершена\n\n" + "\n".join(results))
+    await update.message.reply_text(t("sync_done", lang) + "\n".join(results))
+
+
+BOT_COMMANDS: dict[str | None, list[tuple[str, str]]] = {
+    "uk": [
+        ("start", "Почати / Інструкція"),
+        ("help", "Допомога"),
+        ("connect_whoop", "Підключити WHOOP"),
+        ("connect_apple_health", "Підключити Apple Health"),
+        ("apple_health_help", "Інструкція Apple Health"),
+        ("connect_fatsecret", "Підключити FatSecret"),
+        ("sync", "Синхронізувати дані"),
+        ("timezone", "Часовий пояс"),
+        ("profile", "Профіль для BMR"),
+        ("language", "Мова / Language"),
+        ("gym_prompt", "Налаштувати gym профіль"),
+        ("journal", "Записи щоденника"),
+        ("journal_time", "Час нагадувань щоденника"),
+        ("journal_off", "Вимкнути нагадування"),
+        ("journal_on", "Увімкнути нагадування"),
+        ("app", "Застосунок"),
+    ],
+    # None = default for every other Telegram language.
+    None: [
+        ("start", "Start / guide"),
+        ("help", "Help"),
+        ("connect_whoop", "Connect WHOOP"),
+        ("connect_apple_health", "Connect Apple Health"),
+        ("apple_health_help", "Apple Health guide"),
+        ("connect_fatsecret", "Connect FatSecret"),
+        ("sync", "Check connections"),
+        ("timezone", "Timezone"),
+        ("profile", "BMR profile"),
+        ("language", "Language / Мова"),
+        ("gym_prompt", "Gym profile"),
+        ("journal", "Journal entries"),
+        ("journal_time", "Journal reminder times"),
+        ("journal_off", "Disable reminders"),
+        ("journal_on", "Enable reminders"),
+        ("app", "Web App"),
+    ],
+}
 
 
 async def start_bot() -> None:
@@ -964,11 +989,18 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("apple_health_help", handle_apple_health_help))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
+    _application.add_handler(CommandHandler("timezone", handle_timezone))
+    _application.add_handler(CommandHandler("language", handle_language))
+    _application.add_handler(CommandHandler("profile", handle_profile))
     _application.add_handler(CommandHandler("gym_prompt", handle_gym_prompt))
     _application.add_handler(CommandHandler("journal", handle_journal))
     _application.add_handler(CommandHandler("journal_time", handle_journal_time))
     _application.add_handler(CommandHandler("journal_off", handle_journal_off))
     _application.add_handler(CommandHandler("journal_on", handle_journal_on))
+    _application.add_handler(CommandHandler("app", handle_app))
+    _application.add_handler(CallbackQueryHandler(handle_food_callback, pattern=r"^f[de]:"))
+    _application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    _application.add_handler(MessageHandler(filters.Document.IMAGE, handle_photo))
     _application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
@@ -978,20 +1010,11 @@ async def start_bot() -> None:
 
     await _application.initialize()
 
-    await _application.bot.set_my_commands([
-        BotCommand("start", "Почати / Інструкція"),
-        BotCommand("help", "Допомога"),
-        BotCommand("connect_whoop", "Підключити WHOOP"),
-        BotCommand("connect_apple_health", "Підключити Apple Health"),
-        BotCommand("apple_health_help", "Інструкція Apple Health"),
-        BotCommand("connect_fatsecret", "Підключити FatSecret"),
-        BotCommand("sync", "Синхронізувати дані"),
-        BotCommand("gym_prompt", "Налаштувати gym профіль"),
-        BotCommand("journal", "Записи щоденника"),
-        BotCommand("journal_time", "Час нагадувань щоденника"),
-        BotCommand("journal_off", "Вимкнути нагадування"),
-        BotCommand("journal_on", "Увімкнути нагадування"),
-    ])
+    for language_code, commands in BOT_COMMANDS.items():
+        await _application.bot.set_my_commands(
+            [BotCommand(name, description) for name, description in commands],
+            language_code=language_code,
+        )
 
     await _application.start()
     await _application.updater.start_polling(drop_pending_updates=True)

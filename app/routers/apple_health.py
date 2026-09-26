@@ -12,12 +12,14 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from app.database import get_pool
+from app.i18n import DEFAULT_LANGUAGE, normalize_language, t
+from app.services.health_workouts import normalize_workouts, persist_workouts
 from app.services.apple_health import (
     AppleHealthIngestionError,
     AppleHealthPersistenceError,
     AppleHealthSnapshotConflictError,
-    _get_active_sync,
     convert_health_auto_export,
+    get_active_apple_health_sync,
     get_apple_health_sync_for_observability,
     ingest_apple_health_payload,
     is_health_auto_export_payload,
@@ -136,51 +138,67 @@ _UA_METRIC_LABELS = {
     "heart_rate": "пульс",
     "heart_rate_variability": "ВСР (HRV)",
     "sleep_analysis": "сон",
+    "resting_heart_rate": "пульс у спокої",
+    "body_mass": "вага",
+    "walking_running_distance": "дистанція",
+    "apple_exercise_time": "хвилини тренувань",
 }
 
 
-def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
-    """Build the Ukrainian parsed-data summary message from an ingest result.
+def _format_ingest_summary(result: dict[str, Any], lang: str = "uk") -> str:
+    """Build the parsed-data summary message (uk/en) from an ingest result.
 
     Reports samples received/aggregated, family rows updated/replayed/stale,
-    failures, and the raw-retention guarantee (``raw stored: 0``).
+    failures, workouts, and the raw-retention guarantee (``raw stored: 0``).
     """
-    received = result.get("records_received", 0)
-    aggregated = result.get("records_aggregated", result.get("records_processed", 0))
-    aggregate_rows = result.get("aggregate_rows_updated", 0)
-    replayed_rows = result.get("aggregate_rows_replayed", 0)
-    stale_rows = result.get("aggregate_rows_stale", 0)
-    raw_stored = result.get("raw_stored", 0)
-    failed = result.get("records_failed", 0)
-    counts_by_type = result.get("records_by_type") or {}
-    covered = result.get("covered_dates") or []
-
-    parts = [
-        f"{count} {_UA_METRIC_LABELS.get(key, key.replace('_', ' '))}"
-        for key, count in sorted(counts_by_type.items(), key=lambda kv: (-kv[1], kv[0]))
-    ]
-    breakdown = ", ".join(parts) if parts else "немає метрик"
-
-    lines = [
-        "📊 Apple Health синхронізовано",
-        f"Отримано {received} семплів, агреговано {aggregated}.",
-        (
-            f"Рядків сімейств оновлено: {aggregate_rows}; "
-            f"повторів без змін: {replayed_rows}; застарілих: {stale_rows}."
-        ),
-        f"Отримано за типами: {breakdown}.",
-        f"Сирих семплів збережено: {raw_stored} (зберігаються лише добові підсумки).",
-    ]
-    if covered:
-        lines.append("Дні: " + ", ".join(covered) + ".")
-    if failed:
-        lines.append(f"⚠️ Помилок: {failed}.")
-    unmapped = result.get("unmapped_metric_types") or []
-    if unmapped:
+    lines: list[str] = [t("ah_title", lang)]
+    if "records_received" in result:
+        received = result.get("records_received", 0)
+        aggregated = result.get("records_aggregated", result.get("records_processed", 0))
+        counts_by_type = result.get("records_by_type") or {}
+        labels = _UA_METRIC_LABELS if lang == "uk" else {}
+        parts = [
+            f"{count} {labels.get(key, key.replace('_', ' '))}"
+            for key, count in sorted(counts_by_type.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+        breakdown = ", ".join(parts) if parts else t("ah_no_metrics", lang)
+        lines += [
+            t("ah_received", lang, received=received, aggregated=aggregated),
+            t(
+                "ah_rows",
+                lang,
+                updated=result.get("aggregate_rows_updated", 0),
+                replayed=result.get("aggregate_rows_replayed", 0),
+                stale=result.get("aggregate_rows_stale", 0),
+            ),
+            t("ah_breakdown", lang, breakdown=breakdown),
+            t("ah_raw", lang, raw=result.get("raw_stored", 0)),
+        ]
+        covered = result.get("covered_dates") or []
+        if covered:
+            lines.append(t("ah_days", lang, days=", ".join(covered)))
+        if result.get("records_failed"):
+            lines.append(t("ah_failed", lang, failed=result["records_failed"]))
+        unmapped = result.get("unmapped_metric_types") or []
+        if unmapped:
+            lines.append(t("ah_unmapped", lang, types=", ".join(unmapped)))
+    workouts = result.get("workouts")
+    if workouts:
         lines.append(
-            "ℹ️ Непідтримувані типи не збережено: " + ", ".join(unmapped) + "."
+            t(
+                "ah_workouts",
+                lang,
+                received=workouts.get("workouts_received", 0),
+                inserted=workouts.get("workouts_inserted", 0),
+                updated=workouts.get("workouts_updated", 0),
+            )
         )
     return "\n".join(lines)
+
+
+# Backward-compatible name used by older tests/callers.
+def _format_ingest_summary_uk(result: dict[str, Any]) -> str:
+    return _format_ingest_summary(result, "uk")
 
 
 def _validate_health_auto_export_snapshot_contract(
@@ -225,15 +243,26 @@ def _validate_health_auto_export_snapshot_contract(
 async def _notify_ingest_summary_to_telegram(
     telegram_user_id: int,
     result: dict[str, Any],
+    *,
+    pool: Any = None,
+    user_id: int | None = None,
 ) -> None:
     """Send the human-readable parsed-data summary to the owner's chat.
 
     Best-effort: a Telegram failure must never break the sync response.
     """
+    lang = DEFAULT_LANGUAGE
+    if pool is not None and user_id is not None:
+        try:
+            lang = normalize_language(
+                await pool.fetchval("SELECT language FROM users WHERE id = $1", user_id)
+            )
+        except Exception:
+            logger.debug("Language lookup failed for user_id=%s", user_id, exc_info=True)
     try:
         from app.services.telegram_bot import send_message
 
-        await send_message(telegram_user_id, _format_ingest_summary_uk(result))
+        await send_message(telegram_user_id, _format_ingest_summary(result, lang))
     except Exception:
         logger.exception(
             "AppleHealth ingest summary notification failed for user %s",
@@ -401,7 +430,7 @@ async def sync_apple_health(
 
     pool = await get_pool()
     try:
-        sync = await _get_active_sync(pool, telegram_user_id)
+        sync = await get_active_apple_health_sync(pool, telegram_user_id)
     except AppleHealthIngestionError as exc:
         inactive_sync = await get_apple_health_sync_for_observability(pool, telegram_user_id)
         provided_token = x_apple_health_token or token
@@ -456,6 +485,63 @@ async def sync_apple_health(
         body_len,
         native_metric_count,
     )
+
+    # Workouts are idempotent events: validate them before any write, persist
+    # them after the metric snapshot (or alone when no metrics were sent).
+    if is_hae:
+        hae_data = payload["data"]
+        workouts_raw = hae_data.pop("workouts", None)
+        metrics_present = bool(hae_data.get("metrics"))
+        workout_collector = "health_auto_export"
+        workout_timezone = request.headers.get("x-health-tracker-timezone", "").strip() or None
+    else:
+        workouts_raw = payload.pop("workouts", None)
+        metrics_present = "metrics" in payload or "snapshot" in payload
+        workout_collector = "shortcut"
+        snapshot_meta = payload.get("snapshot")
+        workout_timezone = (
+            str(snapshot_meta.get("timezone"))[:64]
+            if isinstance(snapshot_meta, dict) and snapshot_meta.get("timezone")
+            else None
+        )
+    workouts: list[dict[str, Any]] = []
+    if workouts_raw is not None:
+        try:
+            workouts = normalize_workouts(workouts_raw, collector=workout_collector)
+        except AppleHealthIngestionError as exc:
+            await record_apple_health_failure(
+                pool,
+                user_id=sync["user_id"],
+                sync_id=sync["sync_id"],
+                http_status=400,
+                error_message=str(exc),
+                request_summary={"parse_error": "invalid_workouts"},
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def _persist_workouts() -> dict[str, int] | None:
+        if workouts_raw is None:
+            return None
+        try:
+            return await persist_workouts(
+                pool, user_id=sync["user_id"], workouts=workouts, timezone_str=workout_timezone,
+            )
+        except Exception as exc:
+            logger.error(
+                "AppleHealth WORKOUT_PERSISTENCE_FAILURE user_id=%s err_class=%s",
+                sync["user_id"],
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500, detail="Apple Health sync is temporarily unavailable",
+            ) from exc
+
+    if workouts_raw is not None and not metrics_present:
+        workout_result = await _persist_workouts()
+        await _notify_ingest_summary_to_telegram(
+            telegram_user_id, {"workouts": workout_result}, pool=pool, user_id=sync["user_id"],
+        )
+        return {"schema_version": 3, "workouts": workout_result}
 
     if is_hae:
         try:
@@ -513,6 +599,9 @@ async def sync_apple_health(
 
     try:
         result = await ingest_apple_health_payload(pool, payload)
+        workout_result = await _persist_workouts()
+        if workout_result is not None:
+            result["workouts"] = workout_result
         logger.info(
             "AppleHealth OK user_id=%s sync_id=%s received=%d aggregated=%d "
             "aggregate_rows=%d raw_stored=%d failed=%d",
@@ -524,7 +613,9 @@ async def sync_apple_health(
             result["raw_stored"],
             result["records_failed"],
         )
-        await _notify_ingest_summary_to_telegram(telegram_user_id, result)
+        await _notify_ingest_summary_to_telegram(
+            telegram_user_id, result, pool=pool, user_id=sync["user_id"],
+        )
         return result
     except AppleHealthSnapshotConflictError as exc:
         logger.warning(

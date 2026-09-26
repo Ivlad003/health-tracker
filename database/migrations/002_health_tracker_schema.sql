@@ -6,6 +6,16 @@
 
 BEGIN;
 
+-- Fresh installs: create the legacy INTEGER-keyed users table that production
+-- already has. No-op on existing databases. (001_initial_schema.sql is a
+-- never-applied UUID design and is skipped by init-db.sh.)
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    telegram_user_id BIGINT UNIQUE,
+    username VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- =============================================================================
 -- ALTER USERS TABLE - Add WHOOP and health tracker columns
 -- =============================================================================

@@ -25,6 +25,7 @@ def test_init_db_skips_rollback_migrations(tmp_path):
         "SELECT 'rollback';\n", encoding="utf-8"
     )
     (migrations_dir / "002_forward.sql").write_text("SELECT 2;\n", encoding="utf-8")
+    (migrations_dir / "001_initial_schema.sql").write_text("SELECT 'uuid';\n", encoding="utf-8")
 
     psql_log = tmp_path / "psql.log"
     fake_psql = bin_dir / "psql"
@@ -51,6 +52,7 @@ def test_init_db_skips_rollback_migrations(tmp_path):
     assert "Running migration: 001_forward.sql" in result.stdout
     assert "Running migration: 002_forward.sql" in result.stdout
     assert "001_forward_rollback.sql" not in result.stdout
+    assert "001_initial_schema.sql" not in result.stdout
     psql_calls = psql_log.read_text(encoding="utf-8").splitlines()
     assert "001_forward_rollback.sql" not in "\n".join(psql_calls)
     migration_calls = [call for call in psql_calls if " -f " in f" {call} "]

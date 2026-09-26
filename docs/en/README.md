@@ -10,6 +10,8 @@ Welcome to Health & Wellness Tracker Bot documentation!
 - [API Integration](api-integration.md) - Technical API documentation
 - [Architecture](architecture.md) - System architecture description
 - [⚠️ Critical Issues](critical-issues.md) - Risks and solutions
+- [🍽 Food Logging](food-logging.md) - History-first matching, barcodes, label photos, FatSecret outbox, Web App API
+- [Food History, Photos, Barcodes & Web App](plans/2026-09-26-food-history-photo-barcode.md) - Research, manual management, default products and admin implementation plan
 
 ## 🎯 Quick Start
 

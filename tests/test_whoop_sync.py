@@ -54,37 +54,93 @@ async def test_no_refresh_if_not_expired(mock_settings):
 
 
 @pytest.mark.asyncio
-async def test_process_workouts_empty(mock_settings):
-    from app.services.whoop_sync import process_workouts
+async def test_refresh_rejected_clears_tokens_and_raises(mock_settings):
+    from app.services.whoop_sync import TokenExpiredError, refresh_token_if_needed
 
-    result = process_workouts({"records": []}, user_id=1)
-    assert result == []
+    user = {
+        "id": 5,
+        "whoop_access_token": "old",
+        "whoop_refresh_token": "revoked",
+        "whoop_token_expires_at": datetime.now(timezone.utc) - timedelta(minutes=1),
+    }
+    rejected = MagicMock(status_code=400, text="invalid_grant")
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=rejected)
+    pool = AsyncMock()
+
+    with pytest.raises(TokenExpiredError):
+        await refresh_token_if_needed(user, client, pool)
+
+    sql = pool.execute.call_args[0][0]
+    assert "whoop_access_token = NULL" in sql
 
 
 @pytest.mark.asyncio
-async def test_process_workouts_with_data(mock_settings):
-    from app.services.whoop_sync import process_workouts
+async def test_concurrent_refresh_spends_refresh_token_once(mock_settings):
+    import asyncio
 
-    data = {
-        "records": [
-            {
-                "id": 100,
-                "sport_name": "Running",
-                "score_state": "SCORED",
-                "score": {
-                    "kilojoule": 1000,
-                    "strain": 12.5,
-                    "average_heart_rate": 145,
-                    "max_heart_rate": 180,
-                },
-                "start": "2026-02-24T10:00:00Z",
-                "end": "2026-02-24T11:00:00Z",
-            }
-        ]
+    from app.services.whoop_sync import refresh_token_if_needed
+
+    user = {
+        "id": 9,
+        "whoop_access_token": "old",
+        "whoop_refresh_token": "refresh",
+        "whoop_token_expires_at": datetime.now(timezone.utc) - timedelta(minutes=1),
     }
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = {"access_token": "new", "refresh_token": "r2", "expires_in": 3600}
 
-    result = process_workouts(data, user_id=1)
-    assert len(result) == 1
-    assert result[0]["whoop_workout_id"] == "100"
-    assert result[0]["sport_name"] == "Running"
-    assert result[0]["calories"] == pytest.approx(1000 / 4.184, rel=0.01)
+    async def slow_post(*args, **kwargs):
+        await asyncio.sleep(0.01)
+        return ok
+
+    client = AsyncMock()
+    client.post = AsyncMock(side_effect=slow_post)
+    pool = AsyncMock()
+
+    tokens = await asyncio.gather(
+        refresh_token_if_needed(dict(user), client, pool),
+        refresh_token_if_needed(dict(user), client, pool),
+    )
+
+    assert tokens == ["new", "new"]
+    client.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_whoop_context_retries_once_after_401_then_clears(mock_settings):
+    import httpx
+
+    from app.services import whoop_sync
+
+    user_row = {
+        "id": 3,
+        "whoop_access_token": "a",
+        "whoop_refresh_token": "r",
+        "whoop_token_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=user_row)
+    unauthorized = httpx.HTTPStatusError(
+        "401", request=MagicMock(), response=MagicMock(status_code=401),
+    )
+
+    with (
+        patch.object(whoop_sync, "refresh_token_if_needed", AsyncMock(return_value="t")),
+        patch.object(whoop_sync, "fetch_whoop_context", AsyncMock(side_effect=unauthorized)) as fetch,
+    ):
+        with pytest.raises(whoop_sync.TokenExpiredError):
+            await whoop_sync.get_whoop_context_for_user(pool, 3)
+
+    assert fetch.await_count == 2
+    assert "whoop_access_token = NULL" in pool.execute.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_whoop_context_returns_none_when_not_connected(mock_settings):
+    from app.services.whoop_sync import get_whoop_context_for_user
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    assert await get_whoop_context_for_user(pool, 1) is None

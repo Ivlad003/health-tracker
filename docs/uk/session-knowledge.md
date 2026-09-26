@@ -1,4 +1,4 @@
-# База знань сесії - 2026-02-25
+# База знань сесії - оновлено 2026-09-26
 
 [English version](../en/session-knowledge.md)
 
@@ -21,25 +21,42 @@
 
 | Сервіс | Файл | Призначення |
 |--------|------|-------------|
-| Telegram Bot | `app/services/telegram_bot.py` | Обробка повідомлень, команди (/start, /help, /sync, /connect_whoop, /connect_fatsecret) |
+| Telegram Bot | `app/services/telegram_bot.py` | Бот на long polling; обробники фото/документів/кнопок для їжі. Команди: /start, /help, /sync, /timezone, /profile, /language, /connect_whoop, /connect_fatsecret, /connect_apple_health, /apple_health_help, /gym_prompt, /journal*, /app |
 | AI Assistant | `app/services/ai_assistant.py` | GPT класифікація + відповідь, статистика калорій |
 | WHOOP Sync | `app/services/whoop_sync.py` | OAuth 2.0, синхронізація даних, оновлення токенів |
 | FatSecret API | `app/services/fatsecret_api.py` | OAuth 1.0, пошук їжі, синхронізація щоденника, перевірка токенів |
 | FatSecret Auth | `app/services/fatsecret_auth.py` | OAuth 1.0 HMAC-SHA1 підписання |
-| Briefings | `app/services/briefings.py` | Ранкові (08:00) / вечірні (21:00) повідомлення |
+| Apple Health | `app/services/apple_health.py`, `app/routers/apple_health.py` | Webhook для Shortcut/HAE, щоденні агрегати schema v3 за сімействами |
+| Briefings | `app/services/briefings.py` | Ранкові (08:00) / вечірні (21:00) повідомлення за **локальним часом користувача**, нагадування щоденника |
 | Scheduler | `app/scheduler.py` | APScheduler періодичні задачі |
+| Security | `app/security.py` | Підписаний OAuth `state`, залежність `require_admin` |
+| Time | `app/timeutils.py` | `resolve_timezone()` (users.timezone → DEFAULT_TIMEZONE), межі локального дня |
+| Crypto | `app/crypto.py` | `hash_secret`/`verify_secret` для секрету Apple Health |
+| i18n | `app/i18n.py` | Каталог повідомлень uk/en `t(key, lang)`, `normalize_language()` |
+| Workouts | `app/services/health_workouts.py` | Валідація, upsert і денний підсумок тренувань Apple Health |
+| BMR | `app/services/bmr.py` | Mifflin-St Jeor, парсинг `/profile`, пропорційний базальний витрат |
+| Облік їжі | `app/services/food_*.py`, `catalog_import.py`, `barcode_reader.py`, `open_food_facts.py` | Журнал, каталог, резолвер, outbox, імпорт історії, фото штрихкодів/етикеток — див. [food-logging.md](food-logging.md) |
+| Web App | `app/routers/webapp.py`, `app/routers/admin.py`, `app/services/webapp_auth.py` | Сесії з initData, `/api/v1/webapp/*`, `/api/v1/admin/*` |
 
 ### Заплановані задачі
 
 | Задача | Частота | Призначення |
 |--------|---------|-------------|
-| WHOOP Data Sync | Кожну 1г | Синхронізація тренувань, сну, відновлення |
-| WHOOP Token Refresh | Кожні 30хв | Проактивне оновлення токенів |
-| FatSecret Data Sync | Кожну 1г | Синхронізація щоденника їжі |
-| FatSecret Token Check | Кожні 30хв | Перевірка токенів, сповіщення при закінченні |
-| Morning Briefing | 08:00 Europe/Kyiv | Ранковий огляд здоров'я |
-| Evening Summary | 21:00 Europe/Kyiv | Вечірній звіт |
-| Conversation Cleanup | 03:00 UTC | Очищення старої історії розмов |
+| WHOOP Token Refresh | Кожні 30хв | Оновлення токенів, що спливають протягом 10 хв |
+| FatSecret Token Check | Кожні 3г | Перевірка токенів, сповіщення + очищення при відкликанні |
+| Morning Briefing | Кожні 5 хв, надсилає в налаштований місцевий час (типово 08:00) раз на локальну дату (`notification_sends`) | Ранковий огляд здоров'я |
+| Evening Summary | Кожні 5 хв, те саме правило (типово 21:00) | Вечірній звіт |
+| Food outbox | Кожну 1хв | Створення/редагування/видалення у FatSecret з lease |
+| Food reconcile | Кожні 10хв | Звірка `unknown` створень із віддаленим щоденником |
+| Імпорт історії FatSecret | Кожні 5хв (+ щоденне оновлення 04:00 UTC) | Наповнення «Моїх продуктів», відновлюване |
+| Очищення кешу їжі | Щогодини | Дані FatSecret ≤24 год, прострочені чернетки, кеш пошуку, сесії |
+| Journal Reminders | Кожні 10хв | Час користувача (±5 хв, з переходом через північ), локальний |
+| Conversation Cleanup | 03:00 UTC | Видалення історії розмов старшої за 7 днів |
+
+Періодичного *читання* WHOOP/FatSecret **немає** (є лише запис через outbox
+і імпорт історії): дані WHOOP і FatSecret
+беруться наживо (WHOOP з кешем 120 с). Apple Health — лише push. Задачі
+працюють з `coalesce=True, max_instances=1`.
 
 ---
 
@@ -83,24 +100,30 @@ WHOOP відстежує кроки в додатку (додано 2025), ал�
 ### OAuth Flow - Робоча URL авторизації
 
 ```
-https://api.prod.whoop.com/oauth/oauth2/auth?client_id={WHOOP_CLIENT_ID}&redirect_uri={WHOOP_REDIRECT_URI}&response_type=code&scope=read:workout%20read:recovery%20read:sleep%20read:body_measurement&state={TELEGRAM_USER_ID}
+https://api.prod.whoop.com/oauth/oauth2/auth?client_id={WHOOP_CLIENT_ID}&redirect_uri={WHOOP_REDIRECT_URI}&response_type=code&scope=offline%20read:workout%20read:recovery%20read:sleep%20read:body_measurement&state={SIGNED_STATE}
 ```
+
+`state` **підписаний** (`app/security.py`, HMAC-SHA256, призначення `whoop`,
+TTL 1 год). Голий Telegram id дозволяв account-linking CSRF. `offline` потрібен
+для отримання refresh token.
 
 > Значення `WHOOP_CLIENT_ID` та `WHOOP_REDIRECT_URI` знаходяться в `.env`.
 
 ### Отримання User ID без `read:profile`
 
-Оскільки profile ендпоінт недоступний, user_id витягується з відповіді recovery:
-```
-GET /developer/v2/recovery?limit=1 -> response.records[0].user_id
-```
+Оскільки profile ендпоінт недоступний, user_id береться з першого запису
+recovery → sleep → workouts (`limit=1`). Новий користувач без записів усе одно
+підключається з `whoop_user_id = NULL` (раніше це падало з `IndexError`).
 
 ### Обробка помилок оновлення токенів
 
 `refresh_token_if_needed()` в `whoop_sync.py`:
 - Має параметр `force` для проактивного оновлення
-- При 400/401/403 від token endpoint: очищує токени з БД, кидає `TokenExpiredError`
-- Всі виклики WHOOP API мають логіку повторного запиту при 401 (force-refresh + retry)
+- Працює під per-user `asyncio.Lock`; виклик, що чекав, перевикористовує щойно
+  виданий токен, а не витрачає refresh token двічі
+- При 400/401/403 від token endpoint: `clear_whoop_tokens()` + `TokenExpiredError`
+- `get_whoop_context_for_user()` — єдина точка входу для live-даних (401 →
+  force-refresh → один retry → очищення). Не дублюйте цю логіку.
 
 ---
 
@@ -135,17 +158,21 @@ FatSecret використовує **різні credentials** для OAuth 1.0 �
 
 **Підписання:** HMAC-SHA1 через `app/services/fatsecret_auth.py`
 
-**Поведінка токенів:** OAuth 1.0 токени **постійні** — не закінчуються, якщо не відкликані. Немає механізму оновлення. Перевірка кожні 30 хв валідує токени через виклик API.
+**Поведінка токенів:** OAuth 1.0 токени **постійні** — не закінчуються, якщо не відкликані. Немає механізму оновлення. Перевірка кожні 3 години валідує токени; відкликання також виявляється на кожному повідомленні в чаті.
+
+**Ніколи не логуйте відповіді з токенами** — тіла `request_token`/`access_token` містять секрети. OAuth 2.0 client-credentials токен кешується в пам'яті.
+
+**Дата щоденника — локальна для користувача** (`fatsecret_today(tz)`), а не UTC.
 
 ### FatSecret повертає HTTP 200 для помилок авторизації
 
 **КРИТИЧНО:** FatSecret повертає `HTTP 200 OK` з `{"error": {"code": X, "message": "..."}}` в тілі відповіді для помилок авторизації — НЕ HTTP 401/403. Стандартний `httpx.HTTPStatusError` це не зловить.
 
-**Рішення:** Кастомний `FatSecretAuthError` + `_FS_AUTH_ERROR_CODES = {2, 4, 8, 13, 14}` в `fatsecret_api.py`. Всі відповіді API перевіряються на error body.
+**Рішення:** `_raise_on_error_body()` в `fatsecret_api.py`: коди `{2, 4, 8, 13, 14}` → `FatSecretAuthError`, інші → `FatSecretAPIError`. Запис іде через `create_food_entry()` → `FoodEntryWriteResult` (`succeeded` вимагає підтвердженого `food_entry_id`; тайм-аут після відправки / 5xx / некоректний «успіх» → `unknown`, звіряється, повторно не надсилається). Кожен підтверджений запис спершу зберігається локально (журнал + outbox); `create_food_diary_entry()` — лише булева обгортка для сумісності.
 
 ### Пріоритет джерела калорій
 
-Коли FatSecret підключений і працює, він є **джерелом істини** для з'їдених калорій (записи бота синхронізуються туди). Bot-logged калорії використовуються як fallback коли FatSecret недоступний. Див. `get_today_stats()` в `ai_assistant.py`.
+З'їдені калорії = **локальний журнал ∪ живий щоденник FatSecret**, пов'язані за віддаленим id, тож синхронізований запис рахується один раз; лише-віддалені та лише-локальні записи додаються; неоднозначні/невідомі частини роблять підсумок `partial` (`food_logging.merge_daily`, використовується в `get_today_stats()`). Ніколи не додавайте «щойно записані» калорії до свіжого читання FatSecret (це рахувало двічі).
 
 ---
 
@@ -163,7 +190,28 @@ users.telegram_user_id -> BIGINT
 
 ### Таблиці в продакшні
 
-`users`, `diary_entries`, `food_entries`, `mood_entries`, `whoop_activities`, `whoop_recovery`, `whoop_sleep`, `daily_summaries`, `sync_logs`, `conversation_messages`
+Пише застосунок: `users`, `food_entries` (журнал), таблиці їжі/каталогу
+з 016, таблиці Web App/налаштувань з 017, `conversation_messages`,
+`gym_exercises`, `journal_entries`, `apple_health_sync`,
+`apple_health_import_logs`, `health_daily_metric_aggregates`,
+`health_workouts`.
+
+Лише читання (rollout Apple Health): `health_daily_aggregates` (v2),
+`health_data` (сирі дані).
+
+Видаляються міграцією `015_drop_unused_tables.sql` (лише порожні — таблиця з
+рядками лишається, про неї пишеться NOTICE): `mood_entries`, `whoop_activities`,
+`whoop_recovery`, `whoop_sleep`, `daily_summaries`, `sync_logs`,
+`health_conflicts`, view `v_daily_calorie_balance`. `007` більше не створює
+`health_conflicts`.
+
+Міграції: `002` база → `003` колонки FatSecret → `004` розмови → `005` gym →
+`006` щоденник → `007` конектор Apple Health → `009` агрегати v2 → `010`
+агрегати v3 за сімействами → `011` розширені сімейства → `012` профіль
+користувача (birth_year, sex, height_cm) → `013` `health_workouts` → `014` хеш
+секретів Apple Health (незворотно) → `015` видалення невикористаних таблиць.
+`008` навмисно відсутня. `016` журнал їжі/каталог/outbox/імпорт, `017` сесії Web App,
+ролі, налаштування, цілі, прапори, аудит. Docker preflight застосовує 007 і 009–017.
 
 ---
 
@@ -210,7 +258,36 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 
 ### Патерни детекції протермінованих токенів
 
-**WHOOP (OAuth 2.0):** Токен має відомий час закінчення. `refresh_token_if_needed()` перевіряє `whoop_token_expires_at`. При 401 від API: force-refresh + retry. При невдалому refresh (400/401/403): очищення токенів, `TokenExpiredError`.
+**WHOOP (OAuth 2.0):** Токен має відомий час закінчення. `refresh_token_if_needed()` перевіряє `whoop_token_expires_at`. При 401 від API: force-refresh + один retry (`get_whoop_context_for_user`). При невдалому refresh (400/401/403): очищення токенів, `TokenExpiredError`.
+
+### Часові пояси
+
+Ніколи не хардкодьте `Europe/Kyiv`. Використовуйте `resolve_timezone(users.timezone)`
+з `app/timeutils.py`; для порожніх/невалідних значень він повертає
+`DEFAULT_TIMEZONE`. Користувач змінює пояс командою `/timezone Europe/Warsaw`.
+
+### Пастки обліку їжі
+
+- **Грами дає користувач.** Промпт GPT повертає `quantity_g: null`, якщо вагу не
+  назвали; бот перепитує. Голе число приймається лише як відповідь (reply) на
+  повідомлення чернетки.
+- **Не довіряйте «успіху» FatSecret без `food_entry_id`** і ніколи не повторюйте
+  `unknown` створення наосліп — вирішує `food_sync.reconcile_unknown`.
+- **Тригери `updated_at` перезаписують ручні значення** — не «зсувайте» `updated_at`
+  для планування; outbox використовує `dispatched_at`/`next_attempt_at`.
+- **asyncpg `AmbiguousParameterError`** («text versus character varying»), коли той
+  самий `$n` порівнюється як text і записується у VARCHAR: приводьте тип (`$n::varchar`)
+  або передавайте готове значення.
+- **Дані FatSecret ≤ 24 год**: тривко зберігаються лише ID і власні назви
+  користувача, решта — в колонках кешу, які очищає `purge_expired_provider_data`.
+- **API Open Food Facts зафіксоване на 3.4**; не переходьте на 3.5+ без нових
+  фікстур (змінилась структура харчової цінності).
+
+### Службові endpoints
+
+`/debug/*`, `/ip-check`, `/fatsecret/diary`, `/food/search` вимагають
+`ADMIN_API_TOKEN` (`Authorization: Bearer …`); без налаштованого токена вони
+повертають 404. Кожен вихідний HTTP-запит використовує `HTTP_TIMEOUT_SECONDS`.
 
 **FatSecret (OAuth 1.0):** Токени постійні, але можуть бути відкликані. API повертає HTTP 200 з error body. Перевірка `_FS_AUTH_ERROR_CODES` у відповіді. При auth помилці: очищення токенів, `FatSecretAuthError`, сповіщення через Telegram.
 
@@ -239,9 +316,16 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 | `app/services/fatsecret_api.py` | FatSecret API, синхронізація щоденника, перевірка токенів |
 | `app/services/fatsecret_auth.py` | OAuth 1.0 HMAC-SHA1 підписання запитів |
 | `app/services/briefings.py` | Ранкові/вечірні заплановані повідомлення |
+| `app/services/apple_health.py` | Валідація, агрегація, збереження й читання Apple Health |
+| `app/security.py` | Підписаний OAuth state, admin guard |
+| `app/timeutils.py` | Хелпери часового поясу користувача |
+| `app/db_preflight.py` | Застосовує/перевіряє міграції 007, 009–017 під advisory lock |
+| `app/services/food_bot.py` | Потоки їжі в Telegram (текст/голос/фото/кнопки) без типів PTB |
+| `app/routers/webapp.py`, `app/routers/admin.py` | JSON API Web App, API власника/адміна |
 | `app/routers/whoop.py` | `/whoop/callback` OAuth flow |
-| `app/routers/fatsecret.py` | `/fatsecret/connect`, `/fatsecret/callback` |
-| `app/routers/utils.py` | `/ip` health check |
+| `app/routers/fatsecret.py` | `/fatsecret/connect`, `/fatsecret/callback`, admin `/fatsecret/diary`, `/food/search` |
+| `app/routers/apple_health.py` | `/api/v1/health/apple-health/shortcut`, `/sync` |
+| `app/routers/utils.py` | Admin `/ip-check`, `/debug/*` |
 | `database/init-db.sh` | Скрипт ініціалізації БД |
 | `database/migrations/002_health_tracker_schema.sql` | Продакшн схема міграції |
 | `.env` | Змінні оточення (БД, WHOOP, FatSecret, Telegram, OpenAI) |
@@ -252,11 +336,21 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 
 ### БЭКЛОГ
 
-- [ ] **Шифрування токенів** — WHOOP/FatSecret токени зберігаються як plain text в БД
-- [ ] **BMR в calorie balance** — Додати формулу Mifflin-St Jeor для базового метаболізму
-- [ ] **Виправити `docs/en/api-integration.md`** — прибрати `read:cycles`, додати FatSecret OAuth 1.0 vs 2.0
+- [ ] **Перевірити розширений Shortcut на пристрої** — назви у picker Resting Heart Rate / Weight / Walking + Running Distance / Exercise Minutes і властивість семпла `Unit` (потрібен iPhone)
+- [ ] **Тренування в підписаному Shortcut** — сервер і шлях HAE готові; дію Shortcuts "Find Workouts" треба додати й перевірити на пристрої
+- [ ] **Lock оновлення WHOOP для кількох реплік** — per-user lock живе в процесі; перед запуском >1 репліки перенести в PostgreSQL advisory lock
+- [x] ~~Хешування секрету Apple Health~~ — SHA-256 (2026-09-26). Шифрування OAuth-токенів було реалізовано й свідомо прибрано; токени лишаються у відкритому вигляді
+- [x] ~~BMR в calorie balance~~ — `/profile` + Mifflin-St Jeor, пропорційний базальний витрат додається до активної енергії Apple Health (2026-09-26)
+- [x] ~~Тренування з Apple Health~~ — `health_workouts`, native-масив `workouts` + HAE `data.workouts` (2026-09-26)
+- [x] ~~Видалити таблиці, які ніколи не пишуться~~ — захищена міграція 015 (2026-09-26)
+- [x] ~~i18n~~ — каталог uk/en, `/language`, мова з Telegram `language_code` (2026-09-26)
 - [ ] **WHOOP кроки через API** — Моніторити WHOOP Developer API на появу ендпоінту кроків (недоступний станом на 2026-02-25)
-- [ ] **Локальна база українських продуктів** — Fallback коли FatSecret не має українських продуктів
+- [ ] **Локальна база українських продуктів** — частково покрито штрихкодами Open Food Facts + фото етикеток → особисті продукти; покриття не виміряне
+- [ ] **Фронтенд Web App** (`web/`, React + Vite) — API бекенду готове (docs/uk/food-logging.md §6)
+- [ ] **Набір даних для оцінки їжі** (план §10) і живі перевірки FatSecret (план §11) перед увімкненням фото страв / штрихкоду FatSecret
+- [x] ~~Облік їжі спершу з історії, фото штрихкодів і етикеток, outbox FatSecret, API Web App/адмінки~~ (2026-09-26)
+- [x] ~~Виправити scopes у `docs/en/api-integration.md` / FatSecret OAuth 1.0 vs 2.0~~ (2026-09-26)
+- [x] ~~Debug-ендпоінти без автентифікації, непідписаний OAuth state, відсутні HTTP timeouts, UTC-дата щоденника, загублені записи їжі~~ (2026-09-26)
 
 ---
 
@@ -288,7 +382,7 @@ docker run --env-file .env -p 8000:8000 health-tracker
 Production startup використовує команду Dockerfile як єдиний авторитетний шлях
 міграції для Apple Health. Контейнер запускає
 `python -m app.db_preflight --apply-apple-health-migration` перед Uvicorn,
-застосовує міграції `007`, `009` і `010`, а FastAPI lifespan повторно перевіряє
+застосовує міграції `007`, `009`, `010` і `011`, а FastAPI lifespan повторно перевіряє
 потрібні таблиці та індекси Apple Health до обслуговування трафіку. Preflight
 тримає один PostgreSQL advisory lock протягом migration і verification, тому
 паралельні старти replicas не змагаються за DDL. `database/init-db.sh` пропускає
@@ -327,3 +421,37 @@ Production startup використовує команду Dockerfile як єд�
   REST automations не можуть надати causal marker і fail closed; timestamps від
   ingress proxy заборонені. Incremental, grouped, multi-metric та malformed
   snapshots також fail closed.
+- Сімейства schema v3: `steps`, `active_energy`, `heart_rate`, `hrv`, `sleep`,
+  та (міграція 011) `resting_heart_rate`, `body_mass` (кг, середнє),
+  `distance` (м, сума), `exercise_time` (хв, сума). Сума чи середнє
+  визначається `SUM_METRIC_FAMILIES` / `AVERAGE_METRIC_FAMILIES` в `apple_health.py`.
+- Готовий Shortcut виконує 8 запитів. Вага й дистанція надсилають властивість
+  семпла `Unit` (залежить від локалі); якщо Unit порожній, сервер бере суфікс
+  одиниці з тексту Value.
+- `token` Apple Health передається в URL: `SecretRedactingFilter`
+  (`app/main.py`) маскує його в усіх логах, включно з access-логами uvicorn.
+- Після зміни `docs/shortcuts/apple-health-sync.shortcut.plist` перепідпиши файл
+  `shortcuts sign --mode anyone` (вхідний файл має закінчуватися на `.shortcut`)
+  і запусти `python -m unittest tests.test_apple_health_shortcut_artifact`.
+- Тренування пишуться в `health_workouts` (події, upsert за external id);
+  приймаються і необов'язковий масив `workouts` у native payload, і HAE
+  `data.workouts`, зокрема запити лише з тренуваннями. Підписаний Shortcut їх
+  поки не надсилає.
+- Секрет Apple Health зберігається хешованим (`sha256:`); бот показує URL лише
+  один раз.
+
+## 10. Облікові дані, мова та BMR (2026-09-26)
+
+- **Токени в БД:** OAuth-токени WHOOP/FatSecret свідомо зберігаються у
+  відкритому вигляді (без `TOKEN_ENCRYPTION_KEY`). Хешується лише секрет Apple Health.
+- **Мова:** кожен фіксований текст для користувача йде через `t(key, lang)`
+  (`app/i18n.py`); додавайте ключі в **обидва** `_UK` і `_EN` (тест перевіряє
+  збіг ключів і плейсхолдерів). Нові користувачі отримують `users.language` з
+  Telegram `language_code`; `/language uk|en` змінює її. GPT відповідає мовою,
+  якою пише користувач.
+- **BMR:** `/profile 1990 m 180` зберігає рік народження, стать і зріст. Вага
+  береться з Apple Health (останнє зважування ≤30 днів) або з вимірів тіла
+  WHOOP. Калорії циклу WHOOP вже містять базальний витрат і беруться як є;
+  активна енергія Apple Health — ні, тому `calories_out = active + BMR × частка
+  минулого локального дня` (`calories_burned_source = "apple_health_bmr"`).
+

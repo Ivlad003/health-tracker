@@ -24,3 +24,17 @@ def mock_settings(monkeypatch):
     monkeypatch.setenv("FATSECRET_CLIENT_SECRET", "test_fs_secret")
     monkeypatch.setenv("FATSECRET_SHARED_SECRET", "test_fs_shared")
     monkeypatch.setenv("APP_BASE_URL", "http://localhost:8000")
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_caches():
+    """Process-wide caches (tokens, WHOOP context) must not leak across tests."""
+    yield
+    from app.services import fatsecret_api, feature_flags, whoop_sync
+
+    fatsecret_api._oauth2_token_cache = None
+    fatsecret_api._oauth2_scoped_cache.clear()
+    feature_flags.clear_cache()
+    whoop_sync._context_cache.clear()
+    whoop_sync._last_refreshed.clear()
+    whoop_sync._refresh_locks.clear()

@@ -273,6 +273,24 @@ def test_apple_health_shortcut_template_posts_required_metrics_payload():
     assert_repeat_item_field(hrv_metric["value"], sample_value)
     assert_repeat_item_field(hrv_metric["timestamp"], iso_start_date)
 
+    # Locale-invariant units are fixed; weight and distance follow the device
+    # locale (kg/lb, km/mi), so they send the sample's Unit property.
+    sample_unit = [{"Type": "WFPropertyVariableAggrandizement", "PropertyName": "Unit"}]
+    for name, metric_type, unit in (
+        ("Resting HR Metric", "resting_heart_rate", "count/min"),
+        ("Body Mass Metric", "body_mass", None),
+        ("Distance Metric", "walking_running_distance", None),
+        ("Exercise Metric", "apple_exercise_time", "min"),
+    ):
+        fields = metric_fields(name)
+        assert _shortcut_text_value(fields["type"]) == metric_type
+        if unit is None:
+            assert_repeat_item_field(fields["unit"], sample_unit)
+        else:
+            assert _shortcut_text_value(fields["unit"]) == unit
+        assert_repeat_item_field(fields["value"], sample_value)
+        assert_repeat_item_field(fields["timestamp"], iso_start_date)
+
     payload_items = payload_base_action["WFWorkflowActionParameters"]["WFItems"]["Value"][
         "WFDictionaryFieldValueItems"
     ]
@@ -565,7 +583,11 @@ async def test_ensure_apple_health_sync_rotates_token_on_reconnect(mock_settings
 
     assert first == {"secret_key": "old-token"}
     assert second == {"secret_key": "new-token"}
-    assert pool.apple_health_secret == "new-token"
+    # Only the hash is persisted; the plaintext goes to the user once.
+    from app.crypto import hash_secret
+
+    assert pool.apple_health_secret == hash_secret("new-token")
+    assert "new-token" not in pool.apple_health_secret
     upsert_query = pool.fetchrow_calls[-1][0]
     assert "secret_key = EXCLUDED.secret_key" in upsert_query
 
@@ -3271,3 +3293,37 @@ async def test_sleep_in_bed_and_awake_same_start_merge_into_daily_aggregate(mock
         (start, start + timedelta(minutes=20)),
         (start, start + timedelta(hours=8)),
     ]) == 8 * 3600
+
+
+@pytest.mark.asyncio
+async def test_ingest_extended_shortcut_snapshot_persists_new_families(mock_settings):
+    from app.services.apple_health import ingest_apple_health_payload
+
+    pool = FakePool()
+    day = "2026-05-20"
+    payload = _envelope(
+        [
+            {"type": "step_count", "value": "5 037 count", "unit": "count", "timestamp": f"{day}T08:00:00+00:00"},
+            {"type": "resting_heart_rate", "value": "57", "unit": "count/min", "timestamp": f"{day}T06:00:00+00:00"},
+            {"type": "body_mass", "value": "72,4", "unit": "кг", "timestamp": f"{day}T07:00:00+00:00"},
+            {"type": "walking_running_distance", "value": "3.5", "unit": "km", "timestamp": f"{day}T09:00:00+00:00"},
+            {"type": "apple_exercise_time", "value": "25", "unit": "min", "timestamp": f"{day}T09:00:00+00:00"},
+        ],
+        [day],
+        covered_families=["steps", "resting_heart_rate", "body_mass", "distance", "exercise_time"],
+    )
+
+    result = await ingest_apple_health_payload(
+        pool, payload, now=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["aggregate_rows_updated"] == 5
+    assert result["unmapped_metric_types"] == []
+    daily = result["daily"][day]
+    assert daily["steps"] == 5037
+    assert daily["resting_heart_rate"] == 57.0
+    assert daily["body_mass_kg"] == 72.4
+    assert daily["distance_km"] == 3.5
+    assert daily["exercise_minutes"] == 25.0
+    families = {key[3] for key in pool.metric_families}
+    assert families == {"steps", "resting_heart_rate", "body_mass", "distance", "exercise_time"}

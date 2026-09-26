@@ -50,6 +50,8 @@ This document describes critical issues that must be resolved before project lau
 - Allow users to add custom foods
 - Alternative: USDA FoodData Central (free)
 
+**Status (2026-09-26):** custom personal products (manual / label photo), Open Food Facts barcode lookup and "My Products" from the user's FatSecret history are implemented ([food-logging.md](food-logging.md)); actual Ukrainian coverage is still unmeasured.
+
 ---
 
 ### 4. Calorie Balance — Incomplete Calculation

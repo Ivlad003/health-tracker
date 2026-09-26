@@ -77,8 +77,6 @@ async def get_journal_history(user_id: int, days: int = 7, limit: int = 20) -> l
 
 async def get_journal_summary_data(user_id: int, days: int = 7) -> dict:
     """Get aggregated journal data for GPT summary generation."""
-    pool = await get_pool()
-
     entries = await get_journal_history(user_id, days=days, limit=50)
 
     if not entries:

@@ -6,7 +6,7 @@ import base64
 import time
 import secrets
 import logging
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qsl, quote
 
 import httpx
 
@@ -54,6 +54,11 @@ def build_oauth1_header(params: dict) -> str:
     return f"OAuth {parts}"
 
 
+def _parse_form(body: str) -> dict[str, str]:
+    """Parse an application/x-www-form-urlencoded OAuth response body."""
+    return dict(parse_qsl(body.strip(), keep_blank_values=True))
+
+
 async def get_request_token(callback_url: str) -> dict:
     """Step 1 of OAuth 1.0: Get request token from FatSecret."""
     params = {
@@ -73,14 +78,10 @@ async def get_request_token(callback_url: str) -> dict:
     )
     params["oauth_signature"] = signature
 
-    logger.info(
-        "FatSecret request_token: consumer_key=%s shared_secret_len=%d callback=%s",
-        settings.fatsecret_client_id,
-        len(settings.fatsecret_shared_secret),
-        callback_url,
-    )
+    logger.info("FatSecret request_token: requesting (callback host=%s)",
+                callback_url.split("?", 1)[0])
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
         resp = await client.post(
             FATSECRET_REQUEST_TOKEN_URL,
             data=params,
@@ -88,19 +89,17 @@ async def get_request_token(callback_url: str) -> dict:
         if resp.status_code != 200:
             logger.error(
                 "FatSecret request_token failed: status=%s body=%s",
-                resp.status_code, resp.text,
+                resp.status_code, resp.text[:200],
             )
         resp.raise_for_status()
 
     # Parse form-encoded response: oauth_token=X&oauth_token_secret=Y&oauth_callback_confirmed=true
-    logger.info("FatSecret request_token response: %s", resp.text)
-    parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))
-    oauth_token = unquote(parsed.get("oauth_token", ""))
-    oauth_token_secret = unquote(parsed.get("oauth_token_secret", ""))
-    logger.info(
-        "FatSecret request_token parsed: token_len=%d secret_len=%d keys=%s",
-        len(oauth_token), len(oauth_token_secret), list(parsed.keys()),
-    )
+    # Never log the body: it contains the request token secret.
+    parsed = _parse_form(resp.text)
+    oauth_token = parsed.get("oauth_token", "")
+    oauth_token_secret = parsed.get("oauth_token_secret", "")
+    if not oauth_token or not oauth_token_secret:
+        raise ValueError("FatSecret request_token response is missing token fields")
     return {
         "oauth_token": oauth_token,
         "oauth_token_secret": oauth_token_secret,
@@ -132,7 +131,7 @@ async def exchange_access_token(
     )
     params["oauth_signature"] = signature
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
         resp = await client.post(
             FATSECRET_ACCESS_TOKEN_URL,
             data=params,
@@ -140,19 +139,17 @@ async def exchange_access_token(
         if resp.status_code != 200:
             logger.error(
                 "FatSecret access_token failed: status=%s body=%s",
-                resp.status_code, resp.text,
+                resp.status_code, resp.text[:200],
             )
         resp.raise_for_status()
 
-    logger.info("FatSecret access_token response: %s", resp.text)
-    parsed = dict(pair.split("=", 1) for pair in resp.text.split("&"))
-    logger.info("FatSecret access_token parsed keys: %s", list(parsed.keys()))
-    access_token = unquote(parsed.get("oauth_token", ""))
-    access_secret = unquote(parsed.get("oauth_token_secret", ""))
-    logger.info(
-        "FatSecret parsed tokens: token_len=%d secret_len=%d",
-        len(access_token), len(access_secret),
-    )
+    # Never log the body: it contains the user's permanent access credentials.
+    parsed = _parse_form(resp.text)
+    access_token = parsed.get("oauth_token", "")
+    access_secret = parsed.get("oauth_token_secret", "")
+    if not access_token or not access_secret:
+        raise ValueError("FatSecret access_token response is missing token fields")
+    logger.info("FatSecret access token obtained")
     return {
         "access_token": access_token,
         "access_secret": access_secret,

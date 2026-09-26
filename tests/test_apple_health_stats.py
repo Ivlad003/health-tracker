@@ -18,9 +18,13 @@ class StatsPool:
             return {"fatsecret_access_token": None, "fatsecret_access_secret": None}
         if "whoop_access_token" in query:
             return self.whoop_user
+        if "metric_family = 'body_mass'" in query:
+            return getattr(self, "latest_body_mass", None)
         raise AssertionError(f"Unexpected fetchrow query: {query}")
 
     async def fetch(self, query, *args):
+        if "FROM health_workouts" in query:
+            return getattr(self, "workout_rows", [])
         if "FROM health_daily_metric_aggregates" in query:
             if "collector IN" in query:
                 return self.apple_transition_rows
@@ -485,3 +489,20 @@ async def test_morning_briefing_includes_apple_health_summary(mock_settings):
 
     assert "Apple Health steps: 4200" in captured["data_summary"]
     assert "Apple Health active energy: 315 kcal" in captured["data_summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_today_stats_uses_latest_weigh_in_when_today_has_none(mock_settings):
+    from decimal import Decimal
+
+    from app.services.ai_assistant import get_today_stats
+
+    pool = StatsPool(apple_rows=[daily_row(_kyiv_today(), steps=1000, records_by_type={"step_count": 1})])
+    pool.latest_body_mass = {"metric_date": date(2026, 9, 1), "average_value": Decimal("80.04")}
+
+    with patch("app.services.ai_assistant.get_pool", AsyncMock(return_value=pool)):
+        stats = await get_today_stats(7)
+
+    assert stats["apple_health_body_mass_kg"] == 80.0
+    assert "latest body mass: 80.0 kg (measured 2026-09-01)" in stats["apple_health_summary"]
+    assert stats["timezone"] == "Europe/Kyiv"

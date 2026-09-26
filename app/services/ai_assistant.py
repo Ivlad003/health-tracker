@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
-import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
 from app.database import get_pool
+from app.timeutils import local_day_bounds_utc, resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +22,12 @@ RULES:
 3. Be concise, friendly, and use emoji sparingly.
 
 INTENT DEFINITIONS:
-- log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), original name, estimated weight in grams, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The bot automatically syncs entries to FatSecret if connected, so always log food when user asks.
+- log_food: User describes food they ate/drank. Extract each food item with English name (for database lookup), the user's original wording, the weight in grams ONLY if the user stated it, and meal_type (breakfast if before 11:00, lunch if 11:00-16:00, dinner if 16:00-21:00, snack otherwise — use current_time provided). The system matches the user's previously chosen products first and syncs to FatSecret when connected.
 - query_data: User asks about their health data (sleep, recovery, calories, workouts, steps, heart rate, mood, history, stats). You have access to WHOOP data, Apple Health samples, and FatSecret diary — use all available data when answering.
   WHOOP data available: sleep (duration, stages, performance), recovery (score, HRV, resting HR, SpO2, skin temp), strain, calories burned, workouts, weight, height, max HR.
-  Apple Health data available when synced: steps, active energy, heart rate, sleep, and HRV (SDNN).
+  Apple Health data available when synced: steps, active energy, heart rate, sleep, HRV (SDNN), resting heart rate, walking+running distance, exercise minutes, and body mass (latest weigh-in, up to 30 days old).
   Stress: there is no direct stress metric. Use Apple Health HRV as a stress proxy (lower HRV than the user's usual level suggests higher stress/fatigue; higher HRV suggests better recovery) together with WHOOP recovery when available, and say it is an HRV-based estimate.
-  WHOOP data NOT available via API (app-only): HR zones, VO₂ max, stress monitor. If user asks about these and Apple Health did not sync them, explain they're only visible in the source app directly.
+  WHOOP data NOT available via API (app-only): HR zones, VO₂ max, stress monitor, steps. If user asks about these and Apple Health did not sync them, explain they're only visible in the source app directly.
 - delete_entry: User wants to remove/undo the last food entry or a specific entry.
 - gym: User describes gym exercises, asks about previous workouts, or asks for exercise progression.
   gym_action values:
@@ -43,7 +42,11 @@ INTENT DEFINITIONS:
 - general: Everything else — greetings, setting calorie goal (extract number), health tips, questions about the bot.
 
 For log_food, also extract:
-- food_items: array of objects with name_en (English), name_original (user's language), quantity_g (grams, estimate if not specified), meal_type.
+- food_items: array of objects with name_en (English), name_original (user's language, keep their exact words incl. preparation, brand and fat %), quantity_g, quantity_explicit, brand, fat_pct, preparation, meal_type.
+- quantity_g: grams ONLY when the user stated a weight (convert kg→g, e.g. "0,2 кг" → 200). If the user gave no weight, set quantity_g to null and quantity_explicit to false. NEVER estimate or invent grams; pieces/spoons/cups are not grams → null. Millilitres are not grams → null.
+- quantity_explicit: true only when quantity_g comes from the user's own words.
+- brand: product brand if mentioned, else null. fat_pct: number if a fat percentage is mentioned (e.g. "молоко 2.5%" → 2.5), else null.
+- preparation: "raw" | "cooked" | null — "cooked" for boiled/baked/fried/cooked (варена, відварна, запечена, смажена, готова), "raw" for raw/dry/uncooked (сира, суха крупа), null when not stated.
 - CRITICAL for name_en: This field is used to search FatSecret database. Use the simplest, most generic English food name. Translate the INGREDIENT, not the dish name or cooking method.
   Examples of CORRECT translations:
   - "рання картопля" / "піра картоплі" → "potato" (NOT "mashed potato" or "early potato")
@@ -53,7 +56,7 @@ For log_food, also extract:
   - "борщ" → "borscht"
   - "вівсянка" → "oatmeal"
   When in doubt, use the base ingredient name (potato, rice, chicken, egg, etc.)
-- IMPORTANT: For log_food response, just confirm what was added (e.g. "Додано 100г рису"). Do NOT include calorie totals or daily summary — the system appends an accurate balance line automatically.
+- IMPORTANT: For log_food the system writes the confirmation itself (it may need to ask the user which product or how many grams). Keep "response" very short and do NOT include calories or totals.
 
 For gym with log action, extract:
 - exercises: array of objects with name_original (user's language), name_en (English), exercise_key (snake_case canonical, e.g. "bench_press", "squat", "deadlift"), weight_kg (number or null), sets (number or null), reps (number or null), rpe (1-10 or null), notes (string or null), set_details (array of {"set": 1, "weight_kg": 80, "reps": 8, "rpe": 8} if user gave per-set detail, else null)
@@ -87,7 +90,7 @@ For general, if user wants to set calorie goal, extract:
 ALWAYS respond with valid JSON (no markdown fences):
 {
   "intent": "log_food|query_data|delete_entry|general|gym|journal",
-  "food_items": [{"name_en": "...", "name_original": "...", "quantity_g": 100, "meal_type": "lunch"}],
+  "food_items": [{"name_en": "...", "name_original": "...", "quantity_g": 100, "quantity_explicit": true, "brand": null, "fat_pct": null, "preparation": null, "meal_type": "lunch"}],
   "calorie_goal": null,
   "gym_action": null,
   "exercises": [],
@@ -98,13 +101,24 @@ ALWAYS respond with valid JSON (no markdown fences):
 }"""
 
 
+def _row_get(row, key: str, default=None):
+    """Read a column from an asyncpg Record or dict, tolerating absence."""
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _build_context_messages(
     conversation_history: list[dict],
     user_data: dict,
     current_message: str,
 ) -> list[dict]:
     """Build the messages array for the GPT API call."""
-    local_now = datetime.now(ZoneInfo("Europe/Kyiv"))
+    user_tz = resolve_timezone(user_data.get("timezone"))
+    local_now = datetime.now(user_tz)
     calorie_goal = user_data.get("daily_calorie_goal") or 2000
     fs_meals = user_data.get("today_fatsecret_meals", "")
     calories_in = user_data.get("today_calories_in", 0)
@@ -114,12 +128,27 @@ def _build_context_messages(
     cycle_state = user_data.get("cycle_score_state", "no_data")
 
     # Eaten calories label with source
-    source_label = "FatSecret" if calories_source == "fatsecret" else "bot entries"
+    source_label = {
+        "fatsecret": "FatSecret diary + bot ledger",
+        "ledger": "bot ledger (FatSecret not available)",
+    }.get(calories_source, "bot ledger")
     eaten_label = f"Today's calories eaten (source: {source_label}): {calories_in} kcal. "
+    if user_data.get("calories_partial"):
+        eaten_label += "This total is PARTIAL (some entries are still syncing or lack nutrition data) — say so. "
 
     # Burned calories label
     if burned_source == "apple_health" and calories_out > 0:
         burned_label = f"Today's active calories burned (Apple Health): {calories_out} kcal. "
+    elif burned_source == "apple_health_bmr" and calories_out > 0:
+        burned_label = (
+            f"Estimated total calories burned today so far: {calories_out} kcal "
+            f"(Apple Health active energy + basal metabolism elapsed today). "
+        )
+    elif burned_source == "bmr" and calories_out > 0:
+        burned_label = (
+            f"Estimated basal calories burned today so far: {calories_out} kcal "
+            f"(no activity data). "
+        )
     elif cycle_state == "ESTIMATED" and calories_out > 0:
         burned_label = (
             f"Estimated calories burned today so far (WHOOP): ~{calories_out} kcal "
@@ -143,7 +172,7 @@ def _build_context_messages(
     balance_label = f"Calorie balance: {calories_in} eaten - {calories_out} burned = {balance} net. "
 
     data_context = (
-        f"Current local time (Europe/Kyiv): {local_now.strftime('%Y-%m-%d %H:%M')}. "
+        f"Current local time ({user_tz.key}): {local_now.strftime('%Y-%m-%d %H:%M')}. "
         f"User calorie goal: {calorie_goal} kcal. "
         f"{eaten_label}"
         f"{burned_label}"
@@ -155,7 +184,7 @@ def _build_context_messages(
         f"When user asks about calories, ALWAYS mention both eaten AND burned."
     )
     if fs_meals:
-        data_context += f" FatSecret meals today: {fs_meals}."
+        data_context += f" Meals today: {fs_meals}."
     if user_data.get("whoop_sleep"):
         data_context += f" {user_data['whoop_sleep']}."
     if user_data.get("whoop_recovery"):
@@ -166,6 +195,15 @@ def _build_context_messages(
         data_context += f" {user_data['whoop_body']}."
     if user_data.get("apple_health_summary"):
         data_context += f" {user_data['apple_health_summary']}."
+    if user_data.get("bmr_kcal"):
+        data_context += (
+            f" Estimated basal metabolic rate (Mifflin-St Jeor): {user_data['bmr_kcal']} kcal/day."
+        )
+    else:
+        data_context += (
+            " BMR unknown: suggest /profile (birth year, sex, height) if the user asks about"
+            " total daily expenditure."
+        )
     if user_data.get("gym_prompt"):
         data_context += f" User gym profile: {user_data['gym_prompt']}."
     if user_data.get("recent_gym_exercises"):
@@ -185,152 +223,146 @@ def _build_context_messages(
     return messages
 
 
+EMPTY_WHOOP_CONTEXT = {
+    "calories_out": 0, "strain": 0, "workout_count": 0,
+    "cycle_score_state": "no_data",
+    "sleep_info": "", "recovery_info": "", "activities_info": "", "body_info": "",
+}
+
+
+async def _food_today(pool, user_id: int, user_row, user_tz) -> dict:
+    """Today's intake from the ledger/FatSecret union (never double counted)."""
+    from app.services.food_logging import UserContext, daily_view
+
+    ctx = UserContext(
+        user_id=user_id,
+        tz=user_tz,
+        fs_token=_row_get(user_row, "fatsecret_access_token") or "",
+        fs_secret=_row_get(user_row, "fatsecret_access_secret") or "",
+    )
+    try:
+        view = await daily_view(pool, ctx)
+    except Exception:
+        logger.warning("Daily food view failed for user_id=%s", user_id, exc_info=True)
+        return {"total": 0, "source": "none", "partial": True, "reasons": ["unavailable"],
+                "meals_text": "", "expired": False}
+    if view.remote_connected and view.remote_ok:
+        source = "fatsecret"
+    elif view.entries:
+        source = "ledger"
+    else:
+        source = "none"
+    meals_text = "; ".join(
+        f"{e['name']} ({round(e['energy_kcal']) if e['energy_kcal'] is not None else '?'} kcal)"
+        for e in view.entries[:10]
+    )
+    return {"total": view.total_rounded, "source": source, "partial": view.partial,
+            "reasons": view.reasons, "meals_text": meals_text, "expired": view.expired}
+
+
 async def get_today_stats(user_id: int) -> dict:
     """Fetch today's stats from FatSecret, WHOOP, and stored Apple Health samples."""
     logger.info("Fetching today stats for user_id=%s", user_id)
     pool = await get_pool()
 
-    # Calories eaten from FatSecret diary (live API, source of truth)
-    fatsecret_calories = 0.0
-    fatsecret_meals = ""
-    fatsecret_ok = False
-    expired_services = []
+    expired_services: list[str] = []
     user_row = await pool.fetchrow(
-        "SELECT fatsecret_access_token, fatsecret_access_secret FROM users WHERE id = $1",
+        """SELECT fatsecret_access_token, fatsecret_access_secret, timezone,
+                  birth_year, sex, height_cm
+           FROM users WHERE id = $1""",
         user_id,
     )
-    if user_row and user_row["fatsecret_access_token"]:
-        logger.info("Fetching FatSecret diary for user_id=%s", user_id)
-        try:
-            from app.services.fatsecret_api import fetch_food_diary, FatSecretAuthError
-            diary = await fetch_food_diary(
-                access_token=user_row["fatsecret_access_token"],
-                access_secret=user_row["fatsecret_access_secret"],
-            )
-            fatsecret_calories = float(diary.get("total_calories", 0))
-            fatsecret_ok = True
-            logger.info("FatSecret diary: %.0f kcal, %d entries",
-                        fatsecret_calories, len(diary.get("meals", [])))
-            meals = diary.get("meals", [])
-            if meals:
-                fatsecret_meals = "; ".join(
-                    f"{m['food']} ({m['calories']} kcal)" for m in meals[:10]
-                )
-        except FatSecretAuthError:
-            logger.warning("FatSecret auth error for user_id=%s, clearing tokens", user_id)
-            await pool.execute(
-                """UPDATE users
-                   SET fatsecret_access_token = NULL,
-                       fatsecret_access_secret = NULL,
-                       updated_at = NOW()
-                   WHERE id = $1""",
-                user_id,
-            )
-            expired_services.append("fatsecret")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
-                logger.warning("FatSecret HTTP auth failed for user_id=%s, clearing tokens", user_id)
-                await pool.execute(
-                    """UPDATE users
-                       SET fatsecret_access_token = NULL,
-                           fatsecret_access_secret = NULL,
-                           updated_at = NOW()
-                       WHERE id = $1""",
-                    user_id,
-                )
-                expired_services.append("fatsecret")
-            else:
-                logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
-        except Exception:
-            logger.warning("Failed to fetch FatSecret diary for user_id=%s", user_id)
+    user_tz = resolve_timezone(_row_get(user_row, "timezone"))
+
+    # Calories eaten: local ledger ∪ live FatSecret diary, linked entries
+    # counted once (app/services/food_logging.py).
+    food = await _food_today(pool, user_id, user_row, user_tz)
+    if food["expired"]:
+        expired_services.append("fatsecret")
 
     # Fetch ALL WHOOP data directly from API (real-time, not from DB)
-    whoop = {
-        "calories_out": 0, "strain": 0, "workout_count": 0,
-        "cycle_score_state": "no_data",
-        "sleep_info": "", "recovery_info": "", "activities_info": "", "body_info": "",
-    }
-    whoop_user = await pool.fetchrow(
-        """SELECT id, whoop_access_token, whoop_refresh_token, whoop_token_expires_at
-           FROM users WHERE id = $1 AND whoop_access_token IS NOT NULL""",
-        user_id,
-    )
-    if whoop_user:
-        logger.info("Fetching WHOOP data for user_id=%s", user_id)
-        try:
-            from app.services.whoop_sync import (
-                fetch_whoop_context, refresh_token_if_needed, TokenExpiredError,
-            )
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                token = await refresh_token_if_needed(dict(whoop_user), client, pool)
-                try:
-                    whoop = await fetch_whoop_context(token)
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 401:
-                        logger.warning(
-                            "WHOOP API 401 for user_id=%s, re-reading tokens from DB",
-                            user_id,
-                        )
-                        # Re-fetch fresh tokens from DB (may have been refreshed
-                        # by background job since our initial query)
-                        fresh_user = await pool.fetchrow(
-                            """SELECT id, whoop_access_token, whoop_refresh_token,
-                                      whoop_token_expires_at
-                               FROM users WHERE id = $1
-                                     AND whoop_access_token IS NOT NULL""",
-                            user_id,
-                        )
-                        if not fresh_user:
-                            raise TokenExpiredError("whoop")
-                        token = await refresh_token_if_needed(
-                            dict(fresh_user), client, pool, force=True,
-                        )
-                        try:
-                            whoop = await fetch_whoop_context(token)
-                        except httpx.HTTPStatusError as e2:
-                            if e2.response.status_code == 401:
-                                logger.warning(
-                                    "WHOOP API 401 after refresh for user_id=%s, "
-                                    "clearing tokens", user_id,
-                                )
-                                await pool.execute(
-                                    """UPDATE users
-                                       SET whoop_access_token = NULL,
-                                           whoop_refresh_token = NULL,
-                                           whoop_token_expires_at = NULL,
-                                           updated_at = NOW()
-                                       WHERE id = $1""",
-                                    user_id,
-                                )
-                                raise TokenExpiredError("whoop")
-                            raise
-                    else:
-                        raise
-        except TokenExpiredError:
-            expired_services.append("whoop")
-        except Exception:
-            logger.exception("Failed to fetch WHOOP data for user_id=%s", user_id)
+    from app.services import whoop_sync
 
-    from app.services.apple_health import get_apple_health_summary
+    whoop = dict(EMPTY_WHOOP_CONTEXT)
+    try:
+        context = await whoop_sync.get_whoop_context_for_user(pool, user_id, tz=user_tz)
+        if context is not None:
+            whoop = context
+    except whoop_sync.TokenExpiredError:
+        expired_services.append("whoop")
+    except Exception:
+        logger.exception("Failed to fetch WHOOP data for user_id=%s", user_id)
 
-    now_local = datetime.now(ZoneInfo("Europe/Kyiv"))
-    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow_start = today_start + timedelta(days=1)
+    from app.services.apple_health import get_apple_health_summary, get_latest_body_mass
+
+    today_start_utc, tomorrow_start_utc = local_day_bounds_utc(user_tz)
     apple_health = await get_apple_health_summary(
         pool,
         user_id,
-        start_at=today_start.astimezone(timezone.utc),
-        end_at=tomorrow_start.astimezone(timezone.utc),
+        start_at=today_start_utc,
+        end_at=tomorrow_start_utc,
     )
 
-    # FatSecret is the sole source of truth for eaten calories (live API).
-    total_in = round(fatsecret_calories) if fatsecret_ok else 0
-    calories_source = "fatsecret" if fatsecret_ok else "none"
+    # Weight is rarely measured daily: fall back to the latest weigh-in.
+    latest_body_mass = None
+    if not apple_health.get("body_mass_kg"):
+        latest_body_mass = await get_latest_body_mass(
+            pool, user_id, today=today_start_utc.astimezone(user_tz).date(),
+        )
+    if latest_body_mass:
+        apple_health["body_mass_kg"] = latest_body_mass["kg"]
+        note = (
+            f"Apple Health latest body mass: {latest_body_mass['kg']} kg "
+            f"(measured {latest_body_mass['metric_date']:%Y-%m-%d})"
+        )
+        apple_health["summary"] = ". ".join(p for p in (apple_health["summary"], note) if p)
+
+    from app.services.health_workouts import get_workouts_summary
+
+    workouts = await get_workouts_summary(
+        pool, user_id, start_at=today_start_utc, end_at=tomorrow_start_utc,
+    )
+    if workouts["summary"]:
+        apple_health["summary"] = ". ".join(
+            p for p in (apple_health["summary"], workouts["summary"]) if p
+        )
+
+    # BMR (Mifflin-St Jeor): profile from /profile, weight from Apple Health
+    # or WHOOP, height from the profile or WHOOP.
+    from app.services.bmr import compute_bmr, prorated_bmr
+
+    weight_kg = apple_health.get("body_mass_kg") or whoop.get("body_weight_kg") or None
+    height_cm = _row_get(user_row, "height_cm") or (
+        (whoop.get("body_height_m") or 0) * 100 or None
+    )
+    local_now = datetime.now(user_tz)
+    bmr_kcal = compute_bmr(
+        birth_year=_row_get(user_row, "birth_year"),
+        sex=_row_get(user_row, "sex"),
+        height_cm=float(height_cm) if height_cm else None,
+        weight_kg=float(weight_kg) if weight_kg else None,
+        today=local_now.date(),
+    )
+
+    total_in = food["total"]
+    calories_source = food["source"]
+    # WHOOP cycle calories already include basal burn -> used as-is.
     calories_out = whoop["calories_out"]
     calories_burned_source = "whoop" if calories_out > 0 else "none"
-    if calories_out <= 0 and apple_health["active_energy_kcal"] > 0:
-        calories_out = apple_health["active_energy_kcal"]
-        calories_burned_source = "apple_health"
+    if calories_out <= 0:
+        # Apple Health "active energy" excludes basal burn; add the share of
+        # today's BMR elapsed so far when the profile allows it.
+        active = apple_health["active_energy_kcal"]
+        basal_so_far = prorated_bmr(bmr_kcal, local_now) if bmr_kcal else 0
+        if active > 0 and basal_so_far:
+            calories_out = active + basal_so_far
+            calories_burned_source = "apple_health_bmr"
+        elif active > 0:
+            calories_out = active
+            calories_burned_source = "apple_health"
+        elif basal_so_far:
+            calories_out = basal_so_far
+            calories_burned_source = "bmr"
 
     logger.info("Stats for user_id=%s: in=%d kcal (src=%s), out=%d kcal, strain=%.1f, workouts=%d",
                 user_id, total_in, calories_source,
@@ -339,7 +371,9 @@ async def get_today_stats(user_id: int) -> dict:
     return {
         "today_calories_in": total_in,
         "calories_source": calories_source,
-        "today_fatsecret_meals": fatsecret_meals,
+        "calories_partial": food["partial"],
+        "calories_partial_reasons": food["reasons"],
+        "today_fatsecret_meals": food["meals_text"],
         "today_calories_out": calories_out,
         "calories_burned_source": calories_burned_source,
         "today_strain": whoop["strain"],
@@ -354,10 +388,18 @@ async def get_today_stats(user_id: int) -> dict:
         "apple_health_avg_heart_rate": apple_health["avg_heart_rate"],
         "apple_health_avg_hrv_ms": apple_health["avg_hrv_ms"],
         "apple_health_sleep_hours": apple_health["sleep_hours"],
+        "apple_health_resting_heart_rate": apple_health.get("resting_heart_rate", 0),
+        "apple_health_distance_km": apple_health.get("distance_km", 0),
+        "apple_health_exercise_minutes": apple_health.get("exercise_minutes", 0),
+        "apple_health_body_mass_kg": apple_health.get("body_mass_kg", 0),
+        "apple_health_workout_count": workouts["count"],
+        "apple_health_workouts": workouts["summary"],
+        "bmr_kcal": bmr_kcal,
         "apple_health_metric_counts": apple_health["metric_counts"],
         "apple_health_latest_metric_at": apple_health["latest_metric_at"],
         "apple_health_summary": apple_health["summary"],
         "expired_services": expired_services,
+        "timezone": user_tz.key,
     }
 
 

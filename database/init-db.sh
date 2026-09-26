@@ -136,8 +136,11 @@ for MIGRATION_FILE in "$SCRIPT_DIR"/migrations/*.sql; do
     fi
 
     # Rollback scripts are operator-only recovery tools, never forward migrations.
+    # 001_initial_schema.sql is a never-applied UUID design that conflicts with
+    # the production INTEGER schema (002 bootstraps users itself).
     case "$MIGRATION_NAME" in
         *_rollback.sql) continue ;;
+        001_initial_schema.sql) continue ;;
     esac
 
     echo -e "${YELLOW}[...]${NC} Running migration: $MIGRATION_NAME..."

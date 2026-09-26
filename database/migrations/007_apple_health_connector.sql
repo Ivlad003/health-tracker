@@ -38,25 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_apple_health_sync_user_id ON apple_health_sync(us
 CREATE INDEX IF NOT EXISTS idx_apple_health_sync_secret_key ON apple_health_sync(secret_key);
 CREATE INDEX IF NOT EXISTS idx_apple_health_sync_is_active ON apple_health_sync(is_active);
 
--- =============================================================================
--- HEALTH CONFLICTS TABLE
--- =============================================================================
-CREATE TABLE IF NOT EXISTS health_conflicts (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    metric_type VARCHAR(100) NOT NULL,
-    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    apple_health_value DECIMAL(15, 4),
-    whoop_value DECIMAL(15, 4),
-    conflict_resolution VARCHAR(50) DEFAULT 'apple_health_primary',
-    notes TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(user_id, metric_type, recorded_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_health_conflicts_user_id ON health_conflicts(user_id);
-CREATE INDEX IF NOT EXISTS idx_health_conflicts_recorded_at ON health_conflicts(recorded_at);
-CREATE INDEX IF NOT EXISTS idx_health_conflicts_metric_type ON health_conflicts(metric_type);
+-- (health_conflicts was created here originally; it was never used and is
+-- dropped by 015_drop_unused_tables.sql, so it is no longer created.)
 
 -- =============================================================================
 -- HEALTH DATA TABLE (NEW - unified table for all health metrics)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import hashlib
 import json
 import logging
@@ -50,6 +49,29 @@ _HRV_METRICS = {
     "hrv",
     "hrv_sdnn",
 }
+_RESTING_HEART_RATE_METRICS = {"resting_heart_rate", "restingheartrate"}
+_BODY_MASS_METRICS = {
+    "body_mass",
+    "bodymass",
+    "weight",
+    "weight_body_mass",
+    "weightbodymass",
+}
+_DISTANCE_METRICS = {
+    "walking_running_distance",
+    "walkingrunningdistance",
+    "distance_walking_running",
+    "distancewalkingrunning",
+    "distance",
+}
+_EXERCISE_TIME_METRICS = {
+    "apple_exercise_time",
+    "appleexercisetime",
+    "exercise_time",
+    "exercisetime",
+    "exercise_minutes",
+    "exerciseminutes",
+}
 
 # Metric types the summary/aggregation layer knows how to interpret. Anything
 # outside this set is counted for diagnostics but is not persisted because raw
@@ -60,6 +82,10 @@ _SUMMARY_MAPPED_METRICS = (
     | _HEART_RATE_METRICS
     | _SLEEP_METRICS
     | _HRV_METRICS
+    | _RESTING_HEART_RATE_METRICS
+    | _BODY_MASS_METRICS
+    | _DISTANCE_METRICS
+    | _EXERCISE_TIME_METRICS
 )
 
 # Human-readable labels for the parsed-data summary, keyed by the normalized
@@ -70,6 +96,10 @@ _METRIC_SUMMARY_LABELS = {
     "heart_rate": "HR samples",
     "heart_rate_variability": "HRV samples",
     "sleep_analysis": "sleep",
+    "resting_heart_rate": "resting HR",
+    "body_mass": "body mass",
+    "walking_running_distance": "distance",
+    "apple_exercise_time": "exercise time",
 }
 
 # A single sleep sample longer than a day is bogus input; clamp it so one bad
@@ -103,6 +133,10 @@ METRIC_FAMILY_ACTIVE_ENERGY = "active_energy"
 METRIC_FAMILY_HEART_RATE = "heart_rate"
 METRIC_FAMILY_HRV = "hrv"
 METRIC_FAMILY_SLEEP = "sleep"
+METRIC_FAMILY_RESTING_HEART_RATE = "resting_heart_rate"
+METRIC_FAMILY_BODY_MASS = "body_mass"
+METRIC_FAMILY_DISTANCE = "distance"
+METRIC_FAMILY_EXERCISE_TIME = "exercise_time"
 SUPPORTED_METRIC_FAMILIES = frozenset(
     {
         METRIC_FAMILY_STEPS,
@@ -110,6 +144,28 @@ SUPPORTED_METRIC_FAMILIES = frozenset(
         METRIC_FAMILY_HEART_RATE,
         METRIC_FAMILY_HRV,
         METRIC_FAMILY_SLEEP,
+        METRIC_FAMILY_RESTING_HEART_RATE,
+        METRIC_FAMILY_BODY_MASS,
+        METRIC_FAMILY_DISTANCE,
+        METRIC_FAMILY_EXERCISE_TIME,
+    }
+)
+# Families whose daily value is the SUM of samples (total_value); every other
+# non-sleep family is an AVERAGE of samples (average_value + sample_count).
+SUM_METRIC_FAMILIES = frozenset(
+    {
+        METRIC_FAMILY_STEPS,
+        METRIC_FAMILY_ACTIVE_ENERGY,
+        METRIC_FAMILY_DISTANCE,
+        METRIC_FAMILY_EXERCISE_TIME,
+    }
+)
+AVERAGE_METRIC_FAMILIES = frozenset(
+    {
+        METRIC_FAMILY_HEART_RATE,
+        METRIC_FAMILY_HRV,
+        METRIC_FAMILY_RESTING_HEART_RATE,
+        METRIC_FAMILY_BODY_MASS,
     }
 )
 MAX_METRIC_VALUE_BY_FAMILY = {
@@ -118,6 +174,40 @@ MAX_METRIC_VALUE_BY_FAMILY = {
     METRIC_FAMILY_HEART_RATE: Decimal("1000"),
     METRIC_FAMILY_HRV: Decimal("100000"),
     METRIC_FAMILY_SLEEP: Decimal("1000000"),
+    METRIC_FAMILY_RESTING_HEART_RATE: Decimal("300"),
+    # Canonical kg.
+    METRIC_FAMILY_BODY_MASS: Decimal("700"),
+    # Canonical metres per sample (1000 km).
+    METRIC_FAMILY_DISTANCE: Decimal("1000000"),
+    # Canonical minutes per sample (one day).
+    METRIC_FAMILY_EXERCISE_TIME: Decimal("1440"),
+}
+# Conversions from an accepted unit to the family's canonical unit. Positive
+# Decimals are multipliers; ("div", d) divides, which keeps exact results such
+# as 418.4 kJ -> 100 kcal free of Decimal rounding residue.
+_UNIT_CONVERSIONS_BY_FAMILY: dict[str, dict[str, Any]] = {
+    METRIC_FAMILY_ACTIVE_ENERGY: {"kJ": ("div", Decimal("4.184"))},
+    METRIC_FAMILY_BODY_MASS: {
+        "lb": Decimal("0.45359237"),
+        "g": Decimal("0.001"),
+        "st": Decimal("6.35029318"),
+    },
+    METRIC_FAMILY_DISTANCE: {
+        "km": Decimal("1000"),
+        "mi": Decimal("1609.344"),
+        "ft": Decimal("0.3048"),
+        "yd": Decimal("0.9144"),
+    },
+    METRIC_FAMILY_EXERCISE_TIME: {
+        "hr": Decimal("60"),
+        "s": ("div", Decimal("60")),
+    },
+}
+_CANONICAL_UNIT_BY_FAMILY = {
+    METRIC_FAMILY_ACTIVE_ENERGY: "kcal",
+    METRIC_FAMILY_BODY_MASS: "kg",
+    METRIC_FAMILY_DISTANCE: "m",
+    METRIC_FAMILY_EXERCISE_TIME: "min",
 }
 MAX_PERSISTED_ERROR_MESSAGE_CHARS = 256
 
@@ -164,6 +254,79 @@ _UNIT_ALIASES_BY_FAMILY = {
         "sec": "s",
         "second": "s",
         "seconds": "s",
+    },
+    METRIC_FAMILY_RESTING_HEART_RATE: {
+        "count/min": "count/min",
+        "counts/min": "count/min",
+        "bpm": "count/min",
+        "beat/min": "count/min",
+        "beats/min": "count/min",
+        "уд/хв": "count/min",
+        "уд./хв": "count/min",
+    },
+    METRIC_FAMILY_BODY_MASS: {
+        "kg": "kg",
+        "kgs": "kg",
+        "kilogram": "kg",
+        "kilograms": "kg",
+        "кг": "kg",
+        "lb": "lb",
+        "lbs": "lb",
+        "pound": "lb",
+        "pounds": "lb",
+        "фунт": "lb",
+        "фунти": "lb",
+        "фунтів": "lb",
+        "g": "g",
+        "gram": "g",
+        "grams": "g",
+        "г": "g",
+        "st": "st",
+        "stone": "st",
+    },
+    METRIC_FAMILY_DISTANCE: {
+        "m": "m",
+        "meter": "m",
+        "meters": "m",
+        "metre": "m",
+        "metres": "m",
+        "м": "m",
+        "km": "km",
+        "kilometer": "km",
+        "kilometers": "km",
+        "kilometre": "km",
+        "kilometres": "km",
+        "км": "km",
+        "mi": "mi",
+        "mile": "mi",
+        "miles": "mi",
+        "миля": "mi",
+        "милі": "mi",
+        "миль": "mi",
+        "ft": "ft",
+        "feet": "ft",
+        "foot": "ft",
+        "yd": "yd",
+        "yard": "yd",
+        "yards": "yd",
+    },
+    METRIC_FAMILY_EXERCISE_TIME: {
+        "min": "min",
+        "mins": "min",
+        "minute": "min",
+        "minutes": "min",
+        "хв": "min",
+        "хв.": "min",
+        "h": "hr",
+        "hr": "hr",
+        "hour": "hr",
+        "hours": "hr",
+        "год": "hr",
+        "s": "s",
+        "sec": "s",
+        "second": "s",
+        "seconds": "s",
+        "с": "s",
     },
 }
 
@@ -221,6 +384,16 @@ def _parse_timezone(tz_str: str) -> Any:
         raise AppleHealthIngestionError(
             "snapshot timezone is not a valid IANA name or UTC offset"
         ) from exc
+
+
+def _default_timezone_name() -> str:
+    from app.config import settings
+
+    try:
+        ZoneInfo(settings.default_timezone)
+        return settings.default_timezone
+    except (ZoneInfoNotFoundError, ValueError):
+        return "UTC"
 
 
 def _format_fixed_offset(offset: timedelta | None) -> str:
@@ -452,11 +625,14 @@ def _extract_snapshot_meta(
 
 
 def verify_apple_health_token(provided_token: str | None, expected_token: str) -> bool:
-    """Validate the per-user token sent by an iOS Shortcut."""
-    if not provided_token or not expected_token:
-        return False
+    """Validate the per-user token sent by an iOS Shortcut.
 
-    return hmac.compare_digest(provided_token, expected_token)
+    ``expected_token`` is the stored value: ``sha256:<hex>`` (current) or a
+    legacy plaintext token from before migration 014.
+    """
+    from app.crypto import verify_secret
+
+    return verify_secret(provided_token, expected_token)
 
 
 async def ensure_apple_health_sync(
@@ -465,9 +641,15 @@ async def ensure_apple_health_sync(
     user_id: int,
     sync_frequency_hours: int = 6,
 ) -> dict[str, str]:
-    """Create or rotate Apple Health sync credentials for a user."""
+    """Create or rotate Apple Health sync credentials for a user.
+
+    Only a SHA-256 hash is stored; the plaintext token is returned once so the
+    bot can put it into the Shortcut URL.
+    """
+    from app.crypto import hash_secret
+
     token = secrets.token_urlsafe(32)
-    row = await pool.fetchrow(
+    await pool.fetchrow(
         """INSERT INTO apple_health_sync (user_id, secret_key, sync_frequency_hours, is_active)
            VALUES ($1, $2, $3, TRUE)
            ON CONFLICT (user_id) DO UPDATE
@@ -477,10 +659,10 @@ async def ensure_apple_health_sync(
                updated_at = NOW()
            RETURNING secret_key""",
         user_id,
-        token,
+        hash_secret(token),
         sync_frequency_hours,
     )
-    return {"secret_key": row["secret_key"]}
+    return {"secret_key": token}
 
 
 def _parse_datetime(value: str, field_name: str) -> datetime:
@@ -508,6 +690,17 @@ def _parse_datetime_with_local_date(
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc), local_date
+
+
+_UNIT_SUFFIX_RE = re.compile(r"^\s*-?\d[\d\u00a0\u202f .,]*?\s*([^\d\s][^\d]*?)\s*$")
+
+
+def _unit_suffix(value: Any) -> str:
+    """Unit text trailing a Shortcuts-rendered quantity, e.g. "72,5 кг" -> "кг"."""
+    if not isinstance(value, str):
+        return ""
+    match = _UNIT_SUFFIX_RE.match(value)
+    return match.group(1).strip() if match else ""
 
 
 def _normalize_numeric_text(raw: str) -> str:
@@ -584,9 +777,13 @@ def _normalize_metric_value_and_unit(
         raise AppleHealthIngestionError(
             f"metric unit is not supported for {family}"
         )
-    if family == METRIC_FAMILY_ACTIVE_ENERGY and canonical_unit == "kJ":
-        parsed /= Decimal("4.184")
-        canonical_unit = "kcal"
+    factor = _UNIT_CONVERSIONS_BY_FAMILY.get(family, {}).get(canonical_unit)
+    if factor is not None:
+        if isinstance(factor, tuple):
+            parsed /= factor[1]
+        else:
+            parsed *= factor
+        canonical_unit = _CANONICAL_UNIT_BY_FAMILY[family]
 
     if parsed > MAX_METRIC_VALUE_BY_FAMILY[family]:
         raise AppleHealthIngestionError(
@@ -609,6 +806,11 @@ async def _get_active_sync(pool: Any, telegram_user_id: int) -> dict[str, Any]:
     if not row:
         raise AppleHealthIngestionError("Apple Health sync is not active for this user")
     return dict(row)
+
+
+async def get_active_apple_health_sync(pool: Any, telegram_user_id: int) -> dict[str, Any]:
+    """Public accessor for the active sync row (raises if inactive)."""
+    return await _get_active_sync(pool, telegram_user_id)
 
 
 async def get_apple_health_sync_for_observability(
@@ -639,6 +841,16 @@ def _metric_key(metric_type: str) -> str:
         "heart_rate_variability_sdnn": "heart_rate_variability",
         "hrv": "heart_rate_variability",
         "hrv_sdnn": "heart_rate_variability",
+        "restingheartrate": "resting_heart_rate",
+        "bodymass": "body_mass",
+        "weight": "body_mass",
+        "weight_body_mass": "body_mass",
+        "distance": "walking_running_distance",
+        "distance_walking_running": "walking_running_distance",
+        "walkingrunningdistance": "walking_running_distance",
+        "exercise_time": "apple_exercise_time",
+        "exercise_minutes": "apple_exercise_time",
+        "appleexercisetime": "apple_exercise_time",
     }
     return aliases.get(key, key)
 
@@ -660,6 +872,14 @@ def metric_family_for_type(metric_type: str) -> str | None:
         return METRIC_FAMILY_HRV
     if _is_metric(metric_type, _SLEEP_METRICS):
         return METRIC_FAMILY_SLEEP
+    if _is_metric(metric_type, _RESTING_HEART_RATE_METRICS):
+        return METRIC_FAMILY_RESTING_HEART_RATE
+    if _is_metric(metric_type, _BODY_MASS_METRICS):
+        return METRIC_FAMILY_BODY_MASS
+    if _is_metric(metric_type, _DISTANCE_METRICS):
+        return METRIC_FAMILY_DISTANCE
+    if _is_metric(metric_type, _EXERCISE_TIME_METRICS):
+        return METRIC_FAMILY_EXERCISE_TIME
     return None
 
 
@@ -875,7 +1095,7 @@ def aggregate_metric_families_by_day(
             continue
 
         acc["aggregated"] += 1
-        if family in {METRIC_FAMILY_STEPS, METRIC_FAMILY_ACTIVE_ENERGY}:
+        if family in SUM_METRIC_FAMILIES:
             acc["total"] += value
         else:
             acc["values"].append(value)
@@ -890,9 +1110,9 @@ def _finalize_metric_family(family: str, acc: dict[str, Any]) -> dict[str, Any]:
 
     if family == METRIC_FAMILY_STEPS:
         total_value = Decimal(str(int(round(acc["total"]))))
-    elif family == METRIC_FAMILY_ACTIVE_ENERGY:
+    elif family in SUM_METRIC_FAMILIES:
         total_value = Decimal(str(round(acc["total"], 2)))
-    elif family in {METRIC_FAMILY_HEART_RATE, METRIC_FAMILY_HRV}:
+    elif family in AVERAGE_METRIC_FAMILIES:
         values = acc["values"]
         sample_count = len(values)
         if values:
@@ -1107,7 +1327,10 @@ async def get_apple_health_summary(
             "marker": row["snapshot_generated_at"] or row["updated_at"],
         }
 
-    raw_tz = ZoneInfo("Europe/Kyiv")
+    # Legacy raw rows carry no timezone; attribute them in the deployment
+    # default timezone (historically Europe/Kyiv).
+    raw_tz_name = _default_timezone_name()
+    raw_tz = ZoneInfo(raw_tz_name)
     normalized_raw: list[dict[str, Any]] = []
     raw_coverage: dict[str, set[date]] = {}
     raw_markers: dict[tuple[date, str], datetime] = {}
@@ -1143,7 +1366,7 @@ async def get_apple_health_summary(
             "additional_data": additional_data if isinstance(additional_data, dict) else {},
         }
         metric_date = attribution_date_for_metric(metric, raw_tz)
-        if not _in_window(metric_date, "Europe/Kyiv"):
+        if not _in_window(metric_date, raw_tz_name):
             continue
         normalized_raw.append(metric)
         raw_coverage.setdefault(family, set()).add(metric_date)
@@ -1178,10 +1401,17 @@ async def get_apple_health_summary(
     hrv_weighted = 0.0
     hrv_samples = 0
     sleep_seconds = 0.0
+    distance_m = 0.0
+    exercise_minutes = 0.0
+    resting_weighted = 0.0
+    resting_samples = 0
+    # Body mass is a point measurement: report the most recent day in window.
+    body_mass_day: date | None = None
+    body_mass_kg = 0.0
     counts: dict[str, int] = {}
     latest_metric_at = None
 
-    for row in selected.values():
+    for (row_day, _row_family), row in sorted(selected.items()):
         family = row["family"]
         if family == METRIC_FAMILY_STEPS:
             steps += _to_float(row["total"])
@@ -1189,6 +1419,22 @@ async def get_apple_health_summary(
             active_energy += _to_float(row["total"])
         elif family == METRIC_FAMILY_SLEEP:
             sleep_seconds += _to_float(row["total"])
+        elif family == METRIC_FAMILY_DISTANCE:
+            distance_m += _to_float(row["total"])
+        elif family == METRIC_FAMILY_EXERCISE_TIME:
+            exercise_minutes += _to_float(row["total"])
+        elif family == METRIC_FAMILY_RESTING_HEART_RATE:
+            sample_count = int(row["sample_count"] or 0)
+            if sample_count and row["average"] is not None:
+                resting_weighted += _to_float(row["average"]) * sample_count
+                resting_samples += sample_count
+        elif family == METRIC_FAMILY_BODY_MASS:
+            sample_count = int(row["sample_count"] or 0)
+            if sample_count and row["average"] is not None and (
+                body_mass_day is None or row_day >= body_mass_day
+            ):
+                body_mass_day = row_day
+                body_mass_kg = _to_float(row["average"])
         elif family == METRIC_FAMILY_HEART_RATE:
             sample_count = int(row["sample_count"] or 0)
             if sample_count and row["average"] is not None:
@@ -1215,6 +1461,10 @@ async def get_apple_health_summary(
     sleep_hours = round(sleep_seconds / 3600, 1) if sleep_seconds else 0
     active_energy_kcal = round(active_energy)
     total_steps = round(steps)
+    resting_heart_rate = round(resting_weighted / resting_samples) if resting_samples else 0
+    distance_km = round(distance_m / 1000, 2) if distance_m else 0
+    exercise_min = round(exercise_minutes) if exercise_minutes else 0
+    body_mass = round(body_mass_kg, 1) if body_mass_kg else 0
 
     parts = []
     if total_steps:
@@ -1227,6 +1477,15 @@ async def get_apple_health_summary(
         parts.append(f"Apple Health sleep: {_format_number(sleep_hours)}h")
     if avg_hrv_ms:
         parts.append(f"Apple Health HRV (stress proxy): {avg_hrv_ms} ms")
+    if resting_heart_rate:
+        parts.append(f"Apple Health resting heart rate: {resting_heart_rate} bpm")
+    if distance_km:
+        distance_text = f"{distance_km:.2f}".rstrip("0").rstrip(".")
+        parts.append(f"Apple Health walking+running distance: {distance_text} km")
+    if exercise_min:
+        parts.append(f"Apple Health exercise time: {exercise_min} min")
+    if body_mass:
+        parts.append(f"Apple Health body mass: {_format_number(body_mass)} kg")
 
     return {
         "steps": total_steps,
@@ -1234,10 +1493,48 @@ async def get_apple_health_summary(
         "avg_heart_rate": avg_heart_rate,
         "avg_hrv_ms": avg_hrv_ms,
         "sleep_hours": sleep_hours,
+        "resting_heart_rate": resting_heart_rate,
+        "distance_km": distance_km,
+        "exercise_minutes": exercise_min,
+        "body_mass_kg": body_mass,
         "metric_counts": counts,
         "latest_metric_at": latest_metric_at,
         "summary": ". ".join(parts),
     }
+
+
+async def get_latest_body_mass(
+    pool: Any,
+    user_id: int,
+    *,
+    lookback_days: int = 30,
+    today: date | None = None,
+) -> dict[str, Any] | None:
+    """Most recent Apple Health body mass (kg) within ``lookback_days``.
+
+    People do not weigh in daily, so the BMR estimate uses the latest known
+    weight rather than today's (usually empty) body_mass family.
+    """
+    reference = today or datetime.now(timezone.utc).date()
+    row = await pool.fetchrow(
+        """SELECT metric_date, average_value
+           FROM health_daily_metric_aggregates
+           WHERE user_id = $1
+                 AND source = 'apple_health'
+                 AND metric_family = 'body_mass'
+                 AND sample_count > 0
+                 AND average_value IS NOT NULL
+                 AND metric_date >= $2
+                 AND metric_date <= $3
+           ORDER BY metric_date DESC, snapshot_generated_at DESC
+           LIMIT 1""",
+        user_id,
+        reference - timedelta(days=lookback_days),
+        reference + timedelta(days=1),
+    )
+    if not row:
+        return None
+    return {"metric_date": row["metric_date"], "kg": round(_to_float(row["average_value"]), 1)}
 
 
 def _sanitized_request_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1363,8 +1660,7 @@ def is_health_auto_export_payload(payload: Any) -> bool:
     data = payload.get("data")
     if not isinstance(data, dict):
         return False
-    metrics = data.get("metrics")
-    return isinstance(metrics, list)
+    return isinstance(data.get("metrics"), list) or isinstance(data.get("workouts"), list)
 
 
 def convert_health_auto_export(
@@ -1545,6 +1841,11 @@ def _normalize_metric(
     if not metric_type:
         raise AppleHealthIngestionError("metric type is required")
     if not unit:
+        # The Shortcut sends locale-dependent units (weight, distance) from the
+        # sample's Unit property; if that renders empty, recover the unit from
+        # the localized Value text ("72,5 кг", "3.1 mi").
+        unit = _unit_suffix(metric.get("value"))
+    if not unit:
         raise AppleHealthIngestionError("metric unit is required")
     if len(metric_type) > 100:
         raise AppleHealthIngestionError("metric type must be at most 100 characters")
@@ -1679,7 +1980,7 @@ def attribution_date_for_metric(metric: dict[str, Any], tz: Any) -> date:
 
     Sleep intervals are attributed to the local day they *end*; everything else
     to the local day of ``recorded_at``. Mirrors the bucketing in
-    ``aggregate_metrics_by_day`` so callers (e.g. backfill) can pre-compute the
+    ``aggregate_metric_families_by_day`` so callers (e.g. backfill) can pre-compute the
     set of covered days.
     """
     recorded_at = metric["recorded_at"]
@@ -1696,117 +1997,6 @@ def attribution_date_for_metric(metric: dict[str, Any], tz: Any) -> date:
     if metric.get("local_recorded_date") is not None:
         return metric["local_recorded_date"]
     return _local_date(recorded_at, tz)
-
-
-def _new_day_accumulator() -> dict[str, Any]:
-    return {
-        "steps": 0.0,
-        "active_energy": 0.0,
-        "heart_rates": [],
-        "hrv_values": [],
-        "sleep_intervals": [],
-        "counts": {},
-        "received": 0,
-        "aggregated": 0,
-    }
-
-
-def aggregate_metrics_by_day(
-    normalized_metrics: list[dict[str, Any]],
-    *,
-    tz: Any,
-    covered_dates: set[date],
-) -> dict[date, dict[str, Any]]:
-    """Aggregate normalized samples in memory, one bucket per local calendar day.
-
-    Attribution: non-sleep metrics land on the local date of their ``recorded_at``;
-    a sleep interval lands on the local date it *ends* (a night usually starts
-    before midnight). Same-second distinct samples (two step counts, or an
-    "Awake" and an "In Bed" segment sharing a start second) all contribute —
-    there is no natural-key collision because nothing is stored per sample.
-    Overlapping sleep intervals are merged (not summed) so a night is not
-    double-counted.
-
-    Every sample's attribution date MUST be in ``covered_dates``; a sample
-    outside the declared coverage means a partial/ambiguous snapshot and raises
-    AppleHealthIngestionError rather than being silently merged.
-    """
-    days: dict[date, dict[str, Any]] = {}
-
-    def _bucket(day: date) -> dict[str, Any]:
-        if day not in covered_dates:
-            raise AppleHealthIngestionError(
-                f"snapshot carries a {day.isoformat()} sample outside its declared "
-                f"coveredDates — partial/ambiguous snapshot rejected. {_REIMPORT_GUIDANCE}"
-            )
-        return days.setdefault(day, _new_day_accumulator())
-
-    for metric in normalized_metrics:
-        metric_type = str(metric["metric_type"])
-        key = _metric_key(metric_type)
-        value = _to_float(metric["value"])
-        unit = str(metric["unit"] or "").lower()
-        recorded_at = metric["recorded_at"]
-
-        if _is_metric(metric_type, _SLEEP_METRICS):
-            duration = min(
-                _sleep_duration_seconds(metric, value, unit),
-                _MAX_SLEEP_SAMPLE_SECONDS,
-            )
-            if duration <= 0:
-                # Received but contributes nothing (no derivable interval).
-                _bucket(_local_date(recorded_at, tz))["received"] += 1
-                continue
-            ends_at = recorded_at + timedelta(seconds=duration)
-            acc = _bucket(_local_date(ends_at, tz))
-            acc["received"] += 1
-            acc["aggregated"] += 1
-            acc["counts"][key] = acc["counts"].get(key, 0) + 1
-            acc["sleep_intervals"].append((recorded_at, ends_at))
-            continue
-
-        acc = _bucket(_local_date(recorded_at, tz))
-        acc["received"] += 1
-        acc["aggregated"] += 1
-        acc["counts"][key] = acc["counts"].get(key, 0) + 1
-
-        if _is_metric(metric_type, _STEP_METRICS):
-            acc["steps"] += value
-        elif _is_metric(metric_type, _ACTIVE_ENERGY_METRICS):
-            acc["active_energy"] += value
-        elif _is_metric(metric_type, _HRV_METRICS):
-            acc["hrv_values"].append(value)
-        elif _is_metric(metric_type, _HEART_RATE_METRICS):
-            acc["heart_rates"].append(value)
-        # Unmapped types still count toward the day's breakdown (counts) but roll
-        # up no numeric column — surfaced via unmapped_metric_types.
-
-    return days
-
-
-def _finalize_day_columns(acc: dict[str, Any]) -> dict[str, Any]:
-    """Turn a day accumulator into DB-ready column values (asyncpg types)."""
-    heart_rates = acc["heart_rates"]
-    hrv_values = acc["hrv_values"]
-    sleep_seconds = int(round(_merged_interval_seconds(acc["sleep_intervals"])))
-    avg_hr = (
-        Decimal(str(round(sum(heart_rates) / len(heart_rates), 2))) if heart_rates else None
-    )
-    avg_hrv = (
-        Decimal(str(round(sum(hrv_values) / len(hrv_values), 2))) if hrv_values else None
-    )
-    return {
-        "steps": int(round(acc["steps"])),
-        "active_energy_kcal": Decimal(str(round(acc["active_energy"], 2))),
-        "avg_heart_rate": avg_hr,
-        "heart_rate_samples": len(heart_rates),
-        "avg_hrv_ms": avg_hrv,
-        "hrv_samples": len(hrv_values),
-        "sleep_seconds": sleep_seconds,
-        "samples_received": acc["received"],
-        "samples_aggregated": acc["aggregated"],
-        "counts": acc["counts"],
-    }
 
 
 def _family_payload_hash(
@@ -2002,6 +2192,14 @@ def _daily_result_from_families(
             entry["avg_hrv_ms"] = float(columns["average_value"] or 0)
         elif family == METRIC_FAMILY_SLEEP:
             entry["sleep_hours"] = round(float(columns["total_value"]) / 3600, 1)
+        elif family == METRIC_FAMILY_RESTING_HEART_RATE:
+            entry["resting_heart_rate"] = float(columns["average_value"] or 0)
+        elif family == METRIC_FAMILY_BODY_MASS:
+            entry["body_mass_kg"] = float(columns["average_value"] or 0)
+        elif family == METRIC_FAMILY_DISTANCE:
+            entry["distance_km"] = round(float(columns["total_value"]) / 1000, 2)
+        elif family == METRIC_FAMILY_EXERCISE_TIME:
+            entry["exercise_minutes"] = round(float(columns["total_value"]), 1)
         entry["samples_received"] += columns["samples_received"]
         for metric_type, count in columns["details"].get("records_by_type", {}).items():
             entry["records_by_type"][metric_type] = (

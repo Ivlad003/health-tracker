@@ -51,6 +51,20 @@ OPENAI_API_KEY=your_api_key
 
 # Database
 DATABASE_URL=postgresql://user:pass@localhost:5432/healthlog
+
+# Застосунок / безпека
+APP_BASE_URL=https://your-domain.com
+WHOOP_REDIRECT_URI=https://your-domain.com/whoop/callback
+FATSECRET_SHARED_SECRET=your_oauth1_shared_secret
+OAUTH_STATE_SECRET=long_random_string
+ADMIN_API_TOKEN=long_random_string   # вмикає /debug/*; порожнє = 404
+DEFAULT_TIMEZONE=Europe/Kyiv
+
+# Облік їжі / Web App (див. docs/uk/food-logging.md)
+OFF_USER_AGENT="HealthTrackerBot/1.0 (contact: you@example.com)"
+FATSECRET_HISTORY_IMPORT_DAYS=30
+WEBAPP_URL=https://your-domain.com/app/     # HTTPS, для кнопок Web App
+WEBAPP_ADMIN_TELEGRAM_IDS=123456789         # початковий власник/адмін
 ```
 
 ### 3. Налаштування бази даних
@@ -60,7 +74,9 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/healthlog
 createdb healthlog
 
 # Запуск міграцій
-psql -d healthlog -f database/migrations/001_initial_schema.sql
+bash database/init-db.sh   # застосовує 002+ по черзі (001 НЕ використовується), пропускає *_rollback.sql
+# або лише частину Apple Health:
+python -m app.db_preflight --apply-apple-health-migration
 ```
 
 ### 4. Запуск додатку
@@ -96,10 +112,13 @@ uvicorn app.main:app --reload
 
 ### Логування їжі голосом
 
-1. Відправте голосове повідомлення боту
-2. Опишіть що ви їли: "На сніданок вівсянка з бананом"
-3. Бот розпізнає продукти та покаже калорії
-4. Підтвердіть або відредагуйте
+1. Надішліть текст або голосове: «гречка варена 180 г»
+2. Раніше підтверджений продукт записується одразу (з кнопкою **Скасувати**);
+   для нової їжі бот покаже до 3 варіантів — оберіть, і він це запам'ятає
+3. Не вказали вагу? Бот перепитає — відповідайте «135 г» на його повідомлення
+4. Фото штрихкоду з підписом «135 г» записує точний упакований продукт;
+   для невідомого штрихкоду надішліть фото етикетки відповіддю
+5. Після `/connect_fatsecret` історія щоденника FatSecret наповнює **Мої продукти**
 
 ### Підключення WHOOP
 
@@ -112,14 +131,18 @@ uvicorn app.main:app --reload
 
 | Команда | Опис |
 |---------|------|
-| `/start` | Початок роботи |
-| `/help` | Допомога |
-| `/log` | Ручне логування |
-| `/summary` | Денний підсумок |
-| `/week` | Тижневий звіт |
-| `/settings` | Налаштування |
+| `/start`, `/help` | Інструкція |
+| `/connect_fatsecret`, `/connect_whoop`, `/connect_apple_health` | Підключення сервісів |
+| `/sync` | Перевірити підключення |
+| `/timezone`, `/language`, `/profile` | Часовий пояс, мова, профіль для BMR |
+| `/journal`, `/journal_time`, `/journal_on`, `/journal_off` | Щоденник |
+| `/gym_prompt` | Gym профіль |
+| `/app` | Відкрити Telegram Web App (потрібна HTTPS `WEBAPP_URL`) |
+
+Їжа записується звичайними повідомленнями, голосом і фото (команда не потрібна).
 
 ## Наступні кроки
 
 - [Інтеграція API](api-integration.md) - Детальна документація API
 - [Архітектура](architecture.md) - Як працює система
+- [Облік їжі](food-logging.md) - Історія, штрихкоди, фото етикеток, API Web App

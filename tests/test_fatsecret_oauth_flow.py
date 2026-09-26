@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
+from app.security import sign_oauth_state
 
 
 @pytest.mark.asyncio
@@ -22,11 +23,23 @@ async def test_fatsecret_connect_redirects(mock_settings):
             transport=transport, base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/fatsecret/connect", params={"state": "999"}
+                "/fatsecret/connect", params={"state": sign_oauth_state(999, "fatsecret")}
             )
 
     assert resp.status_code == 307
     assert "oauth_token=req_token_123" in resp.headers["location"]
+    assert mock_pool.execute.await_args[0][-1] == 999
+
+
+@pytest.mark.asyncio
+async def test_fatsecret_connect_rejects_unsigned_state(mock_settings):
+    with patch("app.routers.fatsecret.get_request_token") as get_token:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/fatsecret/connect", params={"state": "999"})
+
+    assert resp.status_code == 400
+    get_token.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -50,7 +63,7 @@ async def test_fatsecret_callback_success(mock_settings):
             resp = await client.get("/fatsecret/callback", params={
                 "oauth_token": "req_token",
                 "oauth_verifier": "verifier_123",
-                "state": "999",
+                "state": sign_oauth_state(999, "fatsecret"),
             })
 
     assert resp.status_code == 200

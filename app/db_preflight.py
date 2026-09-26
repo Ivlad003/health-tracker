@@ -18,12 +18,27 @@ APPLE_HEALTH_MIGRATION_LOCK_KEY = 0x4150504C45484442
 # Applied in order. Every migration is written to be idempotent (IF NOT EXISTS /
 # DO-block guards), so re-applying on an already-migrated database is a no-op.
 # 007 creates the Apple Health raw + shared tables; 009 adds the schema-v2 daily
-# aggregate table; 010 adds causally ordered per-family aggregates. Superseded
-# migration 008 (PG15-only raw natural key) is intentionally absent.
+# aggregate table; 010 adds causally ordered per-family aggregates; 011 widens
+# the family CHECK for resting HR, body mass, distance, and exercise time;
+# 012 adds user profile columns (BMR); 013 adds health_workouts; 014 hashes
+# Apple Health webhook secrets; 015 drops never-written tables (guarded: tables
+# with rows are kept); 016 adds the food ledger, catalog, drafts, sync outbox
+# and history-import jobs; 017 adds Web App sessions, roles, preferences, goal
+# history, feature flags, admin audit and notification de-duplication.
+# The Docker CMD is the only production migration path, so every schema
+# change the app depends on is listed here (despite the historical name).
+# Superseded migration 008 (PG15-only raw natural key) is intentionally absent.
 APPLE_HEALTH_MIGRATIONS = (
     MIGRATIONS_DIR / "007_apple_health_connector.sql",
     MIGRATIONS_DIR / "009_health_daily_aggregates.sql",
     MIGRATIONS_DIR / "010_health_daily_metric_aggregates.sql",
+    MIGRATIONS_DIR / "011_apple_health_extended_families.sql",
+    MIGRATIONS_DIR / "012_user_profile.sql",
+    MIGRATIONS_DIR / "013_health_workouts.sql",
+    MIGRATIONS_DIR / "014_apple_health_secret_hash.sql",
+    MIGRATIONS_DIR / "015_drop_unused_tables.sql",
+    MIGRATIONS_DIR / "016_food_ledger_catalog.sql",
+    MIGRATIONS_DIR / "017_webapp_admin_preferences.sql",
 )
 
 # Kept for backward compatibility with callers/tests that imported the single
@@ -36,6 +51,25 @@ REQUIRED_APPLE_HEALTH_TABLES = {
     "apple_health_import_logs",
     "health_daily_aggregates",
     "health_daily_metric_aggregates",
+    "health_workouts",
+    # 016
+    "food_products",
+    "food_nutrition_versions",
+    "user_product_memberships",
+    "food_default_rules",
+    "food_log_drafts",
+    "food_sync_outbox",
+    "catalog_import_jobs",
+    "catalog_import_candidates",
+    "external_lookup_cache",
+    # 017
+    "user_preferences",
+    "user_goal_history",
+    "webapp_sessions",
+    "user_roles",
+    "feature_flags",
+    "admin_audit_log",
+    "notification_sends",
 }
 
 REQUIRED_APPLE_HEALTH_INDEXES = {
@@ -56,6 +90,20 @@ REQUIRED_APPLE_HEALTH_INDEXES = {
     "idx_health_daily_metric_aggregates_user_date",
     "idx_health_daily_metric_aggregates_family_freshness",
     "idx_health_daily_metric_aggregates_collector",
+    "idx_health_daily_metric_aggregates_user_family_date",
+    "idx_health_workouts_user_started",
+    # 016: uniqueness the food ledger relies on (ON CONFLICT targets).
+    "uq_food_products_shared_identity",
+    "uq_food_products_personal_identity",
+    "uq_food_nutrition_current_serving",
+    "uq_food_default_rules_manual",
+    "uq_food_default_rules_learned",
+    "uq_food_log_drafts_message",
+    "uq_food_log_drafts_media_group",
+    "uq_food_entries_idempotency",
+    "uq_food_entries_remote_entry",
+    "idx_food_entries_user_local_date",
+    "uq_catalog_import_jobs_active",
 }
 
 # Named UNIQUE constraints the app targets via ON CONFLICT ON CONSTRAINT.
@@ -65,7 +113,18 @@ REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE = {
         "health_daily_metric_aggregates_natural_key",
         "health_daily_metric_aggregates_total_finite_check",
         "health_daily_metric_aggregates_average_check",
+        # Present only after 011; proves the extended families are accepted.
+        "health_daily_metric_aggregates_family_check_v2",
     },
+    "health_workouts": {"health_workouts_natural_key"},
+    "users": {"users_profile_check"},
+    "food_entries": {"food_entries_ledger_check"},
+    "user_product_memberships": {"user_product_memberships_natural_key"},
+    "food_sync_outbox": {"food_sync_outbox_natural_key"},
+    "food_log_drafts": {"food_log_drafts_commit_key"},
+    "catalog_import_candidates": {"catalog_import_candidates_natural_key"},
+    "user_goal_history": {"user_goal_history_natural_key"},
+    "webapp_sessions": {"webapp_sessions_token_hash_key"},
 }
 REQUIRED_APPLE_HEALTH_CONSTRAINTS = set().union(
     *REQUIRED_APPLE_HEALTH_CONSTRAINTS_BY_TABLE.values()

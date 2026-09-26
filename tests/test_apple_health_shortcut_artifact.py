@@ -21,9 +21,27 @@ SIGNED_SHORTCUT = SHORTCUT_SOURCE.with_name("apple-health-sync.shortcut")
 # Find Health Samples picker labels differ from HealthKit SDK names; these are
 # the labels the iOS picker actually shows (e.g. "Active Calories", not
 # "Active Energy Burned"; "Sleep", not "Sleep Analysis").
-EXPECTED_QUERY_TYPES = ["Steps", "Active Calories", "Sleep", "Heart Rate Variability SDNN"]
+EXPECTED_QUERY_TYPES = [
+    "Steps",
+    "Active Calories",
+    "Sleep",
+    "Heart Rate Variability SDNN",
+    "Resting Heart Rate",
+    "Weight",
+    "Walking + Running Distance",
+    "Exercise Minutes",
+]
 
-METRIC_DICTIONARY_NAMES = ["Step Metric", "Energy Metric", "Sleep Metric", "HRV Metric"]
+METRIC_DICTIONARY_NAMES = [
+    "Step Metric",
+    "Energy Metric",
+    "Sleep Metric",
+    "HRV Metric",
+    "Resting HR Metric",
+    "Body Mass Metric",
+    "Distance Metric",
+    "Exercise Metric",
+]
 
 
 def _text_value(field: object) -> str | None:
@@ -237,7 +255,16 @@ class AppleHealthShortcutArtifactTests(unittest.TestCase):
         self.assertEqual(covered_families["WFItemType"], 2)
         self.assertEqual(
             [_text_value(item["WFValue"]) for item in covered_families["WFValue"]["Value"]],
-            ["steps", "active_energy", "sleep", "hrv"],
+            [
+                "steps",
+                "active_energy",
+                "sleep",
+                "hrv",
+                "resting_heart_rate",
+                "body_mass",
+                "distance",
+                "exercise_time",
+            ],
         )
 
         timezone_format = _current_date_format(snapshot_items["timezone"]["WFValue"])

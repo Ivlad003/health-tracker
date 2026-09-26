@@ -1170,3 +1170,223 @@ async def test_backfill_all_isolates_per_user_failure_and_reports_it():
         assert bad_raw == 1
     finally:
         await conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Migration 011: extended metric families
+# --------------------------------------------------------------------------- #
+_EXTENDED_INSERT = """INSERT INTO health_daily_metric_aggregates
+          (user_id, source, collector, metric_date, metric_family,
+           timezone, total_value, average_value, sample_count,
+           samples_received, samples_aggregated,
+           snapshot_generated_at, payload_hash)
+     VALUES (1, 'apple_health', 'shortcut', DATE '2026-09-20', $1,
+             'UTC', 0, 72.4, 1, 1, 1, NOW(), repeat('b', 64))"""
+
+
+@pytest.mark.asyncio
+async def test_migration_011_accepts_extended_families_and_rejects_unknown():
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await apply_apple_health_migrations(conn)
+        # Re-applying the whole chain after 011 must stay a no-op.
+        await apply_apple_health_migrations(conn)
+        await verify_apple_health_schema(conn)
+        await conn.execute("INSERT INTO users (id, telegram_user_id) VALUES (1, 999)")
+
+        for family in ("resting_heart_rate", "body_mass", "distance", "exercise_time"):
+            await conn.execute(_EXTENDED_INSERT, family)
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(_EXTENDED_INSERT, "blood_glucose")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_migration_011_rollback_refuses_while_extended_rows_exist():
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await apply_apple_health_migrations(conn)
+        await conn.execute("INSERT INTO users (id, telegram_user_id) VALUES (1, 999)")
+        await conn.execute(_EXTENDED_INSERT, "body_mass")
+        rollback_sql = (
+            MIGRATIONS / "011_apple_health_extended_families_rollback.sql"
+        ).read_text(encoding="utf-8")
+
+        with pytest.raises(asyncpg.RaiseError, match="Refusing to roll back 011"):
+            await conn.execute(rollback_sql)
+        try:
+            await conn.execute("ROLLBACK")
+        except asyncpg.PostgresError:
+            pass
+
+        await conn.execute("DELETE FROM health_daily_metric_aggregates")
+        await conn.execute(rollback_sql)
+        await conn.execute(rollback_sql)  # idempotent
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(_EXTENDED_INSERT, "body_mass")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_extended_snapshot_round_trips_through_postgres():
+    from app.services.apple_health import get_apple_health_summary, ingest_apple_health_payload
+
+    conn = await _connect()
+    try:
+        user_id, _sync_id = await _fresh_schema_with_user(conn)
+        day = datetime.now(timezone.utc).date()
+        payload = {
+            "sourceType": "apple_health",
+            "schemaVersion": 3,
+            "userId": 999,
+            "snapshot": {
+                "collector": "shortcut",
+                "timezone": "UTC",
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "coveredDates": [day.isoformat()],
+                "coveredMetricFamilies": ["resting_heart_rate", "body_mass", "distance", "exercise_time"],
+            },
+            "metrics": [
+                {"type": "resting_heart_rate", "value": "55", "unit": "count/min",
+                 "timestamp": f"{day.isoformat()}T00:01:00+00:00"},
+                {"type": "body_mass", "value": "160", "unit": "lb",
+                 "timestamp": f"{day.isoformat()}T00:02:00+00:00"},
+                {"type": "walking_running_distance", "value": "2", "unit": "mi",
+                 "timestamp": f"{day.isoformat()}T00:03:00+00:00"},
+                {"type": "apple_exercise_time", "value": "30", "unit": "min",
+                 "timestamp": f"{day.isoformat()}T00:04:00+00:00"},
+            ],
+        }
+        await ingest_apple_health_payload(conn, payload)
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        summary = await get_apple_health_summary(
+            conn, user_id, start_at=start, end_at=start + timedelta(days=1),
+        )
+        assert summary["resting_heart_rate"] == 55
+        assert summary["body_mass_kg"] == 72.6
+        assert summary["distance_km"] == 3.22
+        assert summary["exercise_minutes"] == 30
+    finally:
+        await conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Migrations 012–015: profile, workouts, secret hashing, contract cleanup
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_secret_hash_migration_keeps_existing_shortcut_urls_working():
+    from app.crypto import verify_secret
+
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await _apply_007(conn)
+        await conn.execute("INSERT INTO users (id, telegram_user_id) VALUES (1, 999)")
+        await conn.execute(
+            """INSERT INTO apple_health_sync (user_id, secret_key, sync_frequency_hours, is_active)
+               VALUES (1, 'legacy-plain-token', 6, TRUE)"""
+        )
+        await apply_apple_health_migrations(conn)
+        await apply_apple_health_migrations(conn)  # idempotent: no double hashing
+
+        stored = await conn.fetchval("SELECT secret_key FROM apple_health_sync WHERE user_id = 1")
+        assert stored.startswith("sha256:")
+        assert verify_secret("legacy-plain-token", stored)
+        assert not verify_secret("other", stored)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_drop_unused_tables_keeps_tables_with_rows():
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await conn.execute(
+            """CREATE TABLE mood_entries (id SERIAL PRIMARY KEY, note TEXT);
+               CREATE TABLE sync_logs (id SERIAL PRIMARY KEY);
+               CREATE TABLE whoop_activities (id SERIAL PRIMARY KEY);
+               CREATE VIEW v_daily_calorie_balance AS SELECT id FROM whoop_activities;
+               INSERT INTO mood_entries (note) VALUES ('keep me');"""
+        )
+        await apply_apple_health_migrations(conn)
+
+        async def exists(name):
+            return await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{name}")
+
+        assert await exists("mood_entries")  # had a row -> kept
+        assert not await exists("sync_logs")
+        assert not await exists("whoop_activities")
+        assert not await exists("v_daily_calorie_balance")
+        assert not await exists("health_conflicts")  # 007 no longer creates it
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_user_profile_constraint():
+    conn = await _connect()
+    try:
+        await _bootstrap(conn)
+        await apply_apple_health_migrations(conn)
+        await conn.execute(
+            "INSERT INTO users (id, telegram_user_id, birth_year, sex, height_cm) "
+            "VALUES (1, 1, 1990, 'male', 180)"
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute("UPDATE users SET sex = 'other' WHERE id = 1")
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute("UPDATE users SET height_cm = 20 WHERE id = 1")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_workouts_upsert_is_idempotent_and_summarized():
+    from app.services.health_workouts import (
+        get_workouts_summary,
+        normalize_workouts,
+        persist_workouts,
+    )
+
+    conn = await _connect()
+    try:
+        user_id, _ = await _fresh_schema_with_user(conn)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        start = now - timedelta(hours=2)
+        raw = [{
+            "id": "W-1", "name": "Running",
+            "start": start.isoformat(), "end": (start + timedelta(minutes=30)).isoformat(),
+            "activeEnergyBurned": {"qty": 300, "units": "kcal"},
+            "distance": {"qty": 5, "units": "km"},
+        }]
+        workouts = normalize_workouts(raw, collector="health_auto_export")
+
+        first = await persist_workouts(conn, user_id=user_id, workouts=workouts, timezone_str="UTC")
+        raw[0]["activeEnergyBurned"]["qty"] = 320
+        second = await persist_workouts(
+            conn, user_id=user_id,
+            workouts=normalize_workouts(raw, collector="health_auto_export"),
+        )
+
+        assert first == {"workouts_received": 1, "workouts_inserted": 1, "workouts_updated": 0}
+        assert second == {"workouts_received": 1, "workouts_inserted": 0, "workouts_updated": 1}
+        assert await conn.fetchval("SELECT count(*) FROM health_workouts") == 1
+        summary = await get_workouts_summary(
+            conn, user_id, start_at=start - timedelta(minutes=1), end_at=now + timedelta(minutes=1),
+        )
+        assert summary["count"] == 1 and summary["active_energy_kcal"] == 320
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                """INSERT INTO health_workouts (user_id, source, collector, external_id,
+                       workout_type, started_at, ended_at, duration_seconds)
+                   VALUES ($1, 'apple_health', 'shortcut', 'bad', 'Run', NOW(),
+                           NOW() - INTERVAL '1 hour', 10)""",
+                user_id,
+            )
+    finally:
+        await conn.close()
