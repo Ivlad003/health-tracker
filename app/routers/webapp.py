@@ -302,6 +302,17 @@ async def put_goal(body: GoalBody, session: webapp_auth.WebSession = Depends(cur
     return ok(row)
 
 
+@router.get("/today")
+async def today(session: webapp_auth.WebSession = Depends(current_session)):
+    """Dashboard numbers: eaten calories, WHOOP, Apple Health, BMR.
+
+    Same assembly the bot uses for briefings. WHOOP is fetched live.
+    """
+    from app.services.ai_assistant import get_today_stats
+
+    return ok(await get_today_stats(session.user_id))
+
+
 # ---------------------------------------------------------------------------
 # Products (My Products) + default rules
 # ---------------------------------------------------------------------------

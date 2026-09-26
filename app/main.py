@@ -213,9 +213,9 @@ app.include_router(webapp_router)
 app.include_router(admin_router)
 
 
-# Telegram Web App frontend. A built bundle in web/dist is served under /app/;
-# until the frontend exists, /app/ shows an "Open in Telegram" entry page
-# (a normal browser never gets an auth bypass: the API requires initData).
+# Telegram Web App. Docker builds web/ into web/dist and this serves it at /app/.
+# Without a bundle, /app/ tells the visitor to open the bot. The API still
+# requires a validated initData session; the static page is not an auth bypass.
 _WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 _WEBAPP_PLACEHOLDER = """<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

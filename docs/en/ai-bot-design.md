@@ -10,7 +10,7 @@
 
 A freeform, bilingual (UK/EN) Telegram bot powered by OpenAI GPT that acts as a personal health assistant. Users talk naturally, GPT understands intent, and FastAPI orchestrates actions behind the scenes.
 
-**This is a pure Telegram chat bot** — no Web App frontend. All interaction happens via text and voice messages.
+**The bot is a Telegram chat** for text and voice. The Mini App in `web/` is an additional screen opened with `/app`.
 
 ---
 

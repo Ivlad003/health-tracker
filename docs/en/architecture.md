@@ -4,7 +4,7 @@
 
 ## System Overview
 
-Health & Wellness Tracker is built as a FastAPI Python application serving as a Telegram bot backend (long polling), an API server for OAuth callbacks and the Apple Health webhook, and the JSON backend of the Telegram Web App (`/api/v1/webapp/*`, `/api/v1/admin/*`). The Web App frontend itself is not built yet. Food logging is described in detail in [food-logging.md](food-logging.md).
+Health & Wellness Tracker is built as a FastAPI Python application serving as a Telegram bot backend (long polling), an API server for OAuth callbacks and the Apple Health webhook, and the JSON backend of the Telegram Web App (`/api/v1/webapp/*`, `/api/v1/admin/*`). The Telegram Web App UI is the Vite + React app in `web/`, built into `web/dist` and served at `/app/`. Food logging is described in detail in [food-logging.md](food-logging.md).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

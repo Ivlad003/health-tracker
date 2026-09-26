@@ -347,7 +347,7 @@ Both `handle_message` and `handle_sync` in `telegram_bot.py` check `expired_serv
 - [x] ~~i18n~~ — uk/en catalog, `/language`, language from Telegram `language_code` (2026-09-26)
 - [ ] **WHOOP steps via API** — Monitor WHOOP Developer API for steps endpoint (not available as of 2026-02-25)
 - [ ] **Local Ukrainian food database** — partly covered by Open Food Facts barcodes + label photos → personal products; coverage not measured
-- [ ] **Web App frontend** (`web/`, React + Vite) — backend API is ready (docs/en/food-logging.md §6)
+- [x] ~~**Web App frontend** (`web/`, React + Vite), served at `/app/`~~ (2026-09-26)
 - [ ] **Food evaluation dataset** (plan §10) and live FatSecret checks (plan §11) before enabling plate photos / the FatSecret barcode add-on
 - [x] ~~History-first food logging, barcode + label photos, FatSecret outbox, Web App/admin API~~ (2026-09-26)
 - [x] ~~Fix `docs/en/api-integration.md` scopes / FatSecret OAuth 1.0 vs 2.0~~ (2026-09-26)

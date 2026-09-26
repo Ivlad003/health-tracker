@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Health & Wellness Tracker Bot** - Telegram bot (long polling) for tracking calories, physical activity, sleep, and mood with FatSecret, WHOOP, and Apple Health (iOS Shortcut webhook) integration. Food logging is history-first (FatSecret diary → "My Products", pinned defaults, learned choices) with barcode/label photos and a local ledger + FatSecret outbox. The Telegram Web App **backend API** (`/api/v1/webapp/*`, `/api/v1/admin/*`) is implemented; its UI is designed in `docs/design/` but the frontend (`web/`) is **not built yet**. See [`docs/en/food-logging.md`](docs/en/food-logging.md).
+**Health & Wellness Tracker Bot** - Telegram bot (long polling) for tracking calories, physical activity, sleep, and mood with FatSecret, WHOOP, and Apple Health (iOS Shortcut webhook) integration. Food logging is history-first (FatSecret diary → "My Products", pinned defaults, learned choices) with barcode/label photos and a local ledger + FatSecret outbox. The Telegram Web App backend API (`/api/v1/webapp/*`, `/api/v1/admin/*`) and its Vite + React UI (`web/`, served from `web/dist` at `/app/`) are implemented. Screen layout follows `docs/design/`. See [`docs/en/food-logging.md`](docs/en/food-logging.md).
 
 ---
 

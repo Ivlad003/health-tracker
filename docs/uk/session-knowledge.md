@@ -346,7 +346,7 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 - [x] ~~i18n~~ — каталог uk/en, `/language`, мова з Telegram `language_code` (2026-09-26)
 - [ ] **WHOOP кроки через API** — Моніторити WHOOP Developer API на появу ендпоінту кроків (недоступний станом на 2026-02-25)
 - [ ] **Локальна база українських продуктів** — частково покрито штрихкодами Open Food Facts + фото етикеток → особисті продукти; покриття не виміряне
-- [ ] **Фронтенд Web App** (`web/`, React + Vite) — API бекенду готове (docs/uk/food-logging.md §6)
+- [x] ~~**Фронтенд Web App** (`web/`, React + Vite), віддається за `/app/`~~ (2026-09-26)
 - [ ] **Набір даних для оцінки їжі** (план §10) і живі перевірки FatSecret (план §11) перед увімкненням фото страв / штрихкоду FatSecret
 - [x] ~~Облік їжі спершу з історії, фото штрихкодів і етикеток, outbox FatSecret, API Web App/адмінки~~ (2026-09-26)
 - [x] ~~Виправити scopes у `docs/en/api-integration.md` / FatSecret OAuth 1.0 vs 2.0~~ (2026-09-26)
