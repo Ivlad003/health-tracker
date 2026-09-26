@@ -630,6 +630,230 @@ async def test_admin_starter_catalog_features_and_audit(api, pool):
     assert (await api.get("/api/v1/admin/features", headers=auth)).status_code == 403
 
 
+def _init_data(tg_id, auth_date=None):
+    from app.services.webapp_auth import sign_init_data
+
+    return sign_init_data({"auth_date": str(auth_date or int(time.time())),
+                           "user": json.dumps({"id": tg_id, "language_code": "en"})}, "123:TEST")
+
+
+@pytest.mark.asyncio
+async def test_webapp_init_data_reuse_rotates_session_and_is_capped(api, pool):
+    from app.services.webapp_auth import INIT_DATA_MAX_USES
+
+    init = _init_data(2101)
+    first = (await api.post("/api/v1/webapp/auth/telegram", json={"init_data": init})).json()
+    second = (await api.post("/api/v1/webapp/auth/telegram", json={"init_data": init})).json()
+    # Re-login with the same initData revokes the previous session.
+    old = await api.get("/api/v1/webapp/me", headers={"Authorization": f"Bearer {first['session_token']}"})
+    new = await api.get("/api/v1/webapp/me", headers={"Authorization": f"Bearer {second['session_token']}"})
+    assert old.status_code == 401 and new.status_code == 200
+    assert await pool.fetchval("SELECT count(*) FROM webapp_sessions WHERE revoked_at IS NULL") == 1
+    for _ in range(INIT_DATA_MAX_USES - 2):
+        assert (await api.post("/api/v1/webapp/auth/telegram", json={"init_data": init})).status_code == 200
+    replay = await api.post("/api/v1/webapp/auth/telegram", json={"init_data": init})
+    assert replay.status_code == 401 and replay.json()["detail"]["error"] == "init_data_replayed"
+
+
+@pytest.mark.asyncio
+async def test_webapp_cookie_transport_hides_token_and_needs_csrf(api, pool):
+    resp = await api.post("/api/v1/webapp/auth/telegram", json={"init_data": _init_data(2102), "transport": "cookie"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "session_token" not in body and body["csrf_token"]
+    cookie = resp.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "secure" in cookie and "samesite=none" in cookie and "path=/api/v1/" in cookie
+    assert (await api.get("/api/v1/webapp/me")).status_code == 200  # cookie jar
+    denied = await api.put("/api/v1/webapp/preferences", json={"version": 0, "changes": {}})
+    assert denied.status_code == 403
+    allowed = await api.put("/api/v1/webapp/preferences", json={"version": 0, "changes": {"catalog_auto_add": False}},
+                            headers={"X-CSRF-Token": body["csrf_token"]})
+    assert allowed.status_code == 200
+    # Bearer logins set no cookie.
+    api.cookies.clear()
+    bearer = await api.post("/api/v1/webapp/auth/telegram", json={"init_data": _init_data(2103)})
+    assert "set-cookie" not in bearer.headers and bearer.json()["session_token"]
+
+
+@pytest.mark.asyncio
+async def test_webapp_session_slides_until_absolute_lifetime(api, pool):
+    from app.config import settings
+    from app.services.webapp_auth import SESSION_MAX_LIFETIME
+
+    login = await _login(api, 2104)
+    auth = {"Authorization": f"Bearer {login['session_token']}"}
+    # Recently seen: no write.
+    await pool.execute("UPDATE webapp_sessions SET last_seen_at = NOW(), expires_at = NOW() + INTERVAL '10 minutes'")
+    before = await pool.fetchval("SELECT expires_at FROM webapp_sessions")
+    assert (await api.get("/api/v1/webapp/me", headers=auth)).status_code == 200
+    assert await pool.fetchval("SELECT expires_at FROM webapp_sessions") == before
+    # Idle for a while: the expiry slides forward by the TTL.
+    await pool.execute("UPDATE webapp_sessions SET last_seen_at = NOW() - INTERVAL '5 minutes'")
+    assert (await api.get("/api/v1/webapp/me", headers=auth)).status_code == 200
+    slid = await pool.fetchval("SELECT expires_at - NOW() FROM webapp_sessions")
+    assert slid > timedelta(seconds=settings.webapp_session_ttl_seconds - 60)
+    # Never beyond created_at + absolute lifetime.
+    await pool.execute(
+        "UPDATE webapp_sessions SET created_at = NOW() - make_interval(secs => $1) + INTERVAL '2 minutes', "
+        "last_seen_at = NOW() - INTERVAL '5 minutes', expires_at = NOW() + INTERVAL '1 minute'",
+        int(SESSION_MAX_LIFETIME.total_seconds()),
+    )
+    assert (await api.get("/api/v1/webapp/me", headers=auth)).status_code == 200
+    capped = await pool.fetchval("SELECT expires_at - NOW() FROM webapp_sessions")
+    assert capped <= timedelta(minutes=2, seconds=5)
+    await pool.execute("UPDATE webapp_sessions SET expires_at = NOW() - INTERVAL '1 second'")
+    assert (await api.get("/api/v1/webapp/me", headers=auth)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_webapp_profile_version_validation_and_errors(api, pool):
+    from app.services import telegram_bot
+
+    login = await _login(api, 2105)
+    auth = {"Authorization": f"Bearer {login['session_token']}"}
+    me = (await api.get("/api/v1/webapp/me", headers=auth)).json()
+    assert set(me["features"]) >= {"food_history", "food_barcode"}
+    telegram_bot._language_cache[2105] = "en"
+    updated = await api.patch("/api/v1/webapp/me", headers=auth,
+                              json={"profile_version": me["profile_version"], "language": "uk"})
+    assert updated.status_code == 200 and updated.json()["language"] == "uk"
+    assert 2105 not in telegram_bot._language_cache
+    stale = await api.patch("/api/v1/webapp/me", headers=auth,
+                            json={"profile_version": me["profile_version"], "language": "en"})
+    assert stale.status_code == 409 and stale.json()["detail"]["error"] == "version_conflict"
+    bad_tz = await api.patch("/api/v1/webapp/me", headers=auth,
+                             json={"profile_version": updated.json()["profile_version"], "timezone": "Mars/Base"})
+    assert bad_tz.status_code == 422 and bad_tz.json()["detail"]["error"] == "validation_error"
+    # Request validation uses the same envelope.
+    invalid = await api.patch("/api/v1/webapp/me", headers=auth, json={"language": "de"})
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["error"] == "validation_error"
+    assert invalid.json()["detail"]["fields"][0]["field"] == "language"
+    assert (await api.get("/api/v1/webapp/me", headers=auth)).headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_webapp_history_range_drafts_and_uploads(api, pool):
+    from app.services import food_logging as ledger
+
+    login = await _login(api, 2106)
+    auth = {"Authorization": f"Bearer {login['session_token']}"}
+    uid = login["user"]["id"]
+    ctx = await _ctx(pool, uid)
+    today = ctx.today()
+    resp = await api.get(f"/api/v1/webapp/food-entries/range?from={(today - timedelta(days=6)).isoformat()}", headers=auth)
+    assert resp.status_code == 200
+    days = resp.json()["days"]
+    assert [d["local_date"] for d in days] == [(today - timedelta(days=i)).isoformat() for i in range(7)]
+    assert all(d["goal"]["calories"] for d in days)
+    too_long = await api.get(f"/api/v1/webapp/food-entries/range?from={(today - timedelta(days=40)).isoformat()}",
+                             headers=auth)
+    assert too_long.status_code == 400 and too_long.json()["detail"]["error"] == "date_range_too_long"
+    reversed_range = await api.get(f"/api/v1/webapp/food-entries/range?from={today.isoformat()}"
+                                   f"&to={(today - timedelta(days=1)).isoformat()}", headers=auth)
+    assert reversed_range.status_code == 400
+
+    product_id = (await api.post("/api/v1/webapp/products", headers=auth, json={
+        "name": "Rice", "nutrition": {"energy_kcal": "130"},
+    })).json()["product_id"]
+    draft, _ = await ledger.create_draft(pool, uid, origin="web_upload", items=[{"index": 0, "text": "rice"}],
+                                         meal_type="lunch", local_date=today, chat_id=None, message_id=None,
+                                         commit_key="webup:test:1")
+    stale = await api.patch(f"/api/v1/webapp/food-drafts/{draft['id']}", headers=auth,
+                            json={"version": draft["version"] + 3, "items": [{"index": 0, "grams": "150"}]})
+    assert stale.status_code == 409
+    missing_item = await api.patch(f"/api/v1/webapp/food-drafts/{draft['id']}", headers=auth,
+                                   json={"version": draft["version"], "items": [{"index": 5, "grams": "150"}]})
+    assert missing_item.status_code == 404
+    patched = await api.patch(f"/api/v1/webapp/food-drafts/{draft['id']}", headers=auth, json={
+        "version": draft["version"], "items": [{"index": 0, "grams": "150", "product_id": product_id}],
+    })
+    assert patched.status_code == 200 and patched.json()["state"] == "ready"
+    assert (await api.post(f"/api/v1/webapp/food-drafts/{draft['id']}/cancel", headers=auth)).status_code == 200
+    assert (await api.post(f"/api/v1/webapp/food-drafts/{draft['id']}/cancel", headers=auth)).status_code == 409
+    assert (await api.post("/api/v1/webapp/food-drafts/999999/cancel", headers=auth)).status_code == 404
+    assert (await api.post("/api/v1/webapp/catalog-imports/999999/cancel", headers=auth)).status_code == 404
+
+    bad_length = await api.post("/api/v1/webapp/uploads?idempotency_key=abcdefgh1", headers={
+        **auth, "Content-Type": "image/jpeg", "Content-Length": "not-a-number",
+    }, content=b"")
+    assert bad_length.status_code == 400 and bad_length.json()["detail"]["error"] == "invalid_content_length"
+
+
+@pytest.mark.asyncio
+async def test_webapp_fatsecret_disconnect_is_atomic(api, pool):
+    from app.services import food_logging as ledger
+
+    login = await _login(api, 2107)
+    auth = {"Authorization": f"Bearer {login['session_token']}"}
+    uid = login["user"]["id"]
+    await pool.execute("UPDATE users SET fatsecret_access_token = 'tok', fatsecret_access_secret = 'sec' WHERE id = $1", uid)
+    product_id = await _fatsecret_product(pool, user_id=uid)
+    ctx = await _ctx(pool, uid)
+    item = await ledger.prepare_item(pool, ctx, product_id=product_id, grams=100)
+    await ledger.commit_items(pool, ctx, [item], meal_type="lunch", local_date=ctx.today(),
+                              origin="web_manual", idempotency_prefix="t:disc")
+    # A failure after the token write leaves nothing changed (one transaction).
+    from app.services import fatsecret_api
+
+    real_clear = fatsecret_api.clear_fatsecret_tokens
+
+    async def clear_then_fail(conn, user_id):
+        await real_clear(conn, user_id)
+        raise RuntimeError("boom")
+
+    with patch("app.services.fatsecret_api.clear_fatsecret_tokens", clear_then_fail):
+        with pytest.raises(RuntimeError):
+            await api.post("/api/v1/webapp/integrations/fatsecret/disconnect", headers=auth)
+    assert await pool.fetchval("SELECT fatsecret_access_token FROM users WHERE id = $1", uid) == "tok"
+    resp = await api.post("/api/v1/webapp/integrations/fatsecret/disconnect", headers=auth)
+    assert resp.status_code == 200
+    assert await pool.fetchval("SELECT fatsecret_access_token FROM users WHERE id = $1", uid) is None
+    assert await pool.fetchval("SELECT status FROM food_sync_outbox WHERE user_id = $1", uid) == "cancelled"
+    assert await pool.fetchval("SELECT sync_status FROM food_entries WHERE user_id = $1", uid) == "local_only"
+
+
+@pytest.mark.asyncio
+async def test_admin_brand_clear_roles_flags_and_retry(api, pool):
+    admin = await _login(api, 2002)
+    auth = {"Authorization": f"Bearer {admin['session_token']}"}
+    created = (await api.post("/api/v1/admin/catalog", headers=auth, json={
+        "name": "Kefir", "brand": "Farm", "nutrition": {"energy_kcal": "50"},
+    })).json()
+    pid = created["product_id"]
+    renamed = await api.patch(f"/api/v1/admin/catalog/{pid}", headers=auth, json={"version": 1, "name": "Kefir 1%"})
+    assert renamed.status_code == 200
+    assert await pool.fetchval("SELECT brand FROM food_products WHERE id = $1", pid) == "Farm"  # omitted → kept
+    cleared = await api.patch(f"/api/v1/admin/catalog/{pid}", headers=auth, json={"version": 2, "brand": None})
+    assert cleared.status_code == 200
+    assert await pool.fetchval("SELECT brand FROM food_products WHERE id = $1", pid) is None
+    assert (await api.patch(f"/api/v1/admin/catalog/{pid}", headers=auth, json={"version": 1})).status_code == 409
+    assert (await api.patch("/api/v1/admin/catalog/999999", headers=auth, json={"version": 1})).status_code == 404
+
+    assert (await api.put("/api/v1/admin/features/nope", headers=auth,
+                          json={"enabled": True, "version": 0})).status_code == 404
+    assert (await api.put("/api/v1/admin/features/BAD-KEY", headers=auth,
+                          json={"enabled": True, "version": 0})).status_code == 422
+
+    other = await _login(api, 2108)
+    assert (await api.post("/api/v1/admin/roles", headers=auth,
+                           json={"telegram_user_id": 2108, "grant": True})).status_code == 200
+    other_auth = {"Authorization": f"Bearer {other['session_token']}"}
+    assert (await api.get("/api/v1/admin/features", headers=other_auth)).status_code == 200
+    assert (await api.post("/api/v1/admin/roles", headers=auth,
+                           json={"telegram_user_id": 2108, "grant": False})).status_code == 200
+    assert (await api.get("/api/v1/admin/features", headers=other_auth)).status_code == 403
+    self_revoke = await api.post("/api/v1/admin/roles", headers=auth, json={"telegram_user_id": 2002, "grant": False})
+    assert self_revoke.status_code == 400
+    assert (await api.post("/api/v1/admin/roles", headers=auth,
+                           json={"telegram_user_id": 99999, "grant": True})).status_code == 404
+    assert (await api.post("/api/v1/admin/jobs/outbox/999999/retry", headers=auth)).status_code == 404
+    assert (await api.post("/api/v1/admin/jobs/imports/999999/retry", headers=auth)).status_code == 409
+    actions = [r["action"] for r in await pool.fetch("SELECT action FROM admin_audit_log ORDER BY id")]
+    assert actions.count("role.grant") == 1 and actions.count("role.revoke") == 1
+    assert actions.count("starter.update") == 2
+
+
 # ---------------------------------------------------------------------------
 # US-2 / US-3: barcode photo + grams, unknown barcode completed from a label
 # ---------------------------------------------------------------------------

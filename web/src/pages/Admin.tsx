@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { api } from "../api";
-import { t, type Lang } from "../i18n";
+import { ActionFeedback, ErrorState, Loading, PageHeader, Section } from "../components/ui";
+import { useAction } from "../hooks/useAction";
+import { useApi } from "../hooks/useApi";
+import { useT } from "../LangContext";
 
 interface Flag {
   key: string;
@@ -19,76 +22,83 @@ interface Jobs {
   import_failures: { id: number; status: string; kind: string; last_error: string | null }[];
 }
 
-export function AdminPage({ lang }: { lang: Lang }) {
-  const [flags, setFlags] = useState<Flag[]>([]);
-  const [jobs, setJobs] = useState<Jobs | null>(null);
-  const [error, setError] = useState("");
+export default function AdminPage() {
+  const { t } = useT();
+  const load = useCallback((signal: AbortSignal) => Promise.all([
+    api<{ items: Flag[] }>("/api/v1/admin/features", { signal }),
+    api<Jobs>("/api/v1/admin/jobs", { signal }),
+  ]), []);
+  const { data, error, reload } = useApi(load);
+  const action = useAction();
 
-  function load() {
-    return Promise.all([
-      api<{ items: Flag[] }>("/api/v1/admin/features"),
-      api<Jobs>("/api/v1/admin/jobs"),
-    ]).then(([featureList, jobList]) => {
-      setFlags(featureList.items);
-      setJobs(jobList);
-    });
-  }
+  const header = <PageHeader title={t("admin")} />;
+  if (error != null && !data) return <>{header}<ErrorState error={error} onRetry={reload} /></>;
+  if (!data) return <>{header}<Loading /></>;
+  const [{ items: flags }, jobs] = data;
 
-  useEffect(() => {
-    void load().catch((err: unknown) => setError(err instanceof Error ? err.message : "error"));
-  }, []);
-
-  async function toggle(flag: Flag) {
-    setError("");
-    try {
-      await api(`/api/v1/admin/features/${flag.key}`, {
-        method: "PUT",
-        body: JSON.stringify({ enabled: !flag.enabled, version: flag.version }),
-      });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "error");
-    }
-  }
-
-  async function retry(id: number) {
-    await api(`/api/v1/admin/jobs/outbox/${id}/retry`, { method: "POST" });
-    await load();
-  }
+  const mutate = (path: string, init: RequestInit) => action.run(async () => {
+    await api(path, init);
+    reload();
+  });
 
   return (
     <>
-      <header className="top"><h1>{t(lang, "admin")}</h1></header>
-      {error && <p className="banner">{error}</p>}
-      <section className="card">
-        <h2>{t(lang, "features")}</h2>
+      {header}
+      <ActionFeedback error={action.error} />
+      <Section title={t("features")}>
         <ul className="list">
           {flags.map((flag) => (
             <li key={flag.key}>
-              <span>{flag.key}<br /><span className="caption">{flag.description}{flag.available ? "" : ` · ${flag.unavailable_reason}`}</span></span>
-              <button className={flag.enabled ? "primary" : "secondary"} type="button" onClick={() => void toggle(flag)}>
-                {flag.effective ? "on" : "off"}
+              <span>
+                {flag.key}<br />
+                <span className="caption">{flag.description}{flag.available ? "" : ` · ${flag.unavailable_reason ?? ""}`}</span>
+              </span>
+              <button
+                className={flag.enabled ? "primary compact" : "secondary compact"}
+                type="button"
+                role="switch"
+                aria-checked={flag.effective}
+                aria-label={flag.key}
+                disabled={action.busy}
+                onClick={() => void mutate(`/api/v1/admin/features/${flag.key}`, {
+                  method: "PUT",
+                  body: JSON.stringify({ enabled: !flag.enabled, version: flag.version }),
+                })}
+              >
+                {flag.effective ? t("on") : t("off")}
               </button>
             </li>
           ))}
         </ul>
-      </section>
-      <section className="card">
-        <h2>{t(lang, "jobs")}</h2>
-        {jobs && (
-          <>
-            <p className="caption">{jobs.outbox.map((row) => `${row.operation}/${row.status}: ${row.n}`).join(" · ") || "—"}</p>
-            <ul className="list">
-              {jobs.outbox_failures.map((row) => (
-                <li key={row.id}>
-                  <span>#{row.id} {row.operation}<br /><span className="caption">{row.status} · {row.last_error}</span></span>
-                  <button className="secondary" type="button" onClick={() => void retry(row.id)}>{t(lang, "retryJob")}</button>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </section>
+      </Section>
+      <Section title={t("jobs")}>
+        <p className="caption">{jobs.outbox.map((row) => `${row.operation}/${row.status}: ${row.n}`).join(" · ") || "—"}</p>
+        <ul className="list">
+          {jobs.outbox_failures.map((row) => (
+            <li key={row.id}>
+              <span>#{row.id} {row.operation}<br /><span className="caption">{row.status} · {row.last_error ?? "—"}</span></span>
+              <button className="secondary compact" type="button" disabled={action.busy}
+                onClick={() => void mutate(`/api/v1/admin/jobs/outbox/${row.id}/retry`, { method: "POST" })}>
+                {t("retryJob")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Section>
+      <Section title={t("importJobs")}>
+        <p className="caption">{jobs.imports.map((row) => `${row.status}: ${row.n}`).join(" · ") || "—"}</p>
+        <ul className="list">
+          {jobs.import_failures.map((row) => (
+            <li key={row.id}>
+              <span>#{row.id} {row.kind}<br /><span className="caption">{row.status} · {row.last_error ?? "—"}</span></span>
+              <button className="secondary compact" type="button" disabled={action.busy}
+                onClick={() => void mutate(`/api/v1/admin/jobs/imports/${row.id}/retry`, { method: "POST" })}>
+                {t("retryJob")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Section>
     </>
   );
 }

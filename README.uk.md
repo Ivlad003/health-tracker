@@ -28,7 +28,7 @@ Telegram-бот для відстеження калорій, фізичної �
 ```
 Telegram Bot (long polling) → FastAPI (Python) → APIs (FatSecret, WHOOP, OpenAI) → PostgreSQL
 iPhone Shortcut ──POST──────▶ /api/v1/health/apple-health/sync ─────────────▶ PostgreSQL
-Telegram Web App ─────────────▶ /api/v1/webapp/*, /api/v1/admin/* (бекенд готовий, фронтенд — згодом)
+Telegram Web App ─────────────▶ /api/v1/webapp/*, /api/v1/admin/* (React Mini App на /app/, див. docs/uk/webapp.md)
 ```
 
 ## 📁 Структура проекту
@@ -88,7 +88,7 @@ Production-деплой на Dokploy використовує `CMD` з Dockerfil
 python -m app.db_preflight --apply-apple-health-migration
 ```
 
-Команда застосовує міграції `007` і `009`–`017` (агрегати Apple Health, профіль
+Команда застосовує міграції `007` і `009`–`018` (агрегати Apple Health, профіль
 користувача, тренування, хешування секрету, захищене видалення невикористаних
 таблиць, журнал їжі/каталог/outbox, сесії/ролі/налаштування Web App) під PostgreSQL advisory lock і перевіряє потрібні таблиці, індекси та
 constraints. FastAPI повторює перевірку під час

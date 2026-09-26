@@ -24,7 +24,8 @@ APPLE_HEALTH_MIGRATION_LOCK_KEY = 0x4150504C45484442
 # Apple Health webhook secrets; 015 drops never-written tables (guarded: tables
 # with rows are kept); 016 adds the food ledger, catalog, drafts, sync outbox
 # and history-import jobs; 017 adds Web App sessions, roles, preferences, goal
-# history, feature flags, admin audit and notification de-duplication.
+# history, feature flags, admin audit and notification de-duplication; 018
+# adds Web App initData replay bookkeeping and per-user lookup indexes.
 # The Docker CMD is the only production migration path, so every schema
 # change the app depends on is listed here (despite the historical name).
 # Superseded migration 008 (PG15-only raw natural key) is intentionally absent.
@@ -39,6 +40,7 @@ APPLE_HEALTH_MIGRATIONS = (
     MIGRATIONS_DIR / "015_drop_unused_tables.sql",
     MIGRATIONS_DIR / "016_food_ledger_catalog.sql",
     MIGRATIONS_DIR / "017_webapp_admin_preferences.sql",
+    MIGRATIONS_DIR / "018_webapp_hardening.sql",
 )
 
 # Kept for backward compatibility with callers/tests that imported the single
@@ -104,6 +106,10 @@ REQUIRED_APPLE_HEALTH_INDEXES = {
     "uq_food_entries_remote_entry",
     "idx_food_entries_user_local_date",
     "uq_catalog_import_jobs_active",
+    # 018: proves the Web App hardening migration ran (webapp_auth uses
+    # webapp_sessions.init_data_hash).
+    "idx_webapp_sessions_init_data",
+    "idx_food_sync_outbox_user_status",
 }
 
 # Named UNIQUE constraints the app targets via ON CONFLICT ON CONSTRAINT.

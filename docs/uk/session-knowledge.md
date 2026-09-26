@@ -211,7 +211,8 @@ users.telegram_user_id -> BIGINT
 користувача (birth_year, sex, height_cm) → `013` `health_workouts` → `014` хеш
 секретів Apple Health (незворотно) → `015` видалення невикористаних таблиць.
 `008` навмисно відсутня. `016` журнал їжі/каталог/outbox/імпорт, `017` сесії Web App,
-ролі, налаштування, цілі, прапори, аудит. Docker preflight застосовує 007 і 009–017.
+ролі, налаштування, цілі, прапори, аудит; `018` облік повторного використання initData +
+індекси для запитів за користувачем. Docker preflight застосовує 007 і 009–018.
 
 ---
 
@@ -319,7 +320,7 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 | `app/services/apple_health.py` | Валідація, агрегація, збереження й читання Apple Health |
 | `app/security.py` | Підписаний OAuth state, admin guard |
 | `app/timeutils.py` | Хелпери часового поясу користувача |
-| `app/db_preflight.py` | Застосовує/перевіряє міграції 007, 009–017 під advisory lock |
+| `app/db_preflight.py` | Застосовує/перевіряє міграції 007, 009–018 під advisory lock |
 | `app/services/food_bot.py` | Потоки їжі в Telegram (текст/голос/фото/кнопки) без типів PTB |
 | `app/routers/webapp.py`, `app/routers/admin.py` | JSON API Web App, API власника/адміна |
 | `app/routers/whoop.py` | `/whoop/callback` OAuth flow |
@@ -338,6 +339,7 @@ CREATE INDEX idx ON food_entries(user_id, logged_at);
 
 - [ ] **Перевірити розширений Shortcut на пристрої** — назви у picker Resting Heart Rate / Weight / Walking + Running Distance / Exercise Minutes і властивість семпла `Unit` (потрібен iPhone)
 - [ ] **Тренування в підписаному Shortcut** — сервер і шлях HAE готові; дію Shortcuts "Find Workouts" треба додати й перевірити на пристрої
+- [ ] **Константи сесій Web App → Settings** — `SESSION_MAX_LIFETIME` (12 год) і `INIT_DATA_MAX_USES` (5) захардкоджені в `app/services/webapp_auth.py`; перенести в `WEBAPP_SESSION_MAX_LIFETIME_SECONDS` / `WEBAPP_INIT_DATA_MAX_USES`, якщо розгортанню знадобляться інші значення
 - [ ] **Lock оновлення WHOOP для кількох реплік** — per-user lock живе в процесі; перед запуском >1 репліки перенести в PostgreSQL advisory lock
 - [x] ~~Хешування секрету Apple Health~~ — SHA-256 (2026-09-26). Шифрування OAuth-токенів було реалізовано й свідомо прибрано; токени лишаються у відкритому вигляді
 - [x] ~~BMR в calorie balance~~ — `/profile` + Mifflin-St Jeor, пропорційний базальний витрат додається до активної енергії Apple Health (2026-09-26)

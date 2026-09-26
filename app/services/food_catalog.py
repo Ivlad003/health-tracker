@@ -183,6 +183,23 @@ async def refresh_fatsecret_product(conn: Any, product_id: int, food_id: str) ->
     return details
 
 
+async def create_starter_product(
+    conn: Any,
+    *,
+    name: str,
+    created_by_user_id: int,
+    brand: Optional[str] = None,
+    preparation: str = "unknown",
+) -> int:
+    """Shared (owner-less) starter product; nutrition is added as a revision."""
+    return await conn.fetchval(
+        """INSERT INTO food_products (provider, name, brand, preparation, is_starter,
+                                      created_by_user_id)
+           VALUES ('manual', $1, $2, $3, TRUE, $4) RETURNING id""",
+        name, brand, preparation, created_by_user_id,
+    )
+
+
 async def create_personal_product(
     conn: Any,
     user_id: int,

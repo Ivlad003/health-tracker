@@ -212,7 +212,8 @@ gym → `006` journal → `007` Apple Health connector → `009` v2 aggregates �
 (birth_year, sex, height_cm) → `013` `health_workouts` → `014` hash Apple
 Health secrets (irreversible) → `015` drop unused tables. `008` is intentionally
 absent. `016` food ledger/catalog/outbox/imports, `017` Web App sessions, roles,
-preferences, goals, flags, audit. The Docker preflight applies 007 and 009–017.
+preferences, goals, flags, audit; `018` initData replay bookkeeping + per-user
+lookup indexes. The Docker preflight applies 007 and 009–018.
 
 ---
 
@@ -320,7 +321,7 @@ Both `handle_message` and `handle_sync` in `telegram_bot.py` check `expired_serv
 | `app/services/apple_health.py` | Apple Health validation, aggregation, persistence, read overlay |
 | `app/security.py` | Signed OAuth state, admin guard |
 | `app/timeutils.py` | Per-user timezone helpers |
-| `app/db_preflight.py` | Applies/verifies migrations 007, 009–017 under an advisory lock |
+| `app/db_preflight.py` | Applies/verifies migrations 007, 009–018 under an advisory lock |
 | `app/services/food_bot.py` | Telegram food flows (text/voice/photo/callbacks) without PTB types |
 | `app/routers/webapp.py`, `app/routers/admin.py` | Web App JSON API, owner/admin API |
 | `app/routers/whoop.py` | `/whoop/callback` OAuth flow |
@@ -339,6 +340,7 @@ Both `handle_message` and `handle_sync` in `telegram_bot.py` check `expired_serv
 
 - [ ] **Verify extended Shortcut on a device** — picker labels Resting Heart Rate / Weight / Walking + Running Distance / Exercise Minutes and the sample `Unit` property (needs an iPhone)
 - [ ] **Workouts in the signed Shortcut** — server + HAE path done; the Shortcuts "Find Workouts" action must be added and verified on a device
+- [ ] **Web App session constants → Settings** — `SESSION_MAX_LIFETIME` (12 h) and `INIT_DATA_MAX_USES` (5) are hard-coded in `app/services/webapp_auth.py`; move to `WEBAPP_SESSION_MAX_LIFETIME_SECONDS` / `WEBAPP_INIT_DATA_MAX_USES` if a deployment needs other values
 - [ ] **Multi-replica WHOOP refresh lock** — the per-user lock is in-process; move to a PostgreSQL advisory lock before running >1 replica
 - [x] ~~Apple Health secret hashing~~ — SHA-256 (2026-09-26). OAuth token encryption was implemented and then deliberately removed; tokens stay plain text
 - [x] ~~BMR in calorie balance~~ — `/profile` + Mifflin-St Jeor, prorated basal burn added to Apple Health active energy (2026-09-26)

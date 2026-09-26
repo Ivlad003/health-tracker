@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Health & Wellness Tracker Bot** - Telegram bot (long polling) for tracking calories, physical activity, sleep, and mood with FatSecret, WHOOP, and Apple Health (iOS Shortcut webhook) integration. Food logging is history-first (FatSecret diary → "My Products", pinned defaults, learned choices) with barcode/label photos and a local ledger + FatSecret outbox. The Telegram Web App backend API (`/api/v1/webapp/*`, `/api/v1/admin/*`) and its Vite + React UI (`web/`, served from `web/dist` at `/app/`) are implemented. Screen layout follows `docs/design/`. See [`docs/en/food-logging.md`](docs/en/food-logging.md).
+**Health & Wellness Tracker Bot** - Telegram bot (long polling) for tracking calories, physical activity, sleep, and mood with FatSecret, WHOOP, and Apple Health (iOS Shortcut webhook) integration. Food logging is history-first (FatSecret diary → "My Products", pinned defaults, learned choices) with barcode/label photos and a local ledger + FatSecret outbox. The Telegram Web App backend API (`/api/v1/webapp/*`, `/api/v1/admin/*`) and its Vite + React UI (`web/`, served from `web/dist` at `/app/`) are implemented. `docs/design/` is the target layout; what is built vs. roadmap is in [`docs/en/webapp.md`](docs/en/webapp.md). See [`docs/en/food-logging.md`](docs/en/food-logging.md).
 
 ---
 
@@ -83,7 +83,7 @@ health-tracker/
 │   └── shortcuts/        # Apple Health Shortcut: signed .shortcut + editable .plist
 ├── database/
 │   ├── init-db.sh        # DB initialization script (Docker psql fallback)
-│   └── migrations/       # SQL migrations 001–017 (008 intentionally absent, 001 never applied)
+│   └── migrations/       # SQL migrations 001–018 (008 intentionally absent, 001 never applied)
 ├── app/                  # FastAPI Python application
 │   ├── routers/          # whoop, fatsecret, apple_health, utils (admin-only), webapp, admin (Web App)
 │   ├── services/         # WHOOP, FatSecret, Apple Health, AI, Telegram, briefings, gym, journal,
@@ -95,7 +95,7 @@ health-tracker/
 │   ├── timeutils.py      # resolve_timezone() — never hard-code Europe/Kyiv
 │   ├── crypto.py         # hash_secret/verify_secret (Apple Health webhook secret)
 │   ├── i18n.py           # t(key, lang) uk/en catalog
-│   ├── db_preflight.py   # Migrations 007, 009–017 + verification (Docker CMD)
+│   ├── db_preflight.py   # Migrations 007, 009–018 + verification (Docker CMD)
 │   ├── backfill_apple_health.py  # Legacy raw → v3 aggregates CLI
 │   ├── main.py           # FastAPI app entrypoint, secret-redacting logging
 │   └── scheduler.py      # APScheduler periodic jobs
@@ -132,7 +132,7 @@ bash database/init-db.sh
 
 # Database migrations (002 is the production base; 001 is UUID-based and NOT applied)
 psql -d healthlog -f database/migrations/002_health_tracker_schema.sql
-# Migrations 007 + 009–017 — what the Docker CMD runs:
+# Migrations 007 + 009–018 — what the Docker CMD runs:
 python -m app.db_preflight --apply-apple-health-migration
 
 # Run the app locally
@@ -145,6 +145,9 @@ APPLE_HEALTH_TEST_DATABASE_URL=postgresql://... pytest tests/test_apple_health_d
 FOOD_TEST_DATABASE_URL=postgresql://... pytest tests/test_food_ledger_db.py
 # After editing the Shortcut plist: re-sign, then
 python -m unittest tests.test_apple_health_shortcut_artifact
+
+# Web App (web/)
+cd web && npm ci && npm run lint && npm test && npm run build
 ```
 
 ---
@@ -161,7 +164,7 @@ Specifications are stored in `.github/specs/` directory following the GitHub Spe
 
 ## 🎨 Design Specifications
 
-Design specs for the (future) Telegram Web App are in [`docs/design/`](docs/design/README.md):
+Design specs (target UI) for the Telegram Web App are in [`docs/design/`](docs/design/README.md):
 - [Design System](docs/design/README.md) - Colors, typography, spacing, common components
 - [01 - Dashboard](docs/design/pages/01-dashboard.md) - Main overview page
 - [02 - Food Log](docs/design/pages/02-food-log.md) - Food logging interface
@@ -185,9 +188,10 @@ Landing page spec (GitHub Pages): [`spec/main.cs.md`](spec/main.cs.md)
 | Architecture (EN) | [`docs/en/architecture.md`](docs/en/architecture.md) |
 | Session Knowledge | [`docs/en/session-knowledge.md`](docs/en/session-knowledge.md) |
 | Critical Issues (EN) | [`docs/en/critical-issues.md`](docs/en/critical-issues.md) |
-| DB Schema (production) | [`database/migrations/002_health_tracker_schema.sql`](database/migrations/002_health_tracker_schema.sql) + `003`–`017` |
+| DB Schema (production) | [`database/migrations/002_health_tracker_schema.sql`](database/migrations/002_health_tracker_schema.sql) + `003`–`018` |
 | Food logging (EN) | [`docs/en/food-logging.md`](docs/en/food-logging.md) |
 | Food logging (UK) | [`docs/uk/food-logging.md`](docs/uk/food-logging.md) |
+| Web App frontend (EN / UK) | [`docs/en/webapp.md`](docs/en/webapp.md) / [`docs/uk/webapp.md`](docs/uk/webapp.md) |
 | Apple Health Shortcut | [`docs/shortcuts/apple-health-sync.shortcut.plist`](docs/shortcuts/apple-health-sync.shortcut.plist) |
 | DB Init Script | [`database/init-db.sh`](database/init-db.sh) |
 | Design System | [`docs/design/README.md`](docs/design/README.md) |
@@ -218,5 +222,7 @@ Landing page spec (GitHub Pages): [`spec/main.cs.md`](spec/main.cs.md)
 19. **Nutrition math is deterministic** - `food_nutrition.py` (`Decimal`, unknown = `None`, ml ≠ g); GPT must not invent grams (`quantity_g: null` → ask)
 20. **FatSecret storable data** - IDs are permanent; names/nutrition only in cache columns (≤ 24 h, purged hourly). Never store them durably elsewhere
 21. **FatSecret writes** - `create_food_entry()` result `unknown` is never retried blindly; `food_sync.reconcile_unknown` decides
-22. **Web App auth** - identity only from validated `initData` sessions (`webapp_auth`); admin role from `user_roles` per request; `ADMIN_API_TOKEN` never reaches the Mini App
+22. **Web App auth** - identity only from validated `initData` sessions (`webapp_auth`); admin role from `user_roles` per request (`WebSession.is_admin`); `ADMIN_API_TOKEN` never reaches the Mini App
 23. **Open Food Facts** - pinned to API 3.4 with a recorded fixture; add fixtures before changing the version
+24. **Web App API errors** - every 4xx is `{"detail": {"error": code, ...}}` (validation too); multi-statement writes go through `webapp.transaction()` / a service function, admin change + audit in one transaction
+25. **Web App frontend** - data via `useApi` (abortable) / mutations via `useAction`; user text only through `useT()` / `i18n.ts` (both `uk` and `en`); errors shown with `errorMessage()`, never raw codes; `npm run lint` must pass (no floating promises)

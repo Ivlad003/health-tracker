@@ -66,7 +66,7 @@ On `/fatsecret/callback` a job for `history_import_days` (default 30) starts in 
 
 ## 6. Web App API
 
-Authentication: `POST /api/v1/webapp/auth/telegram {init_data}` → `session_token`, `csrf_token`. Use `Authorization: Bearer <session_token>` (recommended in Telegram WebViews) or the Secure/HttpOnly cookie + `X-CSRF-Token` + same-origin `Origin` for mutations. Sessions last `WEBAPP_SESSION_TTL_SECONDS`; initData older than `WEBAPP_AUTH_MAX_AGE_SECONDS` is rejected.
+Authentication: `POST /api/v1/webapp/auth/telegram {init_data, transport?}`. Default `transport: "bearer"` → `session_token` + `csrf_token` in the body, no cookie; use `Authorization: Bearer <session_token>` (what the Mini App does). `transport: "cookie"` → Secure/HttpOnly cookie, **no** token in the body, and mutations need `X-CSRF-Token` + a same-origin `Origin`. initData older than `WEBAPP_AUTH_MAX_AGE_SECONDS` is rejected; re-using the same initData revokes the session it created before and is capped (`INIT_DATA_MAX_USES` = 5 in `webapp_auth.py`). Sessions slide by `WEBAPP_SESSION_TTL_SECONDS` of inactivity up to 12 h in total (`SESSION_MAX_LIFETIME`). Frontend details: [webapp.md](webapp.md).
 
 | Group | Endpoints |
 |---|---|
@@ -74,12 +74,12 @@ Authentication: `POST /api/v1/webapp/auth/telegram {init_data}` → `session_tok
 | Products | `GET /products`, `POST /products`, `GET /products/search`, `POST /products/import`, `GET/PATCH /products/{id}`, `POST /products/{id}/membership`, `POST /products/bulk-membership`, `POST /products/{id}/refresh` |
 | Defaults | `GET/POST /default-rules`, `DELETE /default-rules/{id}?version=`, `POST /default-rules/preview` ("Try phrase", records nothing) |
 | History import | `POST/GET /catalog-imports`, `GET /catalog-imports/{id}`, `POST /catalog-imports/{id}/selection`, `POST /catalog-imports/{id}/cancel` |
-| Diary | `GET /today` (eaten calories, WHOOP, Apple Health, BMR — the same assembly as the bot), `GET/PATCH /food-drafts[/{id}]`, `POST /food-drafts/{id}/commit`, `POST /food-drafts/{id}/cancel`, `GET /food-entries?date=`, `POST /food-entries` (`idempotency_key`), `PATCH /food-entries/{id}`, `DELETE /food-entries/{id}?version=`, `POST /food-entries/{id}/copy` |
+| Diary | `GET /today` (eaten calories, WHOOP, Apple Health, BMR — the same assembly as the bot), `GET/PATCH /food-drafts[/{id}]`, `POST /food-drafts/{id}/commit`, `POST /food-drafts/{id}/cancel`, `GET /food-entries?date=`, `GET /food-entries/range?from=&to=` (≤ 31 days, newest first), `POST /food-entries` (`idempotency_key`), `PATCH /food-entries/{id}`, `DELETE /food-entries/{id}?version=`, `POST /food-entries/{id}/copy` |
 | Uploads | `POST /uploads?idempotency_key=&caption=` raw `image/jpeg|png|webp` body ≤ 10 MB → shared draft |
 | Integrations | `GET /integrations`, `POST /integrations/{fatsecret|whoop}/connect-link`, `POST /integrations/fatsecret/disconnect` |
 | Admin | `GET/POST /api/v1/admin/catalog`, `PATCH /catalog/{id}`, `GET /features`, `PUT /features/{key}`, `GET /jobs`, `POST /jobs/outbox/{id}/retry`, `POST /jobs/imports/{id}/retry`, `GET /audit`, `POST /roles` |
 
-Errors: `{"detail": {"error": "<code>", ...}}`; stale versions → **409**, validation → 400/422, foreign ids → 404. Admin role is re-read on every request; `ADMIN_API_TOKEN` is never used by the Mini App.
+Errors: `{"detail": {"error": "<code>", ...}}` for every 4xx, including request validation (`{"error": "validation_error", "fields": [{"field", "message"}]}`); stale versions → **409**, foreign ids → 404, cancelling something that is no longer open → 409 `not_cancellable`, refreshing a non-FatSecret product → 409 `not_refreshable`, malformed `Content-Length` on uploads → 400. Admin role is resolved with the session on every request; `ADMIN_API_TOKEN` is never used by the Mini App. `PATCH /api/v1/admin/catalog/{id}`: omitted fields stay, `brand: null` clears the brand. Every admin change and its audit row are one transaction. API responses carry `Cache-Control: no-store`.
 
 ## 7. Settings
 

@@ -65,6 +65,7 @@ OFF_USER_AGENT="HealthTrackerBot/1.0 (contact: you@example.com)"
 FATSECRET_HISTORY_IMPORT_DAYS=30
 WEBAPP_URL=https://your-domain.com/app/     # HTTPS, для кнопок Web App
 WEBAPP_ADMIN_TELEGRAM_IDS=123456789         # початковий власник/адмін
+# Опційно: WEBAPP_SESSION_TTL_SECONDS=3600 (неактивність), WEBAPP_AUTH_MAX_AGE_SECONDS=300
 ```
 
 ### 3. Налаштування бази даних

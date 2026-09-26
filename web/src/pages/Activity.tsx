@@ -1,71 +1,74 @@
-import { useEffect, useState } from "react";
-import { api, telegramApp } from "../api";
-import { formatNumber, t, type Lang } from "../i18n";
+import { useCallback } from "react";
+import { api } from "../api";
+import { ActionFeedback, ErrorState, Loading, PageHeader, Section } from "../components/ui";
+import { useAction } from "../hooks/useAction";
+import { useApi } from "../hooks/useApi";
+import { formatDateTime, formatNumber } from "../i18n";
+import { useT } from "../LangContext";
+import { openExternal } from "../telegram";
 import type { Integrations, TodayStats } from "../types";
 
-export function ActivityPage({ lang }: { lang: Lang }) {
-  const [stats, setStats] = useState<TodayStats | null>(null);
-  const [links, setLinks] = useState<Integrations | null>(null);
-  const [error, setError] = useState("");
+export async function openConnectLink(provider: "whoop" | "fatsecret"): Promise<void> {
+  const result = await api<{ url: string }>(`/api/v1/webapp/integrations/${provider}/connect-link`, { method: "POST" });
+  openExternal(result.url);
+}
 
-  useEffect(() => {
-    Promise.all([
-      api<TodayStats>("/api/v1/webapp/today"),
-      api<Integrations>("/api/v1/webapp/integrations"),
-    ]).then(([today, integrations]) => {
-      setStats(today);
-      setLinks(integrations);
-    }).catch((err: unknown) => setError(err instanceof Error ? err.message : "error"));
-  }, []);
+export function ActivityPage() {
+  const { t, lang } = useT();
+  const load = useCallback((signal: AbortSignal) => Promise.all([
+    api<TodayStats>("/api/v1/webapp/today", { signal }),
+    api<Integrations>("/api/v1/webapp/integrations", { signal }),
+  ]), []);
+  const { data, error, reload } = useApi(load);
+  const action = useAction();
 
-  async function connect(provider: "whoop" | "fatsecret") {
-    const result = await api<{ url: string }>(`/api/v1/webapp/integrations/${provider}/connect-link`, { method: "POST" });
-    const tg = telegramApp();
-    if (tg) tg.openLink(result.url);
-    else window.location.href = result.url;
-  }
-
-  if (error) return <p className="banner">{error}</p>;
-  if (!stats || !links) return <p>{t(lang, "loading")}</p>;
+  const header = <PageHeader title={t("activity")} />;
+  if (error != null && !data) return <>{header}<ErrorState error={error} onRetry={reload} /></>;
+  if (!data) return <>{header}<Loading cards={3} /></>;
+  const [stats, links] = data;
+  const unit = (value: string, key: "unitH" | "unitKm" | "unitMin" | "unitKg" | "kcal") => `${value} ${t(key)}`;
 
   return (
     <>
-      <header className="top"><h1>{t(lang, "activity")}</h1></header>
-      <section className="card">
-        <h2>{t(lang, "whoop")}</h2>
-        <p>{links.whoop.connected ? t(lang, "connected") : t(lang, "notConnected")}</p>
+      {header}
+      <ActionFeedback error={action.error} />
+      <Section title={t("whoop")}>
+        <p>{links.whoop.connected ? t("connected") : t("notConnected")}</p>
         {!links.whoop.connected && (
-          <button className="primary" type="button" onClick={() => void connect("whoop")}>{t(lang, "connect")}</button>
+          <button className="primary" type="button" disabled={action.busy}
+            onClick={() => void action.run(() => openConnectLink("whoop"))}>
+            {t("connect")}
+          </button>
         )}
-      </section>
-      <section className="card">
-        <h2>{t(lang, "recent")}</h2>
-        <div className="row">
-          <div><div className="caption">{t(lang, "strain")}</div><div className="metric">{stats.today_strain.toFixed(1)}</div></div>
-          <div><div className="caption">{t(lang, "workouts")}</div><div className="metric">{stats.today_workout_count}</div></div>
-          <div><div className="caption">{t(lang, "burned")}</div><div className="metric">{formatNumber(lang, stats.today_calories_out)}</div></div>
+      </Section>
+      <Section title={t("recent")}>
+        <div className="row metrics">
+          <div><div className="caption">{t("strain")}</div><div className="metric">{formatNumber(lang, stats.today_strain, 1)}</div></div>
+          <div><div className="caption">{t("workouts")}</div><div className="metric">{formatNumber(lang, stats.today_workout_count)}</div></div>
+          <div><div className="caption">{t("burned")}</div><div className="metric">{formatNumber(lang, stats.today_calories_out)}</div></div>
         </div>
-        {stats.whoop_recovery && <p>{t(lang, "recovery")}: {stats.whoop_recovery}</p>}
-        {stats.whoop_sleep && <p>{t(lang, "sleep")}: {stats.whoop_sleep}</p>}
+        {stats.whoop_recovery && <p>{t("recovery")}: {stats.whoop_recovery}</p>}
+        {stats.whoop_sleep && <p>{t("sleep")}: {stats.whoop_sleep}</p>}
         {stats.whoop_activities && <p className="note">{stats.whoop_activities}</p>}
-        <p className="caption">{t(lang, "source")}: {stats.calories_burned_source}</p>
-      </section>
-      <section className="card">
-        <h2>{t(lang, "apple")}</h2>
-        <p>{links.apple_health.connected ? t(lang, "connected") : t(lang, "notConnected")}</p>
-        {links.apple_health.last_sync_at && <p className="caption">{t(lang, "lastSync")}: {links.apple_health.last_sync_at}</p>}
+        <p className="caption">{t("source")}: {stats.calories_burned_source}</p>
+      </Section>
+      <Section title={t("apple")}>
+        <p>{links.apple_health.connected ? t("connected") : t("notConnected")}</p>
+        {links.apple_health.last_sync_at && (
+          <p className="caption">{t("lastSync")}: {formatDateTime(lang, links.apple_health.last_sync_at)}</p>
+        )}
         <ul className="list">
-          <li><span>{t(lang, "steps")}</span><strong>{formatNumber(lang, stats.apple_health_steps)}</strong></li>
-          <li><span>{t(lang, "heart")}</span><strong>{formatNumber(lang, stats.apple_health_avg_heart_rate)}</strong></li>
-          <li><span>{t(lang, "sleep")}</span><strong>{stats.apple_health_sleep_hours.toFixed(1)} h</strong></li>
-          <li><span>{t(lang, "distance")}</span><strong>{stats.apple_health_distance_km.toFixed(1)} km</strong></li>
-          <li><span>{t(lang, "exercise")}</span><strong>{formatNumber(lang, stats.apple_health_exercise_minutes)} min</strong></li>
-          <li><span>{t(lang, "weight")}</span><strong>{stats.apple_health_body_mass_kg ? `${stats.apple_health_body_mass_kg} kg` : "—"}</strong></li>
-          <li><span>{t(lang, "bmr")}</span><strong>{stats.bmr_kcal ? `${formatNumber(lang, stats.bmr_kcal)} kcal` : "—"}</strong></li>
+          <li><span>{t("steps")}</span><strong>{formatNumber(lang, stats.apple_health_steps)}</strong></li>
+          <li><span>{t("heart")}</span><strong>{formatNumber(lang, stats.apple_health_avg_heart_rate)}</strong></li>
+          <li><span>{t("sleep")}</span><strong>{unit(formatNumber(lang, stats.apple_health_sleep_hours, 1), "unitH")}</strong></li>
+          <li><span>{t("distance")}</span><strong>{unit(formatNumber(lang, stats.apple_health_distance_km, 1), "unitKm")}</strong></li>
+          <li><span>{t("exercise")}</span><strong>{unit(formatNumber(lang, stats.apple_health_exercise_minutes), "unitMin")}</strong></li>
+          <li><span>{t("weight")}</span><strong>{stats.apple_health_body_mass_kg ? unit(formatNumber(lang, stats.apple_health_body_mass_kg, 1), "unitKg") : "—"}</strong></li>
+          <li><span>{t("bmr")}</span><strong>{stats.bmr_kcal ? unit(formatNumber(lang, stats.bmr_kcal), "kcal") : "—"}</strong></li>
         </ul>
         {stats.apple_health_workouts && <p className="note">{stats.apple_health_workouts}</p>}
-        <p className="note">{t(lang, "appleHint")}</p>
-      </section>
+        <p className="note">{t("appleHint")}</p>
+      </Section>
     </>
   );
 }

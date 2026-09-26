@@ -28,7 +28,7 @@ The system allows you to:
 ```
 Telegram Bot (long polling) → FastAPI (Python) → APIs (FatSecret, WHOOP, OpenAI) → PostgreSQL
 iPhone Shortcut ──POST──────▶ /api/v1/health/apple-health/sync ─────────────▶ PostgreSQL
-Telegram Web App ─────────────▶ /api/v1/webapp/*, /api/v1/admin/* (backend ready, frontend TBD)
+Telegram Web App ─────────────▶ /api/v1/webapp/*, /api/v1/admin/* (React Mini App at /app/, see docs/en/webapp.md)
 ```
 
 ## 📁 Project Structure
@@ -87,7 +87,7 @@ Dokploy production deploys use the Dockerfile `CMD` as the authoritative migrati
 python -m app.db_preflight --apply-apple-health-migration
 ```
 
-That command applies migrations `007` and `009`–`017` (Apple Health aggregates, user profile, workouts, secret hashing, guarded cleanup of unused tables, food ledger/catalog/outbox, Web App sessions/roles/preferences) under a PostgreSQL advisory lock and verifies the required tables, indexes, and constraints. FastAPI repeats the verification during startup and fails before serving traffic if anything is missing.
+That command applies migrations `007` and `009`–`018` (Apple Health aggregates, user profile, workouts, secret hashing, guarded cleanup of unused tables, food ledger/catalog/outbox, Web App sessions/roles/preferences) under a PostgreSQL advisory lock and verifies the required tables, indexes, and constraints. FastAPI repeats the verification during startup and fails before serving traffic if anything is missing.
 
 ## 📖 Documentation
 

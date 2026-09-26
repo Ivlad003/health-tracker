@@ -63,7 +63,7 @@ Health & Wellness Tracker побудований як FastAPI Python-додат�
 - `app/scheduler.py` — Планування періодичних задач
 - `app/security.py` — Підписаний OAuth `state`, залежність `require_admin`
 - `app/timeutils.py` — Визначення часового поясу користувача
-- `app/db_preflight.py` — Міграції 007, 009–017 + перевірка схеми
+- `app/db_preflight.py` — Міграції 007, 009–018 + перевірка схеми
 - `app/crypto.py` — хешування секрету webhook Apple Health
 - `app/i18n.py` — Каталог повідомлень uk/en
 
@@ -130,7 +130,8 @@ Health & Wellness Tracker побудований як FastAPI Python-додат�
   `food_log_drafts`, `food_sync_outbox`, `catalog_import_jobs`/`_candidates`,
   `external_lookup_cache` (міграція 016)
 - `user_preferences`, `user_goal_history`, `webapp_sessions`, `user_roles`, `feature_flags`,
-  `admin_audit_log`, `notification_sends` (міграція 017)
+  `admin_audit_log`, `notification_sends` (міграція 017); `webapp_sessions.init_data_hash`
+  та індекси для запитів за користувачем (міграція 018)
 - `conversation_messages` — історія чату для контексту GPT
 - `gym_exercises`, `journal_entries`
 - `apple_health_sync`, `apple_health_import_logs`
@@ -193,8 +194,10 @@ Health & Wellness Tracker побудований як FastAPI Python-додат�
   сталий час, ротація через `/connect_apple_health`
 - **Службові endpoints:** bearer `ADMIN_API_TOKEN`; приховані (404), якщо не задано
 - **Telegram Web App:** `initData` перевіряється HMAC з токеном бота (не старше 5 хв),
-  відкликувані серверні сесії на 1 год (зберігаються хеші), Bearer або cookie + CSRF + Origin,
-  роль адміна перечитується з `user_roles` на кожному адмін-запиті
+  одна жива сесія на initData (повторне використання відкликає попередню, з лімітом),
+  відкликувані ковзні серверні сесії (1 год неактивності, максимум 12 год; хеші), Bearer (типово)
+  або лише cookie + CSRF + Origin, роль адміна визначається з `user_roles` разом із сесією на
+  кожному запиті; заголовки CSP / nosniff / no-store (`app/main.py`)
 - **Логи:** `SecretRedactingFilter` маскує значення `token`, `code`, `state`,
   `oauth_token`, `oauth_verifier` у query (включно з access-логами uvicorn)
 

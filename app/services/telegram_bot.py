@@ -54,6 +54,11 @@ _application: Application | None = None
 _language_cache: dict[int, str] = {}
 
 
+def invalidate_language_cache(telegram_user_id: int) -> None:
+    """Forget a cached language (the Web App changed users.language)."""
+    _language_cache.pop(telegram_user_id, None)
+
+
 def _lang(update: Update) -> str:
     """Language for replies: stored users.language, else Telegram language_code."""
     user = update.effective_user

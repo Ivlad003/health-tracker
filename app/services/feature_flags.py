@@ -88,6 +88,20 @@ async def is_enabled(pool: Any, key: str) -> bool:
     return value
 
 
+async def enabled_map(pool: Any) -> dict[str, bool]:
+    """Effective value of every flag with at most one query (fills the cache)."""
+    now = time.monotonic()
+    if not all(key in _cache and _cache[key][1] > now for key in FLAGS):
+        try:
+            stored = {r["key"]: bool(r["enabled"])
+                      for r in await pool.fetch("SELECT key, enabled FROM feature_flags")}
+        except Exception:
+            stored = {}  # table missing in unit tests / transient DB error → defaults
+        for key, spec in FLAGS.items():
+            _cache[key] = (stored.get(key, spec.default()), now + _CACHE_TTL)
+    return {key: spec.available()[0] and _cache[key][0] for key, spec in FLAGS.items()}
+
+
 async def list_flags(pool: Any) -> list[dict]:
     rows = {r["key"]: r for r in await pool.fetch("SELECT key, enabled, version, updated_at FROM feature_flags")}
     out = []

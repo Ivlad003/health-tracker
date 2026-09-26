@@ -1,70 +1,57 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api } from "../api";
-import { formatNumber, t, type Lang } from "../i18n";
-import type { DayView, Me } from "../types";
+import { Banner, EntryList, ErrorState, Loading, PageHeader, Section } from "../components/ui";
+import { useApi } from "../hooks/useApi";
+import { formatDay, formatNumber, shiftDay, todayIn } from "../i18n";
+import { useT } from "../LangContext";
+import type { DayRange, Me } from "../types";
 
-function todayIn(timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date());
-}
-
-function shift(iso: string, days: number): string {
-  const [year, month, day] = iso.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
+export const HISTORY_DAYS = 7;
 
 export function HistoryPage({ me }: { me: Me }) {
-  const lang: Lang = me.language === "en" ? "en" : "uk";
-  const [days, setDays] = useState<DayView[]>([]);
+  const { t, lang } = useT();
   const [open, setOpen] = useState<string | null>(null);
-  const [error, setError] = useState("");
+  const today = todayIn(me.timezone);
+  const load = useCallback((signal: AbortSignal) => {
+    const from = shiftDay(today, -(HISTORY_DAYS - 1));
+    return api<DayRange>(`/api/v1/webapp/food-entries/range?from=${from}&to=${today}`, { signal });
+  }, [today]);
+  const { data, error, reload } = useApi(load);
 
-  useEffect(() => {
-    const start = todayIn(me.timezone);
-    const dates = Array.from({ length: 7 }, (_, index) => shift(start, -index));
-    Promise.all(dates.map((date) => api<DayView>(`/api/v1/webapp/food-entries?date=${date}`)))
-      .then(setDays)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "error"));
-  }, [me.timezone]);
-
-  if (error) return <p className="banner">{error}</p>;
-  if (days.length === 0) return <p>{t(lang, "loading")}</p>;
+  const header = <PageHeader title={t("history")} />;
+  if (error != null && !data) return <>{header}<ErrorState error={error} onRetry={reload} /></>;
+  if (!data) return <>{header}<Loading /></>;
 
   return (
     <>
-      <header className="top"><h1>{t(lang, "history")}</h1></header>
-      <section className="card">
-        <h2>{t(lang, "week")}</h2>
+      {header}
+      <Section title={t("week")}>
         <ul className="list">
-          {days.map((day) => (
-            <li key={day.local_date}>
-              <button className="item" type="button" onClick={() => setOpen(open === day.local_date ? null : day.local_date)}>
-                <span>{day.local_date}</span>
-                <strong>{formatNumber(lang, day.total_kcal)} kcal</strong>
-              </button>
-            </li>
-          ))}
+          {data.days.map((day) => {
+            const expanded = open === day.local_date;
+            return (
+              <li key={day.local_date} className="day">
+                <button
+                  className="item"
+                  type="button"
+                  aria-expanded={expanded}
+                  aria-controls={`day-${day.local_date}`}
+                  onClick={() => setOpen(expanded ? null : day.local_date)}
+                >
+                  <span>{formatDay(lang, day.local_date, today)}</span>
+                  <strong>{formatNumber(lang, day.total_kcal)} {t("kcal")}</strong>
+                </button>
+                {expanded && (
+                  <div id={`day-${day.local_date}`} className="day-detail">
+                    {day.partial && <Banner>{t("partial")}</Banner>}
+                    <EntryList entries={day.entries} />
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
-      </section>
-      {days.filter((day) => day.local_date === open).map((day) => (
-        <section className="card" key={day.local_date}>
-          <h2>{day.local_date}</h2>
-          {day.partial && <p className="banner">{t(lang, "partial")}</p>}
-          {day.entries.length === 0 ? <p className="note">{t(lang, "emptyDay")}</p> : (
-            <ul className="list">
-              {day.entries.map((entry, index) => (
-                <li key={`${entry.id ?? "r"}-${index}`}>
-                  <span>{entry.name}<br /><span className="caption">{entry.meal_type}</span></span>
-                  <strong>{formatNumber(lang, entry.energy_kcal)}</strong>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
+      </Section>
     </>
   );
 }

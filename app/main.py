@@ -191,6 +191,79 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Health Tracker API", lifespan=lifespan)
 
+# --- Web App: security/cache headers + uniform validation errors ---
+_WEBAPP_API_PREFIXES = ("/api/v1/webapp", "/api/v1/admin")
+# Telegram Web (web.telegram.org) embeds the Mini App in an iframe; mobile and
+# desktop clients load it top-level. telegram-web-app.js comes from telegram.org.
+WEBAPP_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://telegram.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
+)
+
+
+def webapp_headers(path: str) -> dict[str, str]:
+    """Headers for the Mini App bundle (/app/...) and its JSON API."""
+    if path.startswith(_WEBAPP_API_PREFIXES):
+        return {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        }
+    if path == "/app" or path.startswith("/app/"):
+        headers = {
+            "Content-Security-Policy": WEBAPP_CSP,
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        }
+        if path.startswith("/app/assets/"):
+            # Vite content-hashes every asset file name.
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            # index.html must be revalidated so a deploy is picked up at once.
+            headers["Cache-Control"] = "no-cache"
+        return headers
+    return {}
+
+
+@app.middleware("http")
+async def _webapp_headers_middleware(request, call_next):
+    response = await call_next(request)
+    for name, value in webapp_headers(request.url.path).items():
+        response.headers.setdefault(name, value)
+    return response
+
+
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.exception_handlers import request_validation_exception_handler  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request, exc: RequestValidationError):
+    """Web App/admin APIs use the same ``{"detail": {"error": ...}}`` envelope
+    for validation errors as for every other 4xx; other routers keep FastAPI's
+    default body."""
+    if not request.url.path.startswith(_WEBAPP_API_PREFIXES):
+        return await request_validation_exception_handler(request, exc)
+    fields = [
+        {
+            "field": ".".join(str(part) for part in err.get("loc", ())[1:]) or None,
+            "message": err.get("type", "invalid"),
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {"error": "validation_error", "fields": fields}},
+    )
+
 
 @app.get("/health")
 async def health() -> dict:

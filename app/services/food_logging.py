@@ -489,6 +489,81 @@ async def save_draft(
     return draft_from_row(row)
 
 
+async def patch_draft_items(
+    conn: Any,
+    ctx: "UserContext",
+    draft_id: int,
+    *,
+    expected_version: int,
+    patches: list[dict],
+    meal_type: Optional[str] = None,
+    local_date: Optional[date] = None,
+) -> dict:
+    """Apply explicit product/grams choices to draft items (Web App edit).
+
+    ``patches``: ``[{"index": int, "product_id": int|None, "grams": Decimal|None}]``.
+    Run inside a transaction: the draft row is locked, so the version check
+    and the save are atomic.
+    """
+    row = await conn.fetchrow(
+        "SELECT * FROM food_log_drafts WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        draft_id, ctx.user_id,
+    )
+    if row is None:
+        raise LedgerError("draft_not_found")
+    draft = draft_from_row(row)
+    if draft["version"] != expected_version:
+        raise VersionConflict(draft["version"])
+    items = draft["items"]
+    products: dict[int, dict] = {}
+    for patch in patches:
+        index = patch["index"]
+        if index >= len(items):
+            raise LedgerError("item_not_found")
+        item = items[index]
+        product_id = patch.get("product_id")
+        if product_id is not None:
+            if product_id not in products:
+                product = await catalog.get_product(conn, product_id, ctx.user_id)
+                if product is None:
+                    raise catalog.CatalogError("not_found")
+                products[product_id] = product
+            product = products[product_id]
+            item["selected"] = {
+                "product_id": product["id"], "provider": product["provider"],
+                "external_id": product.get("external_id"), "label": product["label"],
+                "serving_id": product.get("preferred_serving_id"), "source": "explicit",
+                "alias": item.get("text") or "",
+            }
+        if patch.get("grams") is not None:
+            item["grams"] = str(validate_grams(patch["grams"]))
+            item["quantity_source"] = "explicit"
+        item["status"] = evaluate_items([item])
+    resolved_date = validate_local_date(local_date, ctx) if local_date else None
+    return await save_draft(conn, draft, items=items, meal_type=meal_type, local_date=resolved_date)
+
+
+async def detach_fatsecret(conn: Any, user_id: int) -> None:
+    """Forget FatSecret credentials; queued exports become local-only.
+
+    Run inside a transaction so tokens, outbox and entries change together.
+    Local entries and My Products stay.
+    """
+    from app.services.fatsecret_api import clear_fatsecret_tokens
+
+    await clear_fatsecret_tokens(conn, user_id)
+    await conn.execute(
+        """UPDATE food_sync_outbox SET status = 'cancelled', last_error = 'disconnected'
+           WHERE user_id = $1 AND status = 'pending'""",
+        user_id,
+    )
+    await conn.execute(
+        """UPDATE food_entries SET sync_status = 'local_only'
+           WHERE user_id = $1 AND sync_status = 'pending'""",
+        user_id,
+    )
+
+
 async def set_reply_message(conn: Any, draft_id: int, user_id: int, reply_message_id: int) -> None:
     """Link the bot's reply to the draft (not a user edit: no version bump)."""
     await conn.execute(
@@ -995,3 +1070,17 @@ async def daily_view(pool: Any, ctx: UserContext, local_date: Optional[date] = N
     view = merge_daily(local_rows, remote, local_date=local_date, remote_connected=ctx.fs_connected)
     view.expired = expired
     return view
+
+
+async def daily_views(pool: Any, ctx: UserContext, dates: list[date], *, concurrency: int = 4) -> list[DailyView]:
+    """``daily_view`` for several dates (History screen) with bounded
+    concurrency towards the FatSecret diary."""
+    import asyncio
+
+    gate = asyncio.Semaphore(max(1, concurrency))
+
+    async def one(day: date) -> DailyView:
+        async with gate:
+            return await daily_view(pool, ctx, day)
+
+    return list(await asyncio.gather(*(one(day) for day in dates)))

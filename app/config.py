@@ -73,6 +73,8 @@ class Settings(BaseSettings):
 
     # Telegram Web App
     webapp_url: str = ""  # defaults to {app_base_url}/app/
+    # Idle timeout: every active request (throttled to once a minute) slides
+    # the expiry forward by this much, up to webapp_auth.SESSION_MAX_LIFETIME.
     webapp_session_ttl_seconds: int = 3600
     webapp_auth_max_age_seconds: int = 300
     # Comma-separated Telegram user ids bootstrapped as owner/admin.

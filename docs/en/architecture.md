@@ -63,7 +63,7 @@ Health & Wellness Tracker is built as a FastAPI Python application serving as a 
 - `app/scheduler.py` — Periodic job scheduling
 - `app/security.py` — Signed OAuth `state`, `require_admin` dependency
 - `app/timeutils.py` — Per-user timezone resolution
-- `app/db_preflight.py` — migrations 007, 009–017 + schema verification
+- `app/db_preflight.py` — migrations 007, 009–018 + schema verification
 - `app/crypto.py` — hashing of the Apple Health webhook secret
 - `app/i18n.py` — uk/en message catalog
 
@@ -130,7 +130,8 @@ WHOOP and FatSecret data are fetched live; Apple Health is pushed by the iPhone.
   `food_log_drafts`, `food_sync_outbox`, `catalog_import_jobs`/`_candidates`,
   `external_lookup_cache` (migration 016)
 - `user_preferences`, `user_goal_history`, `webapp_sessions`, `user_roles`, `feature_flags`,
-  `admin_audit_log`, `notification_sends` (migration 017)
+  `admin_audit_log`, `notification_sends` (migration 017); `webapp_sessions.init_data_hash`
+  and per-user lookup indexes (migration 018)
 - `conversation_messages` — chat history for GPT context
 - `gym_exercises`, `journal_entries`
 - `apple_health_sync`, `apple_health_import_logs`
@@ -191,8 +192,10 @@ Never-written tables from 002/007 (`whoop_*`, `daily_summaries`, `sync_logs`,
   rotated by `/connect_apple_health`
 - **Operator endpoints:** `ADMIN_API_TOKEN` bearer; hidden (404) when unset
 - **Telegram Web App:** `initData` HMAC-validated with the bot token (≤5 min old),
-  revocable 1-hour server sessions (hashed), Bearer or cookie + CSRF + Origin,
-  admin role re-checked from `user_roles` on every admin request
+  one live session per initData (re-use revokes the previous one, capped),
+  revocable sliding server sessions (1 h idle, 12 h max; hashed), Bearer (default)
+  or cookie-only transport + CSRF + Origin, admin role resolved from `user_roles`
+  with the session on every request; CSP / nosniff / no-store headers (`app/main.py`)
 - **Logs:** `SecretRedactingFilter` masks `token`, `code`, `state`,
   `oauth_token`, `oauth_verifier` query values (incl. uvicorn access logs)
 

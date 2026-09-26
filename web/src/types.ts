@@ -133,3 +133,25 @@ export interface DefaultRule {
 }
 
 export type Page = "dashboard" | "food" | "activity" | "history" | "profile" | "admin";
+export const USER_PAGES: readonly Page[] = ["dashboard", "food", "activity", "history", "profile"];
+
+export interface DayRange {
+  days: DayView[];
+}
+
+export interface GoalsResponse {
+  current: { calories: number; effective_date: string | null } | null;
+  history: { effective_date: string; calories: number }[];
+}
+
+export interface PreviewCandidate {
+  label?: string;
+  source?: string;
+  product_id?: number | null;
+}
+
+export interface PreviewResult {
+  decision: string;
+  reason: string | null;
+  candidates: PreviewCandidate[];
+}

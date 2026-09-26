@@ -66,7 +66,7 @@
 
 ## 6. API Web App
 
-Автентифікація: `POST /api/v1/webapp/auth/telegram {init_data}` → `session_token`, `csrf_token`. Використовуйте `Authorization: Bearer <session_token>` (рекомендовано у WebView Telegram) або Secure/HttpOnly cookie + `X-CSRF-Token` + `Origin` того ж походження для змін. Сесія живе `WEBAPP_SESSION_TTL_SECONDS`; initData, старші за `WEBAPP_AUTH_MAX_AGE_SECONDS`, відхиляються.
+Автентифікація: `POST /api/v1/webapp/auth/telegram {init_data, transport?}`. Типово `transport: "bearer"` → `session_token` + `csrf_token` у тілі, без cookie; використовуйте `Authorization: Bearer <session_token>` (так робить Mini App). `transport: "cookie"` → Secure/HttpOnly cookie, токена в тілі **немає**, а зміни потребують `X-CSRF-Token` + `Origin` того ж походження. initData, старші за `WEBAPP_AUTH_MAX_AGE_SECONDS`, відхиляються; повторне використання тих самих initData відкликає попередню створену ними сесію і обмежене (`INIT_DATA_MAX_USES` = 5 у `webapp_auth.py`). Сесія подовжується на `WEBAPP_SESSION_TTL_SECONDS` неактивності, але не довше за 12 год загалом (`SESSION_MAX_LIFETIME`). Деталі фронтенду: [webapp.md](webapp.md).
 
 | Група | Ендпоінти |
 |---|---|
@@ -74,12 +74,12 @@
 | Продукти | `GET /products`, `POST /products`, `GET /products/search`, `POST /products/import`, `GET/PATCH /products/{id}`, `POST /products/{id}/membership`, `POST /products/bulk-membership`, `POST /products/{id}/refresh` |
 | За замовчуванням | `GET/POST /default-rules`, `DELETE /default-rules/{id}?version=`, `POST /default-rules/preview` («Перевірити фразу», нічого не записує) |
 | Імпорт історії | `POST/GET /catalog-imports`, `GET /catalog-imports/{id}`, `POST /catalog-imports/{id}/selection`, `POST /catalog-imports/{id}/cancel` |
-| Щоденник | `GET /today` (з'їдені калорії, WHOOP, Apple Health, BMR — те саме зведення, що й у бота), `GET/PATCH /food-drafts[/{id}]`, `POST /food-drafts/{id}/commit`, `POST /food-drafts/{id}/cancel`, `GET /food-entries?date=`, `POST /food-entries` (`idempotency_key`), `PATCH /food-entries/{id}`, `DELETE /food-entries/{id}?version=`, `POST /food-entries/{id}/copy` |
+| Щоденник | `GET /today` (з'їдені калорії, WHOOP, Apple Health, BMR — те саме зведення, що й у бота), `GET/PATCH /food-drafts[/{id}]`, `POST /food-drafts/{id}/commit`, `POST /food-drafts/{id}/cancel`, `GET /food-entries?date=`, `GET /food-entries/range?from=&to=` (≤ 31 дня, від найновішого), `POST /food-entries` (`idempotency_key`), `PATCH /food-entries/{id}`, `DELETE /food-entries/{id}?version=`, `POST /food-entries/{id}/copy` |
 | Завантаження | `POST /uploads?idempotency_key=&caption=` сире тіло `image/jpeg|png|webp` ≤ 10 МБ → спільна чернетка |
 | Інтеграції | `GET /integrations`, `POST /integrations/{fatsecret|whoop}/connect-link`, `POST /integrations/fatsecret/disconnect` |
 | Адмін | `GET/POST /api/v1/admin/catalog`, `PATCH /catalog/{id}`, `GET /features`, `PUT /features/{key}`, `GET /jobs`, `POST /jobs/outbox/{id}/retry`, `POST /jobs/imports/{id}/retry`, `GET /audit`, `POST /roles` |
 
-Помилки: `{"detail": {"error": "<код>", ...}}`; застаріла версія → **409**, валідація → 400/422, чужі id → 404. Роль адміна перечитується на кожному запиті; `ADMIN_API_TOKEN` Mini App ніколи не використовує.
+Помилки: `{"detail": {"error": "<код>", ...}}` для всіх 4xx, зокрема валідації запиту (`{"error": "validation_error", "fields": [{"field", "message"}]}`); застаріла версія → **409**, чужі id → 404, скасування того, що вже не відкрите → 409 `not_cancellable`, оновлення не-FatSecret продукту → 409 `not_refreshable`, некоректний `Content-Length` при завантаженні → 400. Роль адміна визначається разом із сесією на кожному запиті; `ADMIN_API_TOKEN` Mini App ніколи не використовує. `PATCH /api/v1/admin/catalog/{id}`: пропущені поля лишаються, `brand: null` очищує бренд. Кожна зміна адміна та її запис аудиту — одна транзакція. Відповіді API мають `Cache-Control: no-store`.
 
 ## 7. Налаштування
 

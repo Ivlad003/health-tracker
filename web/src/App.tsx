@@ -1,27 +1,44 @@
-import { useEffect, useState } from "react";
-import { api, clearSession, saveSession, sessionToken, telegramApp } from "./api";
-import { t, type Lang } from "./i18n";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { api, login, onSessionLost, sessionToken } from "./api";
+import { ErrorState, Loading } from "./components/ui";
+import { NavIcon } from "./components/NavIcon";
+import { useBackButton } from "./hooks/useBackButton";
+import { asLang, t, type Lang } from "./i18n";
+import { LangProvider } from "./LangContext";
 import { ActivityPage } from "./pages/Activity";
-import { AdminPage } from "./pages/Admin";
 import { DashboardPage } from "./pages/Dashboard";
 import { FoodPage } from "./pages/Food";
 import { HistoryPage } from "./pages/History";
 import { ProfilePage } from "./pages/Profile";
-import type { Me, Page } from "./types";
+import { applyTheme, onThemeChange, telegramApp } from "./telegram";
+import { USER_PAGES, type Me, type Page } from "./types";
 
-const PAGES: Page[] = ["dashboard", "food", "activity", "history", "profile"];
+// Operator screen: most users never download it.
+const AdminPage = lazy(() => import("./pages/Admin"));
+
+type Phase = "boot" | "gate" | "expired" | "ready" | "error";
 
 function currentPage(): Page {
-  const name = location.hash.replace("#", "");
-  if (name === "admin" || PAGES.includes(name as Page)) return name as Page;
+  const name = location.hash.replace(/^#\/?/, "").split("/")[0] ?? "";
+  if (name === "admin" || (USER_PAGES as readonly string[]).includes(name)) return name as Page;
   return "dashboard";
+}
+
+/** Language before /me is known: Telegram's client language. */
+function initialLang(): Lang {
+  return asLang(telegramApp()?.initDataUnsafe.user?.language_code?.slice(0, 2));
 }
 
 export function App() {
   const [page, setPage] = useState<Page>(currentPage);
   const [me, setMe] = useState<Me | null>(null);
-  const [phase, setPhase] = useState<"boot" | "gate" | "ready" | "error">("boot");
-  const [error, setError] = useState("");
+  const [phase, setPhase] = useState<Phase>("boot");
+  const [error, setError] = useState<unknown>(null);
+  const lang: Lang = me ? asLang(me.language) : initialLang();
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
 
   useEffect(() => {
     const onHash = () => setPage(currentPage());
@@ -33,90 +50,107 @@ export function App() {
     const tg = telegramApp();
     tg?.ready();
     tg?.expand();
-    tg?.setHeaderColor?.("#4CAF50");
-    tg?.setBackgroundColor?.("#F5F5F5");
-    void boot();
+    applyTheme(tg);
+    const off = onThemeChange(() => applyTheme(telegramApp()));
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const onMedia = () => applyTheme(telegramApp());
+    media?.addEventListener?.("change", onMedia);
+    return () => {
+      off();
+      media?.removeEventListener?.("change", onMedia);
+    };
   }, []);
 
-  async function boot() {
+  useEffect(() => onSessionLost(() => setPhase("expired")), []);
+
+  const boot = useCallback(async () => {
     setPhase("boot");
-    setError("");
-    const tg = telegramApp();
+    setError(null);
+    const initData = telegramApp()?.initData;
+    if (!sessionToken() && !initData) {
+      setPhase("gate");
+      return;
+    }
     try {
-      if (sessionToken()) {
-        setMe(await api<Me>("/api/v1/webapp/me"));
-        setPhase("ready");
-        return;
-      }
-      if (!tg?.initData) {
-        setPhase("gate");
-        return;
-      }
-      const auth = await api<{ session_token: string }>("/api/v1/webapp/auth/telegram", {
-        method: "POST",
-        body: JSON.stringify({ init_data: tg.initData }),
-      });
-      saveSession(auth.session_token);
+      if (!sessionToken() && initData) await login(initData);
       setMe(await api<Me>("/api/v1/webapp/me"));
       setPhase("ready");
     } catch (err) {
-      clearSession();
-      if (!tg?.initData) {
-        setPhase("gate");
-        return;
-      }
-      setError(err instanceof Error ? err.message : "error");
-      setPhase("error");
+      setError(err);
+      setPhase((current) => (current === "expired" ? current : "error"));
     }
-  }
+  }, []);
 
-  function go(next: Page) {
-    location.hash = next;
+  useEffect(() => {
+    void boot();
+  }, [boot]);
+
+  const go = useCallback((next: Page) => {
+    if (location.hash !== `#${next}`) location.hash = next;
     setPage(next);
-  }
+    window.scrollTo?.(0, 0);
+  }, []);
+  const back = useCallback(() => go("dashboard"), [go]);
+  useBackButton(phase === "ready" && page !== "dashboard" ? back : null);
 
-  const lang: Lang = me?.language === "en" ? "en" : "uk";
-  if (phase === "boot") return <main className="center"><p>{t("uk", "loading")}</p></main>;
-  if (phase === "gate") {
+  if (phase === "boot") return <Shell lang={lang}><Loading cards={3} /></Shell>;
+  if (phase === "gate" || phase === "expired") {
+    const expired = phase === "expired";
     return (
-      <main className="center">
-        <div>
-          <h1>{t("uk", "gateTitle")}</h1>
-          <p>{t("uk", "gateBody")}</p>
-          <p>{t("en", "gateBody")}</p>
-        </div>
-      </main>
+      <Shell lang={lang}>
+        <main className="center">
+          <div>
+            <h1>{t(lang, expired ? "expiredTitle" : "gateTitle")}</h1>
+            <p>{t(lang, expired ? "expiredBody" : "gateBody")}</p>
+            {expired && telegramApp()?.close && (
+              <button className="primary" type="button" onClick={() => telegramApp()?.close?.()}>{t(lang, "close")}</button>
+            )}
+          </div>
+        </main>
+      </Shell>
     );
   }
   if (phase === "error" || !me) {
     return (
-      <main className="center">
-        <div>
-          <p>{error}</p>
-          <button className="primary" type="button" onClick={() => void boot()}>{t(lang, "retry")}</button>
-        </div>
-      </main>
+      <Shell lang={lang}>
+        <main className="center"><ErrorState error={error} onRetry={() => void boot()} /></main>
+      </Shell>
     );
   }
 
-  const tabs: Page[] = me.is_admin ? [...PAGES, "admin"] : PAGES;
+  const tabs: readonly Page[] = me.is_admin ? [...USER_PAGES, "admin"] : USER_PAGES;
   return (
-    <div className="app">
-      {page === "dashboard" && <DashboardPage me={me} onOpen={go} />}
-      {page === "food" && <FoodPage me={me} />}
-      {page === "activity" && <ActivityPage lang={lang} />}
-      {page === "history" && <HistoryPage me={me} />}
-      {page === "profile" && <ProfilePage me={me} onMe={setMe} />}
-      {page === "admin" && me.is_admin && <AdminPage lang={lang} />}
+    <Shell lang={lang}>
+      <main className="app">
+        {page === "dashboard" && <DashboardPage me={me} onOpen={go} />}
+        {page === "food" && <FoodPage me={me} />}
+        {page === "activity" && <ActivityPage />}
+        {page === "history" && <HistoryPage me={me} />}
+        {page === "profile" && <ProfilePage me={me} onMe={setMe} />}
+        {page === "admin" && me.is_admin && (
+          <Suspense fallback={<Loading />}><AdminPage /></Suspense>
+        )}
+      </main>
       <div className="nav">
-        <nav>
+        <nav aria-label={t(lang, "navigation")}>
           {tabs.map((item) => (
-            <button key={item} type="button" className={item === page ? "on" : ""} onClick={() => go(item)}>
-              {t(lang, item)}
+            <button
+              key={item}
+              type="button"
+              className={item === page ? "on" : ""}
+              aria-current={item === page ? "page" : undefined}
+              onClick={() => go(item)}
+            >
+              <NavIcon page={item} active={item === page} />
+              <span>{t(lang, item)}</span>
             </button>
           ))}
         </nav>
       </div>
-    </div>
+    </Shell>
   );
+}
+
+function Shell({ lang, children }: { lang: Lang; children: ReactNode }) {
+  return <LangProvider lang={lang}>{children}</LangProvider>;
 }
