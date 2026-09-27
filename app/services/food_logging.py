@@ -192,7 +192,10 @@ async def prepare_item(
         servings = await _fatsecret_servings(conn, product_id)
         if nutrition is None or not servings:
             try:
-                await catalog.refresh_fatsecret_product(conn, product_id, product["external_id"])
+                await catalog.refresh_fatsecret_product(
+                    conn, product_id, product["external_id"],
+                    access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+                )
             except Exception:
                 logger.warning("FatSecret refresh failed for product %s", product_id, exc_info=True)
             nutrition = await catalog.current_nutrition(conn, product_id, ctx.user_id, serving_id)

@@ -110,8 +110,10 @@ class NewRelicLogHandler(logging.Handler):
         super().close()
 
 
+# The value must not start with "%": log format strings contain "code=%s",
+# and rewriting that placeholder leaves extra arguments for "%" interpolation.
 _SECRET_QUERY_RE = re.compile(
-    r"(?i)\b(token|oauth_token|oauth_verifier|code|state|access_token|refresh_token)=([^&\s\"']+)"
+    r"(?i)\b(token|oauth_token|oauth_verifier|code|state|access_token|refresh_token)=(?!%)([^&\s\"']+)"
 )
 
 
@@ -128,12 +130,20 @@ class SecretRedactingFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str):
+        # Leave a format string alone while it still has arguments. Rewriting
+        # "code=%s" into "code=***" makes getMessage() raise TypeError, and
+        # Python 3.12 lets that exception escape the logging call.
+        if not record.args and isinstance(record.msg, str):
             record.msg = redact_secrets(record.msg)
         if isinstance(record.args, tuple):
             record.args = tuple(
                 redact_secrets(arg) if isinstance(arg, str) else arg for arg in record.args
             )
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: redact_secrets(value) if isinstance(value, str) else value
+                for key, value in record.args.items()
+            }
         return True
 
 

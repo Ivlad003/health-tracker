@@ -217,9 +217,26 @@ def _parse_food(food: dict) -> dict:
     }
 
 
-async def get_food_details(food_id: str) -> dict:
-    """``food.get.v4`` → food identity + structured servings (with IDs)."""
+async def get_food_details(
+    food_id: str,
+    *,
+    access_token: Optional[str] = None,
+    access_secret: Optional[str] = None,
+) -> dict:
+    """``food.get.v4`` → food identity + structured servings (with IDs).
+
+    Diary and custom foods are visible only with the user's OAuth 1.0 token.
+    The public client-credentials call returns error 106 (invalid id) for them.
+    """
     logger.info("FatSecret food.get: food_id=%s", food_id)
+    if access_token and access_secret:
+        data = await _user_call(
+            access_token,
+            access_secret,
+            {"method": "food.get.v4", "food_id": str(food_id), "format": "json"},
+            "food.get",
+        )
+        return _parse_food(data.get("food") or {})
     token = await get_oauth2_token()
 
     async with httpx.AsyncClient(timeout=_http_timeout()) as client:

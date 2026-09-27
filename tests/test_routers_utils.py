@@ -68,6 +68,23 @@ async def test_operator_endpoints_require_valid_admin_token(mock_settings, monke
     get_pool.assert_not_called()
 
 
+def test_redactor_does_not_break_code_percent_s_format():
+    import logging
+
+    from app.main import SecretRedactingFilter
+
+    record = logging.LogRecord(
+        name="test", level=logging.ERROR, pathname=__file__, lineno=1,
+        msg="FatSecret %s error: code=%s message=%s",
+        args=("food.get", 106, "Invalid ID: please check your food_id"),
+        exc_info=None,
+    )
+    assert SecretRedactingFilter().filter(record) is True
+    assert record.getMessage() == (
+        "FatSecret food.get error: code=106 message=Invalid ID: please check your food_id"
+    )
+
+
 def test_redact_secrets_masks_apple_health_token_and_oauth_codes():
     from app.main import redact_secrets
 

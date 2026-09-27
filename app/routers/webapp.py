@@ -475,8 +475,12 @@ async def import_product(body: ImportProductBody, session: Session):
             conn, session.user_id, product_id, "web", display_name=body.display_name, explicit=True,
         )
     pool = await get_pool()
+    ctx = await _ctx(session)
     try:
-        await catalog.refresh_fatsecret_product(pool, product_id, body.external_id)
+        await catalog.refresh_fatsecret_product(
+            pool, product_id, body.external_id,
+            access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+        )
     except Exception:
         logger.warning("FatSecret refresh failed for imported product", exc_info=True)
     return ok({"product_id": product_id, "membership": membership}, status_code=201)
@@ -593,8 +597,12 @@ async def refresh_product(product_id: int, session: Session):
         raise error(404, "not_found")
     if product["provider"] != "fatsecret":
         raise error(409, "not_refreshable")
+    ctx = await _ctx(session)
     try:
-        await catalog.refresh_fatsecret_product(pool, product_id, product["external_id"])
+        await catalog.refresh_fatsecret_product(
+            pool, product_id, product["external_id"],
+            access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+        )
     except Exception:
         logger.warning("FatSecret refresh failed for product %s", product_id, exc_info=True)
         raise error(502, "provider_unavailable")

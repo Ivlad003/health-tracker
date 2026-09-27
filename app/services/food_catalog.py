@@ -167,12 +167,32 @@ async def store_fatsecret_servings(conn: Any, product_id: int, servings: Iterabl
     return stored
 
 
-async def refresh_fatsecret_product(conn: Any, product_id: int, food_id: str) -> dict:
+async def refresh_fatsecret_product(
+    conn: Any,
+    product_id: int,
+    food_id: str,
+    *,
+    access_token: Optional[str] = None,
+    access_secret: Optional[str] = None,
+) -> dict:
     """Fetch ``food.get`` and refresh cached name + servings. Network call:
-    never run it while holding a transaction open."""
-    from app.services.fatsecret_api import get_food_details
+    never run it while holding a transaction open.
 
-    details = await get_food_details(food_id)
+    The user's token is tried first so foods that exist only in their diary
+    (public ``food.get`` answers 106) still refresh.
+    """
+    from app.services.fatsecret_api import FatSecretAPIError, get_food_details
+
+    details = None
+    if access_token and access_secret:
+        try:
+            details = await get_food_details(
+                food_id, access_token=access_token, access_secret=access_secret,
+            )
+        except FatSecretAPIError:
+            details = None
+    if details is None:
+        details = await get_food_details(food_id)
     await conn.execute(
         """UPDATE food_products
            SET provider_name = $2, provider_brand = $3, provider_cached_until = $4
