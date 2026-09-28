@@ -6,10 +6,10 @@ imported/recent history → external search. Explicit current attributes
 (barcode, brand, fat %, raw/cooked) are checked first: a historical favourite
 or a default can never override an incompatible explicit attribute.
 
-Auto-selection (FR-05) happens only for an explicit choice, a compatible
-pinned default, or a single unambiguous previously *confirmed* match — and
-only when the user has not chosen "review every entry". Model confidence is
-never an auto-commit criterion.
+Auto-selection happens for an explicit choice or a compatible pinned default.
+A previously confirmed match stays the first button and is not logged by
+itself. Text logging then pairs that history card with one FatSecret hit
+that has a different food id.
 """
 from __future__ import annotations
 
@@ -231,16 +231,84 @@ def rank(query: FoodQuery, candidates: list[Candidate]) -> list[Candidate]:
     return sorted(kept.values(), key=_sort_key)
 
 
+def _identity(cand: Candidate) -> tuple:
+    """Same FatSecret food, else the local product, else the label."""
+    if cand.provider == "fatsecret" and cand.external_id:
+        return ("fs", str(cand.external_id))
+    if cand.product_id is not None:
+        return ("pid", cand.product_id)
+    return ("other", cand.provider, cand.label)
+
+
+def pair_slots(history: list[Candidate], search: list[Candidate]) -> list[Candidate]:
+    """First history card, then a different FatSecret hit, else the next history card."""
+    chosen: list[Candidate] = []
+    seen: set[tuple] = set()
+    pool = [c for c in history if c.tier not in (TIER_EXPLICIT, TIER_DEFAULT)]
+    if pool:
+        chosen.append(pool[0])
+        seen.add(_identity(pool[0]))
+    found = 0
+    for cand in search:
+        if _identity(cand) not in seen:
+            chosen.append(cand)
+            seen.add(_identity(cand))
+            found += 1
+            if found >= 3:
+                break
+    if len(chosen) < 2:
+        for cand in pool[1:]:
+            if _identity(cand) not in seen:
+                chosen.append(cand)
+                seen.add(_identity(cand))
+                break
+    return chosen[:4]
+
+
+def choose_slots(
+    query: FoodQuery, history: list[Candidate], search: list[Candidate],
+) -> Resolution:
+    """Text/voice decision: pin or explicit logs itself; everything else is 1–2 buttons."""
+    if history and history[0].tier == TIER_EXPLICIT:
+        return Resolution("auto", history[:1], "explicit")
+    if history and history[0].tier == TIER_DEFAULT and not _explicit_attr_uncertain(query, history[0]):
+        return Resolution("auto", [history[0]], "default_rule")
+    paired = pair_slots(history, search)
+    if not paired:
+        return Resolution("none", [], "no_match")
+    reason = "two_slots" if len(paired) == 2 else "one_slot"
+    return Resolution("choose", paired, reason)
+
+
+_PER_100_KCAL = re.compile(
+    r"per\s*100\s*g.*?calories:\s*([0-9]+(?:\.[0-9]+)?)\s*kcal",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def kcal_per_100g_from_description(description: Optional[str]) -> Optional[Decimal]:
+    """FatSecret search blurbs that state energy per 100 g."""
+    if not description:
+        return None
+    match = _PER_100_KCAL.search(description)
+    if match is None:
+        return None
+    try:
+        return Decimal(match.group(1))
+    except Exception:
+        return None
+
+
 def decide(query: FoodQuery, ranked: list[Candidate], *, review_all: bool = False) -> Resolution:
     if not ranked:
         return Resolution("search", [], "no_history_match")
     top = ranked[0]
     if top.tier == TIER_EXPLICIT:
         return Resolution("auto", ranked[:1], "explicit")
-    if review_all:
-        return Resolution("choose", ranked[:3], "review_all")
     if top.tier == TIER_DEFAULT and not _explicit_attr_uncertain(query, top):
         return Resolution("auto", [top], "default_rule")
+    if review_all:
+        return Resolution("choose", ranked[:3], "review_all")
     if top.tier in (TIER_LEARNED, TIER_CONFIRMED) and top.exact and not _explicit_attr_uncertain(query, top):
         rivals = [
             c for c in ranked[1:]
@@ -508,13 +576,33 @@ async def resolve(
     allow_search: bool = True,
     history_enabled: bool = True,
     language: Optional[str] = None,
+    slots: bool = False,
 ) -> Resolution:
+    """``slots`` is the text/voice contract: pin logs itself, otherwise one or two buttons.
+
+    Photos and barcodes keep ``slots=False`` and the older candidate list.
+    """
     candidates: list[Candidate] = []
     if history_enabled or query.product_id or query.barcode:
         candidates = await gather_candidates(conn, user_id, query)
         if not history_enabled:
             candidates = [c for c in candidates if c.tier == TIER_EXPLICIT]
     ranked = rank(query, candidates)
+    if slots:
+        auto = bool(
+            ranked
+            and ranked[0].tier in (TIER_EXPLICIT, TIER_DEFAULT)
+            and (ranked[0].tier == TIER_EXPLICIT or not _explicit_attr_uncertain(query, ranked[0]))
+        )
+        if auto:
+            pinned = await _drop_history_without_nutrition(conn, user_id, ranked[:1])
+            if pinned:
+                return choose_slots(query, pinned, [])
+        found: list[Candidate] = []
+        if allow_search and not query.barcode:
+            found = rank(query, await search_candidates(query, language=language))
+        usable = await _drop_history_without_nutrition(conn, user_id, ranked[:12])
+        return choose_slots(query, usable, found)
     resolution = decide(query, ranked, review_all=review_all)
     if resolution.decision == "auto" or query.barcode or not allow_search:
         return resolution

@@ -113,8 +113,11 @@ export function Switch({ label, checked, onChange, disabled }: {
   );
 }
 
-export function EntryList({ entries, onDelete, busy }: {
-  entries: FoodEntry[]; onDelete?: (entry: FoodEntry) => void; busy?: boolean;
+export function EntryList({ entries, onDelete, busy, extra }: {
+  entries: FoodEntry[];
+  onDelete?: (entry: FoodEntry) => void;
+  busy?: boolean;
+  extra?: (entry: FoodEntry) => ReactNode;
 }) {
   const { t, lang } = useT();
   if (entries.length === 0) return <p className="note">{t("emptyDay")}</p>;
@@ -130,6 +133,7 @@ export function EntryList({ entries, onDelete, busy }: {
             <span>{entry.name || "—"}<br /><span className="caption">{details}</span></span>
             <span className="entry-end">
               <strong>{formatNumber(lang, entry.energy_kcal)} {t("kcal")}</strong>
+              {extra?.(entry)}
               {onDelete && entry.id != null && entry.version != null && (
                 <button className="danger" type="button" disabled={busy} onClick={() => onDelete(entry)}
                   aria-label={`${t("delete")}: ${entry.name ?? ""}`}>

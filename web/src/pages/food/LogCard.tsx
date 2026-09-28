@@ -5,9 +5,8 @@ import { isAbort } from "../../errors";
 import { useAction } from "../../hooks/useAction";
 import { MEAL_TYPES, formatNumber, type Meal } from "../../i18n";
 import { useT } from "../../LangContext";
-import { portionFor } from "../../lib/meal";
 import type { SearchItem } from "../../types";
-import { ensureProduct, logProduct } from "./actions";
+import { ensureProduct, logCustom, logProduct } from "./actions";
 
 export const SEARCH_MIN_CHARS = 2;
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -22,32 +21,56 @@ export function LogCard({ meal, onMeal, grams, onGrams, onLogged }: {
   const { t, lang } = useT();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchItem[]>([]);
+  const [noMatch, setNoMatch] = useState(false);
+  const [kcal, setKcal] = useState("");
   const [searchError, setSearchError] = useState<unknown>(null);
   const action = useAction();
+  const gramsReady = grams.trim() !== "" && Number(grams.replace(",", ".")) > 0;
 
   useEffect(() => {
     const text = query.trim();
-    if (text.length < SEARCH_MIN_CHARS) {
+    if (!gramsReady || text.length < SEARCH_MIN_CHARS) {
       setHits([]);
+      setNoMatch(false);
       setSearchError(null);
       return;
     }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      api<{ items: SearchItem[] }>(`/api/v1/webapp/products/search?q=${encodeURIComponent(text)}`, { signal: controller.signal })
-        .then((found) => { setHits(found.items); setSearchError(null); })
+      api<{ decision: string; candidates: SearchItem[] }>("/api/v1/webapp/food/match", {
+        method: "POST",
+        body: JSON.stringify({ text, grams: grams.replace(",", ".") }),
+        signal: controller.signal,
+      })
+        .then((found) => {
+          setHits(found.candidates);
+          setNoMatch(found.decision === "none");
+          setSearchError(null);
+        })
         .catch((err: unknown) => { if (!isAbort(err)) setSearchError(err); });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, grams, gramsReady]);
 
   const pick = (item: SearchItem) => action.run(async () => {
     const productId = await ensureProduct(item);
-    await logProduct(productId, portionFor(grams, item.suggested_portion_g), meal);
+    await logProduct(productId, grams.replace(",", "."), meal);
     setQuery("");
+    setHits([]);
+    setNoMatch(false);
+    onLogged();
+    return t("saved");
+  });
+
+  const create = () => action.run(async () => {
+    await logCustom(query.trim(), kcal.replace(",", "."), grams.replace(",", "."), meal);
+    setQuery("");
+    setKcal("");
+    setHits([]);
+    setNoMatch(false);
     onLogged();
     return t("saved");
   });
@@ -65,7 +88,8 @@ export function LogCard({ meal, onMeal, grams, onGrams, onLogged }: {
       <Field label={t("grams")} hint={t("gramsAuto")} inputMode="decimal" value={grams}
         onChange={(event) => onGrams(event.target.value)} />
       <Field label={t("search")} type="search" value={query} autoComplete="off"
-        hint={query.trim().length > 0 && query.trim().length < SEARCH_MIN_CHARS ? t("searchHint") : undefined}
+        hint={!gramsReady ? t("gramsRequired")
+          : query.trim().length > 0 && query.trim().length < SEARCH_MIN_CHARS ? t("searchHint") : undefined}
         onChange={(event) => setQuery(event.target.value)} />
       <ActionFeedback error={action.error ?? searchError} notice={action.notice} />
       {hits.length > 0 && (
@@ -75,12 +99,24 @@ export function LogCard({ meal, onMeal, grams, onGrams, onLogged }: {
               <button className="item" type="button" disabled={action.busy} onClick={() => void pick(item)}>
                 <span>{item.label}</span>
                 <span className="caption">
-                  {item.kcal_per_100g ? `${formatNumber(lang, item.kcal_per_100g)} ${t("kcal")}${t("per100g")}` : ""}
+                  {item.portion_kcal != null
+                    ? `${formatNumber(lang, item.portion_kcal)} ${t("kcal")}`
+                    : `? ${t("kcal")}`}
                 </span>
               </button>
             </li>
           ))}
         </ul>
+      )}
+      {noMatch && (
+        <>
+          <p className="note">{t("noMatch")}</p>
+          <Field label={t("kcal100")} inputMode="decimal" value={kcal} onChange={(event) => setKcal(event.target.value)} />
+          <button className="primary" type="button" disabled={action.busy || kcal.trim() === ""}
+            onClick={() => void create()}>
+            {t("createAndLog")}
+          </button>
+        </>
       )}
     </Section>
   );

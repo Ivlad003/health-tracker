@@ -4,6 +4,8 @@ import { formatNumber, type Meal } from "../../i18n";
 import { useT } from "../../LangContext";
 import { portionFor } from "../../lib/meal";
 import type { Product } from "../../types";
+import { ApiError, api } from "../../api";
+import { confirmAction } from "../../telegram";
 import { logProduct } from "./actions";
 
 export function MyProductsCard({ products, meal, grams, onLogged }: {
@@ -29,6 +31,28 @@ export function MyProductsCard({ products, meal, grams, onLogged }: {
                 <span className="caption">
                   {product.kcal_per_100g ? `${formatNumber(lang, product.kcal_per_100g)} ${t("kcal")}${t("per100g")}` : ""}
                 </span>
+              </button>
+              <button className="secondary" type="button" disabled={action.busy}
+                onClick={() => void action.run(async () => {
+                  const body = {
+                    alias: product.label,
+                    suggested_portion_g: product.usual_portion_g,
+                    replace: false,
+                  };
+                  try {
+                    await api(`/api/v1/webapp/products/${product.product_id}/pin`, {
+                      method: "POST", body: JSON.stringify(body),
+                    });
+                  } catch (err) {
+                    if (!(err instanceof ApiError) || err.status !== 409) throw err;
+                    if (!(await confirmAction(t("pinReplace")))) return;
+                    await api(`/api/v1/webapp/products/${product.product_id}/pin`, {
+                      method: "POST", body: JSON.stringify({ ...body, replace: true }),
+                    });
+                  }
+                  return t("saved");
+                })}>
+                {t("pin")}
               </button>
             </li>
           ))}

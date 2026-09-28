@@ -526,6 +526,60 @@ async def create_food_entry(
     return FoodEntryWriteResult("succeeded", remote_entry_id=str(remote_id))
 
 
+async def create_custom_food(
+    access_token: str,
+    access_secret: str,
+    *,
+    name: str,
+    calories: Any,
+    fat: Any,
+    carbohydrate: Any,
+    protein: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    """``food.create`` for one 100 g serving. Premier-only. Stores nothing but the id.
+
+    Returns ``(food_id, None)`` or ``(None, error)``. A refusal is not retried here.
+    """
+    data, failure = await _user_write(
+        access_token,
+        access_secret,
+        {
+            "method": "food.create",
+            "format": "json",
+            "brand_type": "manufacturer",
+            "food_name": name[:100],
+            "serving_size": "100 g",
+            "serving_amount": "100",
+            "serving_amount_unit": "g",
+            "calories": str(calories),
+            "fat": str(fat),
+            "carbohydrate": str(carbohydrate),
+            "protein": str(protein),
+        },
+        "create food",
+    )
+    if failure:
+        return None, failure.error
+    raw = (data or {}).get("food_id")
+    food_id = raw.get("value") if isinstance(raw, dict) else raw
+    if not food_id or str(food_id) in ("", "0"):
+        return None, "missing_food_id"
+    return str(food_id), None
+
+
+async def get_user_food(access_token: str, access_secret: str, food_id: str) -> Optional[dict]:
+    """User-scoped ``food.get.v4`` so a just-created custom food is visible."""
+    data, failure = await _user_write(
+        access_token,
+        access_secret,
+        {"method": "food.get.v4", "format": "json", "food_id": str(food_id)},
+        "get custom food",
+    )
+    if failure or not isinstance(data, dict):
+        return None
+    return _parse_food(data.get("food") or {})
+
+
 async def create_food_diary_entry(
     access_token: str,
     access_secret: str,

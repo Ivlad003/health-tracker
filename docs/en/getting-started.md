@@ -114,9 +114,9 @@ uvicorn app.main:app --reload
 ### Logging Food with Voice
 
 1. Send a text or voice message: "cooked buckwheat 180 g"
-2. A previously confirmed product is logged immediately (with **Undo**); a new
-   food shows up to 3 candidates — pick one and the bot remembers it
-3. No weight given? The bot asks — reply "135 g" to its message
+2. A pinned phrase logs itself (with **Undo**). Anything else shows two choices
+   (history, then a different FatSecret hit). The pick becomes the next first button.
+3. No weight given? The bot asks before showing choices — reply "135 g" to its message
 4. Barcode photo with the caption "135 g" logs the exact packaged product;
    for an unknown barcode send a nutrition-label photo as a reply
 5. After `/connect_fatsecret` your FatSecret diary history fills **My Products**

@@ -42,6 +42,24 @@ AdminSession = Annotated[webapp_auth.WebSession, Depends(require_webapp_admin)]
 # Shared starter catalog
 # ---------------------------------------------------------------------------
 
+@router.get("/my-products")
+async def my_products(session: AdminSession):
+    """Personal foods for the signed-in admin, including the FatSecret create mark."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT p.id AS product_id, p.name, p.custom_fs_state, p.custom_fs_food_id,
+                  n.energy_kcal, n.protein_g, n.fat_g, n.carbs_g
+           FROM food_products p
+           LEFT JOIN food_nutrition_versions n
+               ON n.product_id = p.id AND n.is_current AND n.owner_user_id = p.owner_user_id
+           WHERE p.owner_user_id = $1 AND p.status = 'active' AND p.provider = 'manual'
+           ORDER BY p.name
+           LIMIT 200""",
+        session.user_id,
+    )
+    return ok({"items": [dict(r) for r in rows]})
+
+
 @router.get("/catalog")
 async def starter_catalog(
     session: AdminSession,

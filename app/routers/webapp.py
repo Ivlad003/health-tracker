@@ -32,7 +32,8 @@ from app.services import webapp_auth
 from app.services.catalog_import import ImportError_
 from app.services.food_catalog import CatalogError, VersionConflict
 from app.services.food_logging import LedgerError
-from app.services.food_nutrition import NutritionError
+from app.services.food_nutrition import NutritionError, q1, to_decimal
+from app.services.food_resolver import FoodQuery, resolve as resolve_food
 from app.services.preferences import PreferencesError, get_preferences, goal_for_date, set_goal, update_preferences
 
 logger = logging.getLogger(__name__)
@@ -897,6 +898,197 @@ async def food_entries_range(
         goal = await goal_for_date(pool, session.user_id, local_date)
         days.append({**view.to_json(), "goal": goal})
     return ok({"days": days})
+
+
+class PhraseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=255)
+    grams: Decimal = Field(gt=0, le=5000)
+
+
+def _portion_kcal(per_100: Any, grams: Decimal) -> Optional[str]:
+    per = to_decimal(per_100)
+    if per is None:
+        return None
+    return str(q1(per * grams / Decimal(100)))
+
+
+@router.post("/food/match")
+async def match_phrase(body: PhraseBody, session: Session):
+    """Two logging choices for a phrase that already has a weight."""
+    pool = await get_pool()
+    ctx = await _ctx(session)
+    try:
+        history = await feature_flags.is_enabled(pool, "food_history")
+    except Exception:
+        history = False
+    query = FoodQuery.from_item({"name_original": body.text, "quantity_g": str(body.grams),
+                                  "quantity_explicit": True})
+    async with pool.acquire() as conn:
+        resolution = await resolve_food(
+            conn, session.user_id, query, history_enabled=history, slots=True,
+            review_all=ctx.prefs.recording_policy == "review_all",
+        )
+        candidates = []
+        for cand in resolution.candidates:
+            data = cand.to_json()
+            if not data.get("kcal_per_100g") and data.get("product_id"):
+                nutrition = await catalog.current_nutrition(conn, data["product_id"], session.user_id)
+                basis_g = to_decimal((nutrition or {}).get("grams_per_basis"))
+                energy = to_decimal((nutrition or {}).get("energy_kcal"))
+                if basis_g and energy is not None and basis_g > 0:
+                    data["kcal_per_100g"] = str(q1(energy * 100 / basis_g))
+            data["portion_kcal"] = _portion_kcal(data.get("kcal_per_100g"), body.grams)
+            candidates.append(data)
+    return ok({
+        "decision": resolution.decision,
+        "reason": resolution.reason,
+        "candidates": candidates,
+    })
+
+
+class CustomLogBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    kcal_per_100g: Decimal = Field(gt=0, le=2000)
+    grams: Decimal = Field(gt=0, le=5000)
+    meal_type: MealType
+    idempotency_key: IdempotencyKey
+
+
+@router.post("/food/custom", status_code=201)
+async def log_custom_food(body: CustomLogBody, session: Session):
+    """Personal product for a phrase with no match, then one FatSecret attempt."""
+    from app.services.custom_food import create_personal, find_personal_named, publish_custom_food
+
+    pool = await get_pool()
+    ctx = await _ctx(session)
+    async with pool.acquire() as conn:
+        product_id = await find_personal_named(conn, session.user_id, body.name)
+    if product_id is None:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                product_id = await create_personal(
+                    conn, session.user_id, body.name, body.kcal_per_100g, None,
+                )
+    try:
+        local_date = ctx.today()
+        async with pool.acquire() as conn:
+            item = await ledger.prepare_item(
+                conn, ctx, product_id=product_id, grams=body.grams, alias_text=body.name,
+            )
+        entries = await ledger.commit_items(
+            pool, ctx, [item], meal_type=body.meal_type, local_date=local_date,
+            origin="web_manual", idempotency_prefix=f"web:{session.user_id}:{body.idempotency_key}",
+        )
+    except (LedgerError, CatalogError, NutritionError) as exc:
+        raise translate(exc)
+    state = await publish_custom_food(pool, ctx, product_id, entries[0]["id"])
+    if state == "created":
+        await _kick_sync(pool, [{"id": entries[0]["id"], "sync_status": "pending"}])
+    async with pool.acquire() as conn:
+        nutrition = await catalog.current_nutrition(conn, product_id, session.user_id)
+    return ok({
+        "entries": entries,
+        "custom_fs_state": state,
+        "protein_g": nutrition.get("protein_g") if nutrition else None,
+        "fat_g": nutrition.get("fat_g") if nutrition else None,
+        "carbs_g": nutrition.get("carbs_g") if nutrition else None,
+    }, status_code=201)
+
+
+class CustomNutritionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    energy_kcal: Decimal = Field(gt=0, le=2000)
+    protein_g: Decimal = Field(ge=0, le=100)
+    fat_g: Decimal = Field(ge=0, le=100)
+    carbs_g: Decimal = Field(ge=0, le=100)
+
+
+@router.post("/products/{product_id}/custom-nutrition")
+async def save_custom_nutrition(product_id: int, body: CustomNutritionBody, session: Session):
+    """Store edited kcal and macros. Does not call FatSecret."""
+    from app.services.custom_food import save_manual_nutrition
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM food_products WHERE id = $1 AND owner_user_id = $2",
+            product_id, session.user_id,
+        )
+        if not owned:
+            raise error(404, "not_found")
+        async with conn.transaction():
+            await save_manual_nutrition(
+                conn, session.user_id, product_id, body.energy_kcal,
+                {"protein_g": body.protein_g, "fat_g": body.fat_g, "carbs_g": body.carbs_g},
+            )
+            await conn.execute(
+                """UPDATE food_products SET custom_fs_state = 'refused'
+                   WHERE id = $1 AND custom_fs_state IS DISTINCT FROM 'created'""",
+                product_id,
+            )
+    return ok({"product_id": product_id})
+
+
+@router.post("/products/{product_id}/custom-retry")
+async def retry_custom_food(product_id: int, session: Session):
+    """Send the stored numbers to FatSecret once. Asks the model only if macros are empty."""
+    from app.services.custom_food import publish_custom_food
+
+    pool = await get_pool()
+    ctx = await _ctx(session)
+    async with pool.acquire() as conn:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM food_products WHERE id = $1 AND owner_user_id = $2",
+            product_id, session.user_id,
+        )
+        entry_id = await conn.fetchval(
+            """SELECT id FROM food_entries
+               WHERE user_id = $1 AND product_id = $2 AND entry_status = 'committed'
+               ORDER BY id DESC LIMIT 1""",
+            session.user_id, product_id,
+        )
+    if not owned:
+        raise error(404, "not_found")
+    state = await publish_custom_food(pool, ctx, product_id, entry_id)
+    if state == "created" and entry_id:
+        await _kick_sync(pool, [{"id": entry_id, "sync_status": "pending"}])
+    return ok({"product_id": product_id, "custom_fs_state": state})
+
+
+class PinBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(min_length=1, max_length=255)
+    suggested_portion_g: Optional[Decimal] = Field(default=None, gt=0, le=5000)
+    replace: bool = False
+
+
+@router.post("/products/{product_id}/pin")
+async def pin_product(product_id: int, body: PinBody, session: Session):
+    pool = await get_pool()
+    norm = catalog.normalize_alias(body.alias)
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """SELECT id, version, product_id FROM food_default_rules
+               WHERE user_id = $1 AND alias_normalized = $2 AND enabled AND origin = 'manual'""",
+            session.user_id, norm,
+        )
+        if existing and existing["product_id"] == product_id:
+            return ok({"id": existing["id"], "version": existing["version"]})
+        if existing and not body.replace:
+            raise error(409, "pin_exists", rule_id=existing["id"], current_version=existing["version"])
+        try:
+            async with conn.transaction():
+                rule = await catalog.set_default_rule(
+                    conn, session.user_id, body.alias, product_id,
+                    suggested_portion_g=body.suggested_portion_g,
+                    replace_rule_id=existing["id"] if existing and body.replace else None,
+                    expected_version=existing["version"] if existing and body.replace else None,
+                )
+        except (CatalogError, VersionConflict) as exc:
+            raise translate(exc)
+    return ok(rule)
 
 
 class EntryCreate(BaseModel):

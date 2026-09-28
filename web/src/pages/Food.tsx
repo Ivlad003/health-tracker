@@ -8,6 +8,7 @@ import { useT } from "../LangContext";
 import { mealNow } from "../lib/meal";
 import type { DayView, Draft, FoodEntry, Me, Product } from "../types";
 import { deleteEntry } from "./food/actions";
+import { EntryActions } from "./food/EntryActions";
 import { DraftsCard } from "./food/DraftsCard";
 import { LogCard } from "./food/LogCard";
 import { MyProductsCard } from "./food/MyProductsCard";
@@ -48,7 +49,8 @@ export function FoodPage({ me }: { me: Me }) {
       <MyProductsCard products={products.items} meal={meal} grams={grams} onLogged={reload} />
       <Section title={t("recent")}>
         <ActionFeedback error={removal.error} />
-        <EntryList entries={day.entries} onDelete={remove} busy={removal.busy} />
+        <EntryList entries={day.entries} onDelete={remove} busy={removal.busy}
+          extra={(entry) => <EntryActions entry={entry} onChanged={reload} />} />
       </Section>
       <PhotoCard onUploaded={reload} />
       <DraftsCard drafts={drafts.items} meal={meal} onChanged={reload} />

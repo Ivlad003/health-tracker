@@ -39,6 +39,20 @@ class BotReply:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _choice_label(cand: dict, grams: Any, lang: str) -> str:
+    """Name plus energy for the grams the user already stated."""
+    name = cand.get("label") or "?"
+    if cand.get("brand"):
+        name = f"{name} ({cand['brand']})"
+    per = to_decimal(cand.get("kcal_per_100g"))
+    weight = to_decimal(grams)
+    if per is None or weight is None:
+        kcal = "?"
+    else:
+        kcal = _fmt(q1(per * weight / Decimal(100)))
+    return f"{name[:42]} · {kcal} {t('food_kcal_short', lang)}"[:60]
+
+
 def _fmt(value: Any) -> str:
     d = to_decimal(value)
     if d is None:
@@ -112,6 +126,20 @@ def _item_prompt(draft: dict, lang: str) -> BotReply:
                 buttons=[[(t("food_btn_cancel", lang), f"fd:x:{draft['id']}:{draft['version']}:0:0")]],
                 draft_id=draft["id"],
             )
+        if item.get("status") == "needs_kcal":
+            return BotReply(
+                t("food_need_kcal", lang, name=item.get("text") or "?"),
+                buttons=[[(t("food_btn_cancel", lang), f"fd:x:{draft['id']}:{draft['version']}:0:0")]],
+                draft_id=draft["id"],
+            )
+        if item.get("grams") in (None, "") and not item.get("selected"):
+            presets = [p for p in (item.get("presets") or [100, 150, 200])][:5]
+            rows = [[(f"{p} g", f"fd:g:{draft['id']}:{draft['version']}:{idx}:{p}") for p in presets]]
+            rows.append([(t("food_btn_cancel", lang), f"fd:x:{draft['id']}:{draft['version']}:0:0")])
+            return BotReply(
+                t("food_need_grams", lang, name=item.get("text") or "?"),
+                rows, draft_id=draft["id"],
+            )
         if not item.get("selected"):
             cands = item.get("candidates") or []
             if not cands:
@@ -122,13 +150,8 @@ def _item_prompt(draft: dict, lang: str) -> BotReply:
                 )
             rows = []
             for n, cand in enumerate(cands[:4]):
-                kcal = cand.get("kcal_per_100g")
-                desc = cand.get("label") or "?"
-                if cand.get("brand"):
-                    desc += f" ({cand['brand']})"
-                if kcal:
-                    desc += f" · {_fmt(kcal)} kcal/100g"
-                rows.append([(desc[:60], f"fd:p:{draft['id']}:{draft['version']}:{idx}:{n}")])
+                rows.append([(_choice_label(cand, item.get("grams"), lang),
+                              f"fd:p:{draft['id']}:{draft['version']}:{idx}:{n}")])
             rows.append([(t("food_btn_cancel", lang), f"fd:x:{draft['id']}:{draft['version']}:0:0")])
             return BotReply(t("food_choose", lang, text=item.get("text") or "?"), rows, draft_id=draft["id"])
         if item.get("grams") in (None, ""):
@@ -202,6 +225,10 @@ async def render_committed(pool: Any, ctx: UserContext, entries: list[dict], goa
              f"fe:u:{e['id']}:{e['version']}")
             for e in entries
         ])
+        buttons.extend(
+            [(t("food_btn_pin", lang), f"fe:p:{e['id']}:{e['version']}")]
+            for e in entries if e.get("product_id")
+        )
     link = webapp_link(f"/diary/{entries[0]['local_date']}") if entries else None
     return BotReply("\n".join(lines), buttons, webapp_url=link)
 
@@ -338,16 +365,36 @@ def _grams_from_item(item: dict) -> Optional[Decimal]:
         return None
 
 
-async def build_item(pool: Any, ctx: UserContext, index: int, raw: dict, *, history: bool) -> dict:
+async def _with_portion_kcal(pool: Any, user_id: int, candidates: list[dict]) -> list[dict]:
+    async with pool.acquire() as conn:
+        for cand in candidates:
+            if cand.get("kcal_per_100g") or not cand.get("product_id"):
+                continue
+            nutrition = await catalog.current_nutrition(conn, cand["product_id"], user_id)
+            basis_g = to_decimal((nutrition or {}).get("grams_per_basis"))
+            energy = to_decimal((nutrition or {}).get("energy_kcal"))
+            if basis_g and energy is not None and basis_g > 0:
+                cand["kcal_per_100g"] = str(q1(energy * 100 / basis_g))
+    return candidates
+
+
+async def build_item(pool: Any, ctx: UserContext, index: int, raw: dict, *, history: bool,
+                      slots: bool = False) -> dict:
     query = FoodQuery.from_item(raw)
+    grams = _grams_from_item(raw)
     async with pool.acquire() as conn:
         resolution = await resolve(
             conn, ctx.user_id, query,
             review_all=ctx.prefs.recording_policy == "review_all",
             history_enabled=history,
             language=ctx.language,
+            slots=slots,
+            allow_search=not (slots and grams is None),
         )
-    grams = _grams_from_item(raw)
+    if slots and grams is None and resolution.decision == "auto" and resolution.selected:
+        portion = resolution.selected.suggested_portion_g
+        if portion is not None:
+            grams = portion
     item = {
         "index": index,
         "text": query.text,
@@ -356,20 +403,42 @@ async def build_item(pool: Any, ctx: UserContext, index: int, raw: dict, *, hist
         "preparation": query.preparation,
         "fat_pct": str(query.fat_pct) if query.fat_pct is not None else None,
         "grams": str(grams) if grams is not None else None,
-        "quantity_source": "explicit" if grams is not None else None,
+        "quantity_source": "reused" if (
+            grams is not None and _grams_from_item(raw) is None
+        ) else ("explicit" if grams is not None else None),
         "candidates": [c.to_json() for c in resolution.candidates[:4]],
         "selected": None,
         "reason": resolution.reason,
         "presets": ctx.prefs.gram_presets,
         "learn": True,
     }
+    item["candidates"] = await _with_portion_kcal(pool, ctx.user_id, item["candidates"])
     if resolution.selected is not None:
         item["selected"] = _selected_from_candidate(resolution.selected.to_json(), query.text)
-        if grams is None and resolution.selected.suggested_portion_g:
-            # A usual portion only pre-fills the button list; never assumed eaten.
-            item["presets"] = [int(resolution.selected.suggested_portion_g)] + list(ctx.prefs.gram_presets)[:4]
-    item["status"] = "ready" if item["selected"] and grams is not None else (
-        "needs_weight" if item["selected"] else "needs_product")
+    elif slots and grams is None:
+        item["status"] = "needs_weight"
+        item["reason"] = "awaiting_grams"
+        item["candidates"] = []
+        return item
+    elif slots and grams is not None and resolution.decision == "none":
+        from app.services.custom_food import find_personal_named
+
+        async with pool.acquire() as conn:
+            existing = await find_personal_named(conn, ctx.user_id, query.text)
+        if existing is not None:
+            item["selected"] = {
+                "product_id": existing, "provider": "manual", "external_id": None,
+                "label": query.text, "serving_id": None, "source": "manual", "alias": query.text,
+            }
+        else:
+            item["status"] = "needs_kcal"
+            return item
+    if item.get("selected") and item.get("grams") not in (None, ""):
+        item["status"] = "ready"
+    elif item.get("selected"):
+        item["status"] = "needs_weight"
+    else:
+        item["status"] = "needs_product"
     return item
 
 
@@ -400,7 +469,10 @@ async def handle_food_items(
         if draft:
             return _item_prompt(draft, ctx.language)
 
-    items = [await build_item(pool, ctx, n, raw, history=history) for n, raw in enumerate(food_items[:10])]
+    items = [
+        await build_item(pool, ctx, n, raw, history=history, slots=True)
+        for n, raw in enumerate(food_items[:10])
+    ]
     async with pool.acquire() as conn:
         draft, _created = await ledger.create_draft(
             conn, ctx.user_id, origin=origin, items=items, meal_type=meal_type,
@@ -409,13 +481,86 @@ async def handle_food_items(
     return await _advance(pool, ctx, draft)
 
 
+async def _refill_slots(pool: Any, ctx: UserContext, item: dict) -> None:
+    """Resolve the two buttons once the grams are known."""
+    raw = {
+        "name_original": item.get("text"),
+        "name_en": item.get("name_en"),
+        "brand": item.get("brand"),
+        "preparation": item.get("preparation"),
+        "fat_pct": item.get("fat_pct"),
+        "quantity_g": item.get("grams"),
+        "quantity_explicit": True,
+    }
+    built = await build_item(
+        pool, ctx, item["index"], raw, history=await _flag(pool, "food_history"), slots=True,
+    )
+    for key in ("candidates", "selected", "reason", "status", "learn"):
+        item[key] = built.get(key)
+
+
+async def _log_custom_kcal(pool: Any, ctx: UserContext, draft: dict, item: dict, kcal: Decimal) -> BotReply:
+    """Create or reuse a personal product, log the portion, try FatSecret once."""
+    from app.services.custom_food import create_personal, publish_custom_food
+
+    lang = ctx.language
+    name = item.get("text") or "?"
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            product_id = await create_personal(conn, ctx.user_id, name, kcal, None)
+    item["selected"] = {
+        "product_id": product_id, "provider": "manual", "external_id": None,
+        "label": name, "serving_id": None, "source": "manual", "alias": name,
+    }
+    item["learn"] = True
+    item["status"] = "ready"
+    async with pool.acquire() as conn:
+        try:
+            draft = await ledger.save_draft(conn, draft, items=draft["items"])
+        except VersionConflict:
+            return BotReply(t("food_draft_outdated", lang), draft_id=draft["id"])
+        except LedgerError:
+            return BotReply(t("food_draft_closed", lang), draft_id=draft["id"])
+    reply = await _advance(pool, ctx, draft)
+    async with pool.acquire() as conn:
+        fresh = await ledger.get_draft(conn, draft["id"], ctx.user_id)
+    entries = []
+    if fresh and fresh.get("state") == "committed":
+        entries = await ledger._entries_by_ids(pool, ctx.user_id, fresh.get("committed_entry_ids") or [])
+    entry = next((row for row in entries if row.get("product_id") == product_id), None)
+    state = await publish_custom_food(pool, ctx, product_id, entry["id"] if entry else None)
+    async with pool.acquire() as conn:
+        nutrition = await catalog.current_nutrition(conn, product_id, ctx.user_id)
+    if nutrition and all(nutrition.get(key) is not None for key in ("protein_g", "fat_g", "carbs_g")):
+        reply.text += "\n" + t(
+            "food_estimate", lang,
+            protein=_fmt(nutrition["protein_g"]), fat=_fmt(nutrition["fat_g"]),
+            carbs=_fmt(nutrition["carbs_g"]),
+        )
+    else:
+        reply.text += "\n" + t("food_estimate_missing", lang)
+    if state == "refused":
+        reply.text += "\n" + t("food_fs_refused", lang)
+    elif state == "created" and entry:
+        await _sync_now(pool, [{"id": entry["id"], "sync_status": "pending"}])
+    return reply
+
+
 async def apply_reply_text(pool: Any, ctx: UserContext, draft: dict, text: str) -> Optional[BotReply]:
-    """A reply to a draft message: grams for the item that needs them.
+    """A reply to a draft message: grams, or kcal per 100 g for a new product.
 
     A bare number is accepted here because the reply targets one draft
-    (AC-04). Returns None when the text does not look like a quantity.
+    (AC-04). Returns None when the text does not answer the open question,
+    so the caller treats it as a new request.
     """
     lang = ctx.language
+    items = draft["items"]
+    kcal_item = next((i for i in items if i.get("status") == "needs_kcal"), None)
+    if kcal_item is not None:
+        kcal = to_decimal(str(text).strip().replace(",", ".").split()[0])
+        if kcal is None or kcal <= 0 or kcal > 2000:
+            return None
+        return await _log_custom_kcal(pool, ctx, draft, kcal_item, kcal)
     try:
         from app.services.food_nutrition import parse_quantity_text
 
@@ -427,7 +572,6 @@ async def apply_reply_text(pool: Any, ctx: UserContext, draft: dict, text: str) 
         return BotReply(t("food_grams_invalid", lang), draft_id=draft["id"])
     if grams is None:
         return None
-    items = draft["items"]
     target = next((i for i in items if i.get("selected") and i.get("grams") in (None, "")), None)
     if target is None:
         target = next((i for i in items if i.get("grams") in (None, "")), None)
@@ -435,7 +579,12 @@ async def apply_reply_text(pool: Any, ctx: UserContext, draft: dict, text: str) 
         return BotReply(t("food_draft_closed", lang), draft_id=draft["id"])
     target["grams"] = str(grams)
     target["quantity_source"] = "explicit"
-    target["status"] = "ready" if target.get("selected") else target.get("status")
+    if target.get("reason") == "awaiting_grams" or (
+        not target.get("selected") and not target.get("candidates")
+    ):
+        await _refill_slots(pool, ctx, target)
+    else:
+        target["status"] = "ready" if target.get("selected") else target.get("status")
     async with pool.acquire() as conn:
         try:
             draft = await ledger.save_draft(conn, draft, items=items)
@@ -446,10 +595,60 @@ async def apply_reply_text(pool: Any, ctx: UserContext, draft: dict, text: str) 
     return await _advance(pool, ctx, draft)
 
 
+async def _pin_entry(
+    pool: Any, ctx: UserContext, entry_id: int, version: int, *, replace_rule: Optional[int],
+) -> BotReply:
+    """Pin the entry's dish name to its product. Asks before replacing another pin."""
+    lang = ctx.language
+    async with pool.acquire() as conn:
+        entry = await ledger.get_entry(conn, ctx.user_id, entry_id)
+    if entry is None or entry.get("entry_status") != "committed" or not entry.get("product_id"):
+        return BotReply(t("food_draft_closed", lang))
+    if entry["version"] != version and replace_rule is None:
+        return BotReply(t("food_draft_outdated", lang))
+    alias = entry["food_name"]
+    grams = to_decimal(entry.get("grams"))
+    norm = catalog.normalize_alias(alias)
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """SELECT id, version, product_id FROM food_default_rules
+               WHERE user_id = $1 AND alias_normalized = $2 AND enabled AND origin = 'manual'""",
+            ctx.user_id, norm,
+        )
+        if existing and existing["product_id"] != entry["product_id"] and replace_rule != existing["id"]:
+            return BotReply(
+                t("food_pin_replace", lang, name=alias),
+                buttons=[
+                    [(t("food_btn_replace", lang), f"fe:r:{entry_id}:{entry['version']}:{existing['id']}")],
+                    [(t("food_btn_keep", lang), f"fe:k:{entry_id}:{entry['version']}")],
+                ],
+            )
+        if existing and existing["product_id"] == entry["product_id"]:
+            return BotReply(t("food_pin_saved", lang, name=alias))
+        try:
+            await catalog.set_default_rule(
+                conn, ctx.user_id, alias, entry["product_id"],
+                suggested_portion_g=grams,
+                replace_rule_id=existing["id"] if existing else None,
+                expected_version=existing["version"] if existing else None,
+            )
+        except VersionConflict:
+            return BotReply(t("food_draft_outdated", lang))
+        except catalog.CatalogError:
+            return BotReply(t("food_draft_closed", lang))
+    return BotReply(t("food_pin_saved", lang, name=alias))
+
+
 async def pending_weight_draft(pool: Any, ctx: UserContext) -> tuple[Optional[dict], int]:
     async with pool.acquire() as conn:
         drafts = await ledger.open_drafts(conn, ctx.user_id, states=("needs_weight",))
     return (drafts[0] if len(drafts) == 1 else None), len(drafts)
+
+
+async def pending_kcal_drafts(pool: Any, ctx: UserContext) -> list[dict]:
+    async with pool.acquire() as conn:
+        drafts = await ledger.open_drafts(conn, ctx.user_id)
+    return [d for d in drafts if any(i.get("status") == "needs_kcal" for i in d["items"])]
 
 
 # ---------------------------------------------------------------------------
@@ -459,20 +658,27 @@ async def pending_weight_draft(pool: Any, ctx: UserContext) -> tuple[Optional[di
 async def handle_callback(pool: Any, ctx: UserContext, data: str) -> BotReply:
     lang = ctx.language
     parts = (data or "").split(":")
-    if len(parts) >= 4 and parts[0] == "fe" and parts[1] == "u":
+    if len(parts) >= 4 and parts[0] == "fe" and parts[1] in ("u", "p", "r", "k"):
         try:
             entry_id, version = int(parts[2]), int(parts[3])
         except ValueError:
             return BotReply(t("food_draft_closed", lang))
-        try:
-            entry = await ledger.void_entry(pool, ctx, entry_id, expected_version=version)
-        except VersionConflict:
-            return BotReply(t("food_draft_outdated", lang))
-        except LedgerError:
-            return BotReply(t("food_draft_closed", lang))
-        if entry.get("sync_status") == "delete_pending":
-            await _sync_delete(pool, entry_id)
-        return BotReply(t("food_undone", lang, name=entry["food_name"]))
+        if parts[1] == "k":
+            return BotReply(t("food_pin_kept", lang))
+        if parts[1] == "u":
+            try:
+                entry = await ledger.void_entry(pool, ctx, entry_id, expected_version=version)
+            except VersionConflict:
+                return BotReply(t("food_draft_outdated", lang))
+            except LedgerError:
+                return BotReply(t("food_draft_closed", lang))
+            if entry.get("sync_status") == "delete_pending":
+                await _sync_delete(pool, entry_id)
+            return BotReply(t("food_undone", lang, name=entry["food_name"]))
+        return await _pin_entry(
+            pool, ctx, entry_id, version,
+            replace_rule=int(parts[4]) if parts[1] == "r" and len(parts) > 4 else None,
+        )
 
     if len(parts) != 6 or parts[0] != "fd":
         return BotReply(t("food_draft_closed", lang))
@@ -530,7 +736,12 @@ async def handle_callback(pool: Any, ctx: UserContext, data: str) -> BotReply:
             return BotReply(t("food_grams_invalid", lang))
         item["grams"] = str(grams)
         item["quantity_source"] = "explicit"
-        item["status"] = "ready" if item.get("selected") else item.get("status")
+        if item.get("reason") == "awaiting_grams" or (
+            not item.get("selected") and not item.get("candidates")
+        ):
+            await _refill_slots(pool, ctx, item)
+        else:
+            item["status"] = "ready" if item.get("selected") else item.get("status")
     elif action == "l":
         label = item.get("label") or {}
         if not label.get("usable"):

@@ -21,6 +21,15 @@ export async function ensureProduct(item: SearchItem): Promise<number> {
   return imported.product_id;
 }
 
+export async function logCustom(name: string, kcal: string, grams: string, meal: Meal): Promise<void> {
+  await api("/api/v1/webapp/food/custom", {
+    method: "POST",
+    body: JSON.stringify({
+      name, kcal_per_100g: kcal, grams, meal_type: meal, idempotency_key: idempotencyKey(),
+    }),
+  });
+}
+
 export async function deleteEntry(id: number, version: number): Promise<void> {
   await api(`/api/v1/webapp/food-entries/${id}?version=${version}`, { method: "DELETE" });
 }

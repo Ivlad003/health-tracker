@@ -44,6 +44,34 @@ async def test_history_card_without_calories_is_dropped(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slots_offer_search_when_the_history_card_has_no_calories(monkeypatch):
+    from app.services import food_resolver as resolver
+    from app.services.food_resolver import FoodQuery
+
+    history = Candidate(
+        tier=TIER_HISTORY, product_id=3, provider="fatsecret", external_id="5382091",
+        label="Макароны Отварные",
+    )
+
+    async def gather(conn, user_id, query, limit=2000):
+        return [history]
+
+    async def search(query, max_results=8, language=None):
+        return [_hit("34499", "Макарони", "158")]
+
+    async def no_nutrition(conn, product_id, user_id, serving_id=None):
+        return None
+
+    monkeypatch.setattr(resolver, "gather_candidates", gather)
+    monkeypatch.setattr(resolver, "search_candidates", search)
+    monkeypatch.setattr("app.services.food_catalog.current_nutrition", no_nutrition)
+    query = FoodQuery.from_item({"name_original": "Макарони 155 г"})
+    resolution = await resolver.resolve(None, 1, query, slots=True)
+    assert resolution.decision == "choose"
+    assert [c.external_id for c in resolution.candidates] == ["34499"]
+
+
+@pytest.mark.asyncio
 async def test_history_card_with_calories_stays_and_shows_kcal(monkeypatch):
     from app.services import food_resolver as resolver
 

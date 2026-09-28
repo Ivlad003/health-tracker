@@ -163,11 +163,16 @@ async def test_confirmed_choice_is_reused_and_isolated_per_user(pool):
     assert await pool.fetchval("SELECT count(*) FROM food_entries WHERE user_id = $1", uid) == 1
     assert await pool.fetchval("SELECT calories FROM food_entries") == Decimal("198.0")
 
-    with _no_search():
-        await food_bot.handle_food_items(
+    # A previous choice is the first button next time. It does not log itself.
+    with patch("app.services.food_resolver.search_candidates", AsyncMock(return_value=[])):
+        again = await food_bot.handle_food_items(
             pool, ctx, [{"name_original": "гречка варена", "name_en": "buckwheat", "quantity_g": 200,
                          "quantity_explicit": True}], chat_id=1002, message_id=11,
         )
+    assert again.buttons
+    assert await pool.fetchval("SELECT count(*) FROM food_entries WHERE user_id = $1", uid) == 1
+    again_draft = await pool.fetchrow("SELECT id, version FROM food_log_drafts WHERE id = $1", again.draft_id)
+    await food_bot.handle_callback(pool, ctx, f"fd:p:{again_draft['id']}:{again_draft['version']}:0:0")
     assert await pool.fetchval("SELECT count(*) FROM food_entries WHERE user_id = $1", uid) == 2
 
     # Another user's learned alias does not leak.
@@ -969,3 +974,149 @@ async def test_album_barcode_and_label_merge_into_one_draft(pool):
     item = draft["items"][0]
     assert item["barcode"] == "4006381333931" and item["label"]["usable"]
     assert len(draft["media"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Production failure: public food.get 106 for a diary food
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_confirming_a_diary_food_uses_the_user_token_when_public_get_is_invalid(pool):
+    """Печена картопля from the diary: public food.get returns 106, the user token does not."""
+    from app.services import food_bot
+    from app.services import food_catalog as catalog
+    from app.services.fatsecret_api import FatSecretAPIError
+    from app.services.food_resolver import Candidate
+
+    uid = await _user(pool, 1100, fatsecret=True)
+    ctx = await _ctx(pool, uid)
+    await catalog.upsert_fatsecret_product(pool, "7345413", name="Печена картопля")
+    calls = []
+
+    async def fake_get(food_id, *, access_token=None, access_secret=None, **_kwargs):
+        calls.append(access_token)
+        if not access_token:
+            raise FatSecretAPIError(106, "Invalid ID: please check your food_id")
+        assert food_id == "7345413"
+        return {
+            "food_id": food_id, "name": "Печена картопля", "brand": None, "servings": FS_SERVINGS,
+        }
+
+    search = AsyncMock(return_value=[Candidate(
+        tier=5, product_id=None, provider="fatsecret", external_id="7345413",
+        label="Печена картопля", match=1.0,
+    )])
+    with (
+        patch("app.services.fatsecret_api.get_food_details", fake_get),
+        patch("app.services.food_resolver.search_candidates", search),
+    ):
+        reply = await food_bot.handle_food_items(
+            pool, ctx, [{"name_original": "печена картоша 140г", "quantity_g": 140, "quantity_explicit": True}],
+            chat_id=1100, message_id=1,
+        )
+        assert reply.buttons
+        draft = await pool.fetchrow("SELECT id, version FROM food_log_drafts WHERE id = $1", reply.draft_id)
+        reply = await food_bot.handle_callback(pool, ctx, f"fd:p:{draft['id']}:{draft['version']}:0:0")
+
+    row = await pool.fetchrow("SELECT calories, grams, food_name FROM food_entries WHERE user_id = $1", uid)
+    assert row["grams"] == Decimal("140.00") or row["grams"] == Decimal("140")
+    assert row["calories"] == Decimal("154.0")  # 140 g * 110 kcal/100 g
+    assert calls[0] == "tok"
+    assert "немає даних" not in reply.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_without_any_nutrition_reports_missing_calories(pool):
+    from app.services import food_bot
+    from app.services import food_catalog as catalog
+    from app.services.fatsecret_api import FatSecretAPIError
+    from app.services.food_resolver import Candidate
+
+    uid = await _user(pool, 1101, fatsecret=True)
+    ctx = await _ctx(pool, uid)
+    await catalog.upsert_fatsecret_product(pool, "7345413", name="Печена картопля")
+
+    async def always_invalid(food_id, *, access_token=None, access_secret=None, **_kwargs):
+        raise FatSecretAPIError(106, "Invalid ID: please check your food_id")
+
+    search = AsyncMock(return_value=[Candidate(
+        tier=5, product_id=None, provider="fatsecret", external_id="7345413",
+        label="Печена картопля", match=1.0,
+    )])
+    with (
+        patch("app.services.fatsecret_api.get_food_details", always_invalid),
+        patch("app.services.food_resolver.search_candidates", search),
+    ):
+        reply = await food_bot.handle_food_items(
+            pool, ctx, [{"name_original": "печена картоша", "quantity_g": 140, "quantity_explicit": True}],
+            chat_id=1101, message_id=2,
+        )
+        draft = await pool.fetchrow("SELECT id, version FROM food_log_drafts WHERE id = $1", reply.draft_id)
+        reply = await food_bot.handle_callback(pool, ctx, f"fd:p:{draft['id']}:{draft['version']}:0:0")
+
+    assert "немає даних про калорійність" in reply.text
+    assert await pool.fetchval("SELECT count(*) FROM food_entries") == 0
+
+
+@pytest.mark.asyncio
+async def test_webapp_phrase_cases_pin_match_custom_and_history_edit(api, pool):
+    """Mini App: pinned phrase, no match then own product, edit grams, retry mark."""
+    login = await _login(api, 1102)
+    auth = {"Authorization": f"Bearer {login['session_token']}"}
+    search_off = patch(
+        "app.services.food_resolver.search_candidates", AsyncMock(return_value=[]),
+    )
+    created = await api.post("/api/v1/webapp/products", headers=auth, json={
+        "name": "Зелений борщ", "nutrition": {"energy_kcal": "40", "protein_g": "2"},
+        "default_alias": "зелений борщ з кропивою", "usual_portion_g": "370",
+    })
+    assert created.status_code == 201, created.text
+    product_id = created.json()["product_id"]
+
+    with search_off:
+        pinned = await api.post("/api/v1/webapp/food/match", headers=auth, json={
+            "text": "зелений борщ з кропивою", "grams": "200",
+        })
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["decision"] == "auto"
+    assert pinned.json()["candidates"][0]["portion_kcal"] in ("80", "80.0")
+
+    with search_off:
+        empty = await api.post("/api/v1/webapp/food/match", headers=auth, json={
+            "text": "кропив'яний суп з нічого", "grams": "100",
+        })
+    assert empty.status_code == 200
+    assert empty.json()["decision"] == "none"
+
+    with patch("app.services.custom_food.publish_custom_food", AsyncMock(return_value="refused")):
+        custom = await api.post("/api/v1/webapp/food/custom", headers=auth, json={
+            "name": "кропив'яний суп з нічого", "kcal_per_100g": "55", "grams": "100",
+            "meal_type": "lunch", "idempotency_key": "customkey1",
+        })
+    assert custom.status_code == 201, custom.text
+    assert custom.json()["custom_fs_state"] == "refused"
+    entry = custom.json()["entries"][0]
+    assert Decimal(entry["calories"]) == Decimal("55")
+
+    edited = await api.patch(f"/api/v1/webapp/food-entries/{entry['id']}", headers=auth, json={
+        "version": entry["version"], "grams": "50", "meal_type": "dinner",
+    })
+    assert edited.status_code == 200, edited.text
+    assert Decimal(edited.json()["calories"]) == Decimal("27.5")
+
+    again = await api.post("/api/v1/webapp/food/custom", headers=auth, json={
+        "name": "кропив'яний суп з нічого", "kcal_per_100g": "999", "grams": "20",
+        "meal_type": "snack", "idempotency_key": "customkey2",
+    })
+    assert again.status_code == 201, again.text
+    assert again.json()["entries"][0]["calories"] != "199.8"
+    same = await pool.fetchval(
+        "SELECT count(*) FROM food_products WHERE owner_user_id = $1 AND name = $2",
+        login["user"]["id"], "кропив'яний суп з нічого",
+    )
+    assert same == 1
+
+    replaced = await api.post(f"/api/v1/webapp/products/{product_id}/pin", headers=auth, json={
+        "alias": "зелений борщ з кропивою", "suggested_portion_g": "370", "replace": False,
+    })
+    assert replaced.status_code == 200

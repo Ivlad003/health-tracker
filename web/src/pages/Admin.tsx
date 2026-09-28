@@ -15,6 +15,16 @@ interface Flag {
   version: number;
 }
 
+interface PersonalFood {
+  product_id: number;
+  name: string;
+  custom_fs_state: string | null;
+  energy_kcal: string | number | null;
+  protein_g: string | number | null;
+  fat_g: string | number | null;
+  carbs_g: string | number | null;
+}
+
 interface Jobs {
   outbox: { operation: string; status: string; n: number }[];
   outbox_failures: { id: number; operation: string; status: string; attempts: number; last_error: string | null }[];
@@ -27,6 +37,7 @@ export default function AdminPage() {
   const load = useCallback((signal: AbortSignal) => Promise.all([
     api<{ items: Flag[] }>("/api/v1/admin/features", { signal }),
     api<Jobs>("/api/v1/admin/jobs", { signal }),
+    api<{ items: PersonalFood[] }>("/api/v1/admin/my-products", { signal }),
   ]), []);
   const { data, error, reload } = useApi(load);
   const action = useAction();
@@ -34,7 +45,7 @@ export default function AdminPage() {
   const header = <PageHeader title={t("admin")} />;
   if (error != null && !data) return <>{header}<ErrorState error={error} onRetry={reload} /></>;
   if (!data) return <>{header}<Loading /></>;
-  const [{ items: flags }, jobs] = data;
+  const [{ items: flags }, jobs, foods] = data;
 
   const mutate = (path: string, init: RequestInit) => action.run(async () => {
     await api(path, init);
@@ -45,6 +56,21 @@ export default function AdminPage() {
     <>
       {header}
       <ActionFeedback error={action.error} />
+      <Section title={t("myFoods")}>
+        <ul className="list">
+          {foods.items.map((food) => (
+            <li key={food.product_id}>
+              <span>
+                {food.name}<br />
+                <span className="caption">
+                  {food.energy_kcal ?? "?"} {t("kcal")}
+                  {food.custom_fs_state ? ` · ${food.custom_fs_state}` : ""}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Section>
       <Section title={t("features")}>
         <ul className="list">
           {flags.map((flag) => (

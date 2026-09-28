@@ -271,6 +271,7 @@ def test_preflight_requires_migration_011():
         "016_food_ledger_catalog.sql",
         "017_webapp_admin_preferences.sql",
         "018_webapp_hardening.sql",
+        "019_custom_food_state.sql",
         ]
     assert "health_daily_metric_aggregates_family_check_v2" in REQUIRED_APPLE_HEALTH_CONSTRAINTS
     assert "idx_health_daily_metric_aggregates_user_family_date" in REQUIRED_APPLE_HEALTH_INDEXES

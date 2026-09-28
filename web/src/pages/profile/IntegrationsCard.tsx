@@ -50,7 +50,9 @@ export function IntegrationsCard() {
             <>
               <button className="secondary" type="button" disabled={action.busy}
                 onClick={() => void action.run(async () => {
-                  await api("/api/v1/webapp/catalog-imports", { method: "POST", body: "{}" });
+                  await api("/api/v1/webapp/catalog-imports", {
+                    method: "POST", body: JSON.stringify({ days: 180 }),
+                  });
                   return t("importStarted");
                 })}>
                 {t("importHistory")}

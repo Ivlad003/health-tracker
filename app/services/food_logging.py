@@ -380,6 +380,9 @@ def evaluate_items(items: list[dict]) -> str:
         if item.get("status") == "needs_label" and not item.get("selected"):
             return "needs_label"
     for item in items:
+        if item.get("status") == "needs_weight" and item.get("grams") in (None, ""):
+            return "needs_weight"
+    for item in items:
         if not item.get("selected"):
             return "needs_product"
     for item in items:
@@ -994,7 +997,9 @@ def merge_daily(
             "grams": row.get("grams"), "meal_type": row.get("meal_type"),
             "energy_kcal": kcal, "protein_g": macros[0], "fat_g": macros[1], "carbs_g": macros[2],
             "source": source, "sync_status": row.get("sync_status"), "version": row.get("version"),
-            "origin": row.get("origin"),
+            "origin": row.get("origin"), "product_id": row.get("product_id"),
+            "local_date": row.get("local_date").isoformat() if row.get("local_date") else None,
+            "custom_fs_state": row.get("custom_fs_state"),
         })
 
     for remote in remote_list:
@@ -1045,11 +1050,13 @@ async def daily_view(pool: Any, ctx: UserContext, local_date: Optional[date] = N
         """SELECT fe.id, fe.food_name, fe.calories, fe.protein, fe.fat, fe.carbs, fe.grams,
                   fe.meal_type::text AS meal_type, fe.entry_status, fe.sync_status,
                   fe.remote_entry_id, fe.remote_food_id, fe.remote_serving_id,
-                  fe.version, fe.origin,
+                  fe.version, fe.origin, fe.product_id, fe.local_date,
+                  p.custom_fs_state,
                   (SELECT o.status FROM food_sync_outbox o
                    WHERE o.food_entry_id = fe.id AND o.operation = 'create'
                    ORDER BY o.id DESC LIMIT 1) AS outbox_status
            FROM food_entries fe
+           LEFT JOIN food_products p ON p.id = fe.product_id
            WHERE fe.user_id = $1
              AND (fe.local_date = $2
                   OR (fe.local_date IS NULL AND (fe.logged_at AT TIME ZONE $3)::date = $2))

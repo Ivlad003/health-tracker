@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { api } from "../api";
 import { Banner, EntryList, ErrorState, Loading, PageHeader, Section } from "../components/ui";
+import { EntryActions } from "./food/EntryActions";
 import { useApi } from "../hooks/useApi";
 import { formatDay, formatNumber, shiftDay, todayIn } from "../i18n";
 import { useT } from "../LangContext";
@@ -44,7 +45,9 @@ export function HistoryPage({ me }: { me: Me }) {
                 {expanded && (
                   <div id={`day-${day.local_date}`} className="day-detail">
                     {day.partial && <Banner>{t("partial")}</Banner>}
-                    <EntryList entries={day.entries} />
+                    <EntryList entries={day.entries} extra={(entry) => (
+                      <EntryActions entry={{ ...entry, local_date: entry.local_date ?? day.local_date }} onChanged={reload} />
+                    )} />
                   </div>
                 )}
               </li>

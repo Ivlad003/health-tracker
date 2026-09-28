@@ -54,6 +54,9 @@ export interface FoodEntry {
   source: string;
   sync_status: string | null;
   version: number | null;
+  product_id?: number | null;
+  local_date?: string | null;
+  custom_fs_state?: string | null;
 }
 
 export interface DayView {
@@ -78,6 +81,7 @@ export interface Product {
 }
 
 export interface SearchItem {
+  portion_kcal?: string | number | null;
   product_id: number | null;
   provider: string;
   external_id: string | null;

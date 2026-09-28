@@ -161,8 +161,16 @@ async def _try_draft_reply(update: Update, user_id: int, lang: str, text: str) -
                 await _send_food_reply(message, reply, lang, user_id)
                 return True
         return False
-    if not _QUANTITY_ONLY_RE.match(text):
-        return False
+    kcal_drafts = await food_bot.pending_kcal_drafts(pool, ctx)
+    if len(kcal_drafts) == 1:
+        reply = await food_bot.apply_reply_text(pool, ctx, kcal_drafts[0], text)
+        if reply is None:
+            return False
+        await _send_food_reply(message, reply, lang, user_id)
+        return True
+    if len(kcal_drafts) > 1:
+        await message.reply_text(t("food_which_draft", lang))
+        return True
     draft, count = await food_bot.pending_weight_draft(pool, ctx)
     if count == 0:
         return False
@@ -936,6 +944,38 @@ async def handle_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(t("sync_done", lang) + "\n".join(results))
 
 
+async def handle_food_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Import 180 days of FatSecret diary into My Products. A running job is reported."""
+    if not update.message or not update.effective_user:
+        return
+    user = await _ensure_user(
+        update.effective_user.id, update.effective_user.username,
+        getattr(update.effective_user, "language_code", None),
+    )
+    lang = _lang(update)
+    pool = await get_pool()
+    ctx = await ledger.load_user_context(pool, user["id"])
+    if not ctx.fs_connected:
+        await update.message.reply_text(t("food_sync_need_fs", lang))
+        return
+    from app.services.catalog_import import job_to_json, start_import
+
+    async with pool.acquire() as conn:
+        job = await start_import(
+            conn, user["id"], days=180, mode=ctx.prefs.history_import_mode, kind="range",
+        )
+    summary = job_to_json(job)
+    if job.get("already_active"):
+        await update.message.reply_text(t(
+            "food_sync_active", lang,
+            done=summary.get("days_done") or 0, total=summary.get("days_total") or 0,
+        ))
+        return
+    await update.message.reply_text(t(
+        "food_sync_started", lang, total=summary.get("days_total") or 180,
+    ))
+
+
 BOT_COMMANDS: dict[str | None, list[tuple[str, str]]] = {
     "uk": [
         ("start", "Почати / Інструкція"),
@@ -945,6 +985,7 @@ BOT_COMMANDS: dict[str | None, list[tuple[str, str]]] = {
         ("apple_health_help", "Інструкція Apple Health"),
         ("connect_fatsecret", "Підключити FatSecret"),
         ("sync", "Синхронізувати дані"),
+        ("food_sync", "Імпорт їжі за 180 днів"),
         ("timezone", "Часовий пояс"),
         ("profile", "Профіль для BMR"),
         ("language", "Мова / Language"),
@@ -964,6 +1005,7 @@ BOT_COMMANDS: dict[str | None, list[tuple[str, str]]] = {
         ("apple_health_help", "Apple Health guide"),
         ("connect_fatsecret", "Connect FatSecret"),
         ("sync", "Check connections"),
+        ("food_sync", "Import 180 days of food"),
         ("timezone", "Timezone"),
         ("profile", "BMR profile"),
         ("language", "Language / Мова"),
@@ -994,6 +1036,7 @@ async def start_bot() -> None:
     _application.add_handler(CommandHandler("apple_health_help", handle_apple_health_help))
     _application.add_handler(CommandHandler("connect_fatsecret", handle_connect_fatsecret))
     _application.add_handler(CommandHandler("sync", handle_sync))
+    _application.add_handler(CommandHandler("food_sync", handle_food_sync))
     _application.add_handler(CommandHandler("timezone", handle_timezone))
     _application.add_handler(CommandHandler("language", handle_language))
     _application.add_handler(CommandHandler("profile", handle_profile))

@@ -8,12 +8,16 @@ from app.services.food_resolver import (
     TIER_EXPLICIT,
     TIER_HISTORY,
     TIER_LEARNED,
+    TIER_SEARCH,
     Candidate,
     FoodQuery,
+    choose_slots,
     compatibility,
     decide,
     infer_preparation,
+    kcal_per_100g_from_description,
     match_score,
+    pair_slots,
     rank,
 )
 
@@ -136,3 +140,53 @@ def test_compatibility_uncertain_preparation():
     query = FoodQuery.from_item({"name_original": "рис варений"})
     ok, uncertain = compatibility(query, cand(TIER_HISTORY, 1, "Рис"))
     assert ok and uncertain == ["preparation"]
+
+
+def test_pin_still_logs_when_review_all():
+    query = FoodQuery.from_item({"name_original": "мій йогурт"})
+    rule = cand(TIER_DEFAULT, 5, "йогурт", match=1.0, exact=True)
+    assert decide(query, [rule], review_all=True).decision == "auto"
+
+
+def test_slots_keep_history_and_a_different_search_hit():
+    query = FoodQuery.from_item({"name_original": "зелений борщ"})
+    history = cand(TIER_LEARNED, 1, "Зелений борщ", match=1.0, exact=True)
+    same = cand(TIER_SEARCH, None, "Green borscht", match=0.4)
+    same.external_id = "1"
+    other = cand(TIER_SEARCH, None, "Nettle soup", match=0.8)
+    other.external_id = "20"
+    next_hist = cand(TIER_HISTORY, 2, "Борщ", match=0.5)
+    resolution = choose_slots(query, [history, next_hist], [same, other])
+    assert resolution.decision == "choose"
+    assert [c.external_id for c in resolution.candidates] == ["1", "20"]
+
+
+def test_slots_fill_second_button_from_history():
+    query = FoodQuery.from_item({"name_original": "борщ"})
+    first = cand(TIER_HISTORY, 1, "Борщ зелений")
+    second = cand(TIER_HISTORY, 2, "Борщ червоний")
+    same = cand(TIER_SEARCH, None, "Borscht")
+    same.external_id = "1"
+    paired = pair_slots([first, second], [same])
+    assert [c.product_id for c in paired] == [1, 2]
+    assert query.text
+
+
+def test_slots_one_candidate_is_one_button():
+    query = FoodQuery.from_item({"name_original": "борщ"})
+    only = cand(TIER_HISTORY, 1, "Борщ")
+    resolution = choose_slots(query, [only], [])
+    assert resolution.reason == "one_slot" and len(resolution.candidates) == 1
+
+
+def test_confirmed_phrase_does_not_auto_log_in_slots():
+    query = FoodQuery.from_item({"name_original": "гречка варена"})
+    learned = cand(TIER_LEARNED, 2, "гречка варена", match=1.0, exact=True)
+    resolution = choose_slots(query, [learned], [])
+    assert resolution.decision == "choose"
+
+
+def test_kcal_blurb_requires_per_100g():
+    text = "Per 100g - Calories: 89kcal | Fat: 0.30g"
+    assert kcal_per_100g_from_description(text) == Decimal("89")
+    assert kcal_per_100g_from_description("Per 1 cup - Calories: 200kcal") is None
