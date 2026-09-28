@@ -437,15 +437,27 @@ def merge_choices(history: list[Candidate], search: list[Candidate], *, search_l
     return chosen
 
 
-async def search_candidates(
-    query: FoodQuery, *, max_results: int = 8, language: Optional[str] = None,
-) -> list[Candidate]:
-    """FatSecret text search. Uses the words the user typed, in their region."""
+def _candidate_from_hit(item: dict, term: str) -> Optional[Candidate]:
+    if not item.get("food_id"):
+        return None
+    brand = item.get("brand")
+    description = item.get("description")
+    return Candidate(
+        tier=TIER_SEARCH,
+        product_id=None,
+        provider="fatsecret",
+        external_id=str(item["food_id"]),
+        label=item.get("name") or term,
+        brand=None if brand in (None, "", "Generic") else brand,
+        description=description,
+        match=match_score(term, item.get("name"))[0],
+        kcal_per_100g=kcal_per_100g_from_description(description),
+    )
+
+
+async def _search_term(term: str, *, max_results: int, language: Optional[str]) -> list[Candidate]:
     from app.services.fatsecret_api import search_food
 
-    term = query.text or query.name_en
-    if query.brand and query.brand.lower() not in term.lower():
-        term = f"{query.brand} {term}"
     try:
         result = await search_food(term, max_results=max_results, language=language)
     except Exception:
@@ -453,21 +465,37 @@ async def search_candidates(
         return []
     out = []
     for item in result.get("results", []):
-        if not item.get("food_id"):
-            continue
-        brand = item.get("brand")
-        description = item.get("description")
-        out.append(Candidate(
-            tier=TIER_SEARCH,
-            product_id=None,
-            provider="fatsecret",
-            external_id=str(item["food_id"]),
-            label=item.get("name") or term,
-            brand=None if brand in (None, "", "Generic") else brand,
-            description=description,
-            match=match_score(term, item.get("name"))[0],
-            kcal_per_100g=kcal_per_100g_from_description(description),
-        ))
+        cand = _candidate_from_hit(item, term)
+        if cand is not None:
+            out.append(cand)
+    return out
+
+
+async def search_candidates(
+    query: FoodQuery, *, max_results: int = 8, language: Optional[str] = None,
+) -> list[Candidate]:
+    """FatSecret text search. Uses the words the user typed, in their region.
+
+    When that returns fewer than three foods, an LLM suggests other names and
+    each name is searched. Calories still come only from FatSecret.
+    """
+    term = query.text or query.name_en
+    if query.brand and query.brand.lower() not in term.lower():
+        term = f"{query.brand} {term}"
+    out = await _search_term(term, max_results=max_results, language=language)
+    if len(out) >= 3:
+        return out[:max_results]
+    from app.services.food_search_phrases import expand_search_phrases
+
+    seen = {cand.external_id for cand in out}
+    for phrase in await expand_search_phrases(term, language):
+        for cand in await _search_term(phrase, max_results=max_results, language=language):
+            if cand.external_id in seen:
+                continue
+            seen.add(cand.external_id)
+            out.append(cand)
+            if len(out) >= max_results:
+                return out
     return out
 
 
