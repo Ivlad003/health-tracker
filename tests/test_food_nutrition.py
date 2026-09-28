@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.food_nutrition import (
+    DIARY_BLURB_SERVING_ID,
     NutritionError,
     basis_from_fatsecret_serving,
     calculate_portion,
@@ -12,9 +13,11 @@ from app.services.food_nutrition import (
     make_basis,
     parse_quantity_text,
     per_100g,
+    serving_from_per_100g_blurb,
     sum_nutrients,
     to_decimal,
     validate_grams,
+    writable_gram_serving,
 )
 
 
@@ -112,6 +115,35 @@ def test_fatsecret_serving_units_and_choice():
     assert basis_from_fatsecret_serving(servings[2]) is None  # ml ≠ g
     basis = basis_from_fatsecret_serving(chosen)
     assert calculate_portion(basis, 180).energy_kcal == Decimal("617.4")
+
+
+def test_diary_per_100g_blurb_is_a_local_gram_serving():
+    blurb = "Per 100g - Calories: 158kcal | Fat: 0.93g | Carbs: 30.20g | Protein: 5.10g"
+    serving = serving_from_per_100g_blurb(blurb)
+    assert serving["serving_id"] == DIARY_BLURB_SERVING_ID
+    assert serving["calories"] == "158"
+    assert serving["carbohydrate"] == "30.20"
+    assert serving["fat"] == "0.93"
+    assert serving["protein"] == "5.10"
+    basis = basis_from_fatsecret_serving(serving)
+    assert calculate_portion(basis, 155).energy_kcal == Decimal("244.9")
+
+
+def test_blurb_ignores_another_serving_and_missing_calories():
+    mixed = "Per 1 cup - Calories: 300kcal | Per 100g - Calories: 158kcal | Fat: 1.00g | Carbs: 20g | Protein: 4g"
+    assert serving_from_per_100g_blurb(mixed)["calories"] == "158"
+    assert serving_from_per_100g_blurb("Per 1 serving - Calories: 200kcal | Fat: 1g") is None
+    assert serving_from_per_100g_blurb("Per 100g - Fat: 1.00g | Carbs: 2g | Protein: 3g") is None
+    assert serving_from_per_100g_blurb(None) is None
+
+
+def test_diary_blurb_serving_is_not_sent_to_fatsecret():
+    blurb = serving_from_per_100g_blurb("Per 100g - Calories: 110kcal | Fat: 1g | Carbs: 2g | Protein: 3g")
+    real = {"serving_id": "10", "metric_serving_amount": "100", "metric_serving_unit": "g",
+            "number_of_units": "100", "calories": "110", "description": "100 g"}
+    assert writable_gram_serving([blurb]) is None
+    assert writable_gram_serving([blurb, real], "10")["serving_id"] == "10"
+    assert writable_gram_serving([blurb, real], DIARY_BLURB_SERVING_ID)["serving_id"] == "10"
 
 
 def test_sum_nutrients_marks_partial():

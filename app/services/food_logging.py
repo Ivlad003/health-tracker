@@ -30,8 +30,8 @@ from app.services.food_nutrition import (
     NutritionError,
     Portion,
     calculate_portion,
-    choose_gram_serving,
     fatsecret_units_for_grams,
+    writable_gram_serving,
     q1,
     to_decimal,
     validate_grams,
@@ -202,8 +202,7 @@ async def prepare_item(
             nutrition = await catalog.current_nutrition(conn, product_id, ctx.user_id, serving_id)
             servings = await _fatsecret_servings(conn, product_id)
             product = await catalog.get_product(conn, product_id, ctx.user_id) or product
-        preferred = next((s for s in servings if s["serving_id"] == serving_id), None)
-        writable = preferred or choose_gram_serving(servings)
+        writable = writable_gram_serving(servings, serving_id)
         if writable is not None:
             try:
                 remote = {
@@ -633,15 +632,19 @@ async def commit_draft(
     async with pool.acquire() as conn:
         for item in draft["items"]:
             sel = item["selected"]
-            prepared.append(await prepare_item(
-                conn, ctx,
-                product_id=int(sel["product_id"]),
-                grams=item["grams"],
-                quantity_source=item.get("quantity_source") or "explicit",
-                serving_id=sel.get("serving_id"),
-                alias_text=item.get("text") if item.get("learn", True) else None,
-                label=sel.get("label"),
-            ))
+            try:
+                prepared.append(await prepare_item(
+                    conn, ctx,
+                    product_id=int(sel["product_id"]),
+                    grams=item["grams"],
+                    quantity_source=item.get("quantity_source") or "explicit",
+                    serving_id=sel.get("serving_id"),
+                    alias_text=item.get("text") if item.get("learn", True) else None,
+                    label=sel.get("label"),
+                ))
+            except LedgerError as exc:
+                exc.item_index = item.get("index")  # type: ignore[attr-defined]
+                raise
 
     local_date = draft.get("local_date") or ctx.today()
     meal_type = draft.get("meal_type") or default_meal_type(datetime.now(ctx.tz))

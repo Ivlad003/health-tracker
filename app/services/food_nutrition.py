@@ -22,6 +22,9 @@ MAX_PORTION_GRAMS = Decimal("5000")
 MIN_PORTION_GRAMS = Decimal("0.1")
 # Energy density sanity bound: pure fat is ~900 kcal/100 g.
 MAX_KCAL_PER_100G = Decimal("950")
+# Diary lines cache calories under this id. It is not a FatSecret serving id,
+# so it must never be sent to food_entry.create.
+DIARY_BLURB_SERVING_ID = "per100g"
 
 NUTRIENT_FIELDS = ("energy_kcal", "protein_g", "fat_g", "carbs_g", "fiber_g", "sugar_g", "salt_g")
 MASS_UNITS = {"g": Decimal(1), "kg": Decimal(1000), "mg": Decimal("0.001"),
@@ -290,6 +293,46 @@ def calculate_portion(basis: NutritionBasis, grams: Any) -> Portion:
     return Portion(grams=grams_d, **values).rounded()  # type: ignore[arg-type]
 
 
+def serving_from_per_100g_blurb(description: Optional[str]) -> Optional[dict]:
+    """Diary line like ``Per 100g - Calories: 158kcal | Fat: 0.93g | ...``.
+
+    Only the per-100 g clause is usable. Calories from another serving in the
+    same string are ignored. The result is a synthetic gram serving that the
+    24 h FatSecret cache can store; its id is not writable.
+    """
+    if not description:
+        return None
+    anchor = re.search(r"per\s*100\s*g", description, re.IGNORECASE)
+    if anchor is None:
+        return None
+    window = description[anchor.end():]
+    nxt = re.search(r"\bper\s*\d", window, re.IGNORECASE)
+    if nxt is not None:
+        window = window[: nxt.start()]
+    calories = re.search(r"calories:\s*([0-9]+(?:\.[0-9]+)?)\s*kcal", window, re.IGNORECASE)
+    if calories is None:
+        return None
+
+    def grab(*labels: str) -> Optional[str]:
+        for label in labels:
+            match = re.search(rf"\b{label}:\s*([0-9]+(?:\.[0-9]+)?)", window, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    return {
+        "serving_id": DIARY_BLURB_SERVING_ID,
+        "description": "100 g",
+        "metric_serving_amount": "100",
+        "metric_serving_unit": "g",
+        "number_of_units": "100",
+        "calories": calories.group(1),
+        "protein": grab("protein"),
+        "fat": grab("fat"),
+        "carbohydrate": grab("carbohydrate", "carbs"),
+    }
+
+
 def basis_from_fatsecret_serving(serving: dict) -> Optional[NutritionBasis]:
     """Structured FatSecret serving → basis. Only gram-measured servings.
 
@@ -356,6 +399,20 @@ def choose_gram_serving(servings: Iterable[dict]) -> Optional[dict]:
     if pure_mass:
         return min(pure_mass, key=grams)
     return mass[0]
+
+
+def writable_gram_serving(servings: Iterable[dict], preferred_id: Optional[str] = None) -> Optional[dict]:
+    """Real FatSecret serving for ``food_entry.create``.
+
+    ``per100g`` is the diary-blurb cache. It can fill a local portion and
+    must not be sent back as a serving id.
+    """
+    real = [s for s in servings if str(s.get("serving_id") or "") != DIARY_BLURB_SERVING_ID]
+    if preferred_id:
+        preferred = next((s for s in real if str(s.get("serving_id")) == str(preferred_id)), None)
+        if preferred is not None and basis_from_fatsecret_serving(preferred) is not None:
+            return preferred
+    return choose_gram_serving(real)
 
 
 def sum_nutrients(portions: Iterable[dict]) -> dict[str, Any]:

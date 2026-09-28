@@ -244,10 +244,9 @@ async def _commit_and_render(pool: Any, ctx: UserContext, draft: dict) -> BotRep
     except LedgerError as exc:
         code = str(exc)
         if code == "nutrition_missing" or code == "basis_not_mass_based":
-            item = draft["items"][0]
-            name = (item.get("selected") or {}).get("label") or item.get("text") or "?"
-            return BotReply(t("food_nutrition_missing", lang, name=name),
-                            webapp_url=webapp_link(f"/drafts/{draft['id']}"), draft_id=draft["id"])
+            return await _offer_search_instead(
+                pool, ctx, draft, item_index=getattr(exc, "item_index", None),
+            )
         if code in ("grams_invalid", "grams_not_positive", "grams_too_large"):
             return BotReply(t("food_grams_invalid", lang), draft_id=draft["id"])
         raise
@@ -261,6 +260,61 @@ async def _commit_and_render(pool: Any, ctx: UserContext, draft: dict) -> BotRep
     entries = await _sync_now(pool, entries)
     reasons = [_why(item["selected"], lang) for item in draft["items"] if item.get("selected")]
     return await render_committed(pool, ctx, entries, await _goal(pool, ctx), reasons)
+
+
+async def _offer_search_instead(
+    pool: Any, ctx: UserContext, draft: dict, item_index: Optional[int] = None,
+) -> BotReply:
+    """A saved card with no per-gram calories is replaced by FatSecret search hits.
+
+    Other foods in the same draft stay as they are.
+    """
+    from app.services.food_resolver import FoodQuery, search_candidates
+
+    lang = ctx.language
+    items = draft["items"]
+    target = None
+    if item_index is not None:
+        target = next((item for item in items if item.get("index") == item_index), None)
+    if target is None or not target.get("selected"):
+        target = next((item for item in items if item.get("selected")), None)
+    name = "?"
+    if target:
+        name = (target.get("selected") or {}).get("label") or target.get("text") or "?"
+    if target is None:
+        return BotReply(
+            t("food_nutrition_missing", lang, name=name),
+            webapp_url=webapp_link(f"/drafts/{draft['id']}"), draft_id=draft["id"],
+        )
+    failed = target.get("selected") or {}
+    query = FoodQuery.from_item({"name_original": target.get("text") or name})
+    found = await search_candidates(query, language=ctx.language)
+    candidates = []
+    for cand in found:
+        if failed.get("product_id") and cand.product_id == failed.get("product_id"):
+            continue
+        if failed.get("external_id") and cand.external_id == str(failed.get("external_id")):
+            continue
+        candidates.append(cand.to_json())
+        if len(candidates) >= 3:
+            break
+    target["selected"] = None
+    target["candidates"] = candidates
+    target["status"] = "needs_product"
+    target["reason"] = "nutrition_missing"
+    async with pool.acquire() as conn:
+        try:
+            draft = await ledger.save_draft(conn, draft, items=items)
+        except (VersionConflict, LedgerError):
+            return BotReply(t("food_draft_outdated", lang), draft_id=draft["id"])
+    if not candidates:
+        return BotReply(
+            t("food_nutrition_missing", lang, name=name),
+            webapp_url=webapp_link(f"/drafts/{draft['id']}"), draft_id=draft["id"],
+        )
+    reply = _item_prompt(draft, lang)
+    reply.text = t("food_saved_card_unusable", lang, name=name) + "\n\n" + reply.text
+    return reply
 
 
 async def _advance(pool: Any, ctx: UserContext, draft: dict) -> BotReply:

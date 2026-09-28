@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.services import food_catalog as catalog
+from app.services.food_nutrition import serving_from_per_100g_blurb
 from app.services.fatsecret_api import (
     FatSecretAPIError,
     FatSecretAuthError,
@@ -136,17 +137,21 @@ async def _ingest_day(conn: Any, job: dict, day: date, entries: list[dict]) -> t
         food_id = entry.get("food_id")
         if not food_id or not str(food_id).isdigit() or str(food_id) == "0":
             continue
-        agg = by_food.setdefault(str(food_id), {"servings": set(), "count": 0, "label": None})
+        agg = by_food.setdefault(
+            str(food_id), {"servings": set(), "count": 0, "label": None, "description": None},
+        )
         agg["count"] += 1
         if entry.get("serving_id") and entry["serving_id"] != "0":
             agg["servings"].add(entry["serving_id"])
         # food_entry_name is the user's own diary label → durable display name.
         agg["label"] = agg["label"] or (entry.get("name") or None)
+        _remember_description(agg, entry.get("description"))
 
     found = added = 0
     for food_id, agg in by_food.items():
         product_id = await catalog.upsert_fatsecret_product(conn, food_id)
         found += 1
+        await _cache_diary_blurb(conn, product_id, agg.get("description"))
         servings = sorted(agg["servings"])
         if job["mode"] == "selective":
             await conn.execute(
@@ -178,6 +183,26 @@ async def _ingest_day(conn: Any, job: dict, day: date, entries: list[dict]) -> t
         if membership and membership["created"]:
             added += 1
     return found, added
+
+
+def _remember_description(agg: dict, description: Optional[str]) -> None:
+    """Keep a per-100 g diary blurb when any line of this food has one."""
+    description = (description or "").strip() or None
+    if description is None:
+        return
+    current = agg.get("description")
+    if current and serving_from_per_100g_blurb(current):
+        return
+    if serving_from_per_100g_blurb(description) or current is None:
+        agg["description"] = description
+
+
+async def _cache_diary_blurb(conn: Any, product_id: int, description: Optional[str]) -> None:
+    """Cache ``Per 100g - Calories`` for ≤24 h. The food id stays; nutrition does not."""
+    serving = serving_from_per_100g_blurb(description)
+    if serving is None:
+        return
+    await catalog.store_fatsecret_servings(conn, product_id, [serving])
 
 
 async def _fetch_enrichment(token: str, secret: str) -> list[dict]:

@@ -522,6 +522,33 @@ async def resolve(
     if resolution.decision == "search":
         return Resolution("choose", found[:3], "external_search") if found else resolution
     merged = merge_choices(resolution.candidates, found)
+    merged = await _drop_history_without_nutrition(conn, user_id, merged)
     if not merged:
-        return resolution
-    return Resolution("choose", merged, "history_and_search")
+        return Resolution("search", [], "no_usable_choice")
+    reason = "external_search" if all(c.tier == TIER_SEARCH for c in merged) else "history_and_search"
+    return Resolution("choose", merged, reason)
+
+
+async def _drop_history_without_nutrition(
+    conn: Any, user_id: int, candidates: list[Candidate],
+) -> list[Candidate]:
+    """A saved card is offered only when it already has calories per gram."""
+    from app.services import food_catalog as catalog
+
+    kept: list[Candidate] = []
+    for cand in candidates:
+        if cand.tier == TIER_SEARCH or cand.product_id is None:
+            kept.append(cand)
+            continue
+        nutrition = await catalog.current_nutrition(conn, cand.product_id, user_id)
+        energy = (nutrition or {}).get("energy_kcal")
+        grams = (nutrition or {}).get("grams_per_basis")
+        if energy is None or not grams:
+            continue
+        if cand.kcal_per_100g is None:
+            try:
+                cand.kcal_per_100g = Decimal(str(energy)) * 100 / Decimal(str(grams))
+            except (ArithmeticError, ValueError, TypeError):
+                pass
+        kept.append(cand)
+    return kept

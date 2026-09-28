@@ -8,7 +8,7 @@ Implementation of [the 2026-09-26 plan](plans/2026-09-26-food-history-photo-barc
 
 | Input | Behaviour |
 |---|---|
-| "гречка варена 180 г" (text/voice) | History-first: pinned default → previously confirmed choice → My Products → FatSecret search. A single unambiguous confirmed match with explicit grams is recorded immediately with **Undo**; otherwise up to 3 candidates are shown as buttons. |
+| "гречка варена 180 г" (text/voice) | History-first. A pinned default or one unambiguous confirmed match with explicit grams is logged immediately, with **Undo**. Otherwise the buttons are one saved card — only when that card already has calories per gram — plus up to three different FatSecret hits for the words typed (Ukraine before the US; extra names from the model only when fewer than three foods come back). Calories come from FatSecret. A saved card that still has no per-gram calories is replaced by those search hits; other foods in the same message stay queued. A diary line `Per 100g - Calories: …` is cached for 24 hours and is not stored permanently. |
 | No grams | The bot asks; reply "135 г" or just "135" **as a reply** to that message (a bare number outside a reply never creates food). Gram preset buttons come from preferences. |
 | Barcode photo (+ caption "135 г") | Local decoding (zxing-cpp) → GTIN validation → own/shared product → Open Food Facts → optional FatSecret barcode add-on. Restricted in-store/variable-weight codes are rejected. |
 | Unknown barcode | The bot asks for a nutrition-label photo (reply to its message or same album). Extracted values are shown; **Save product and log** creates a reusable personal product linked to the barcode. |
