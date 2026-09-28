@@ -40,7 +40,7 @@
 			<key>Text</key>
 			<string>Paste the Apple Health webhook URL from /connect_apple_health.</string>
 			<key>DefaultValue</key>
-			<string>https://example.com/api/v1/health/apple-health/sync?userId=123456789&amp;token=replace-me</string>
+			<string></string>
 		</dict>
 	</array>
 	<key>WFWorkflowActions</key>
@@ -3013,7 +3013,7 @@
 				<key>UUID</key>
 				<string>33333333-3333-4333-8333-333333333333</string>
 				<key>WFURL</key>
-				<string>https://example.com/api/v1/health/apple-health/sync?userId=123456789&amp;token=replace-me</string>
+				<string></string>
 				<key>WFHTTPMethod</key>
 				<string>POST</string>
 				<key>WFHTTPBodyType</key>

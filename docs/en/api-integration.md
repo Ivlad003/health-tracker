@@ -319,10 +319,14 @@ The recommended onboarding path is a ready Shortcut named
 
 1. In Telegram, run `/connect_apple_health`.
 2. Open the Shortcut import link/file on the user's iPhone or iPad.
-3. Paste the generated webhook URL into the Shortcut's import question.
+3. Paste the generated webhook URL into the Shortcut's empty import field;
+   there is no example server URL to delete. The answer configures the POST URL
+   for subsequent runs.
 4. Run the Shortcut once and approve the Health and Network permissions.
 5. In **Shortcuts** -> **Automation**, create a **Personal Automation** such as
    **Time of Day** and choose the imported Shortcut for recurring sync.
+
+For slow runs, see the [optimization plan and Apple-source research](plans/2026-09-27-apple-health-shortcut-optimization.md).
 
 Open and run the Shortcut on an iPhone or iPad. macOS does not support the
 **Find Health Samples** action. When a Mac opens the download endpoint, the
@@ -330,7 +334,7 @@ server shows a device-handoff page instead of installing a Shortcut that cannot
 run there. iPad browsers that use a desktop-style `Macintosh` user agent still
 receive the signed Shortcut file.
 
-The supplied Shortcut runs four **Find Health Samples** queries and merges their
+The supplied Shortcut runs eight **Find Health Samples** queries and merges their
 results into a single POST:
 
 | Health type (picker label) | Sent as `type` | Family | Unit | Date filter |
@@ -344,10 +348,10 @@ results into a single POST:
 | Walking + Running Distance | `walking_running_distance` | `distance` | sample **Unit** property | Start Date is today |
 | Exercise Minutes | `apple_exercise_time` | `exercise_time` | `min` | Start Date is today |
 
-The Shortcut now runs **eight** queries. Weight and distance are displayed in
-the device locale (kg/lb/st, km/mi), so the Shortcut sends the sample's
-**Unit** property instead of a fixed string. If that property renders empty,
-the server recovers the unit from the Value text (`"72,5 кг"`, `"3.1 mi"`).
+Weight and distance are displayed in the device locale (kg/lb/st, km/mi), so
+the Shortcut sends the sample's **Unit** property instead of a fixed string.
+If that property renders empty, the server recovers the unit from the Value
+text (`"72,5 кг"`, `"3.1 mi"`).
 
 #### Extended families (migration 011)
 

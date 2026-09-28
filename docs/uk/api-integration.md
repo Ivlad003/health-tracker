@@ -340,10 +340,14 @@ Shortcut.
 
 1. У Telegram виконай `/connect_apple_health`.
 2. Відкрий Shortcut import link/file на iPhone або iPad користувача.
-3. Встав згенерований webhook URL в import question Shortcut.
+3. Встав згенерований webhook URL у порожнє поле під час імпорту Shortcut;
+   приклад адреси сервера видаляти не потрібно. Відповідь налаштовує URL
+   POST-запиту для наступних запусків.
 4. Запусти Shortcut один раз і дозволь доступ до Health та Network.
 5. У **Shortcuts** -> **Automation** створи **Personal Automation**, наприклад
    **Time of Day**, і вибери імпортований Shortcut для регулярного запуску.
+
+Якщо запуск повільний, дивись [план оптимізації та дослідження джерел Apple](plans/2026-09-27-apple-health-shortcut-optimization.md).
 
 Відкривай і запускай Shortcut на iPhone або iPad. macOS не підтримує дію
 **Find Health Samples**. Коли Mac відкриває download endpoint, сервер показує

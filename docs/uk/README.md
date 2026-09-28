@@ -13,6 +13,7 @@
 - [🍽 Облік їжі](food-logging.md) - Пошук спершу в історії, штрихкоди, фото етикеток, outbox FatSecret, API Web App
 - [📱 Telegram Web App](webapp.md) - Фронтенд Mini App: вхід і відновлення сесії, екрани, тема, кешування, розробка, дорожня карта
 - [Історія їжі, фото, штрихкоди та Web App](plans/2026-09-26-food-history-photo-barcode.md) - Дослідження, ручне керування, default-продукти й план адмінки
+- [Оптимізація Apple Health Shortcut](plans/2026-09-27-apple-health-shortcut-optimization.md) - Дослідження джерел Apple, методика замірів на пристрої, пріоритетний план і порожнє поле URL
 
 ## 🎯 Швидкий старт
 

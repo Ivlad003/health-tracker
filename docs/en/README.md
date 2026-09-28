@@ -13,6 +13,7 @@ Welcome to Health & Wellness Tracker Bot documentation!
 - [🍽 Food Logging](food-logging.md) - History-first matching, barcodes, label photos, FatSecret outbox, Web App API
 - [📱 Telegram Web App](webapp.md) - Mini App frontend: auth/session recovery, screens, theming, caching, development, roadmap
 - [Food History, Photos, Barcodes & Web App](plans/2026-09-26-food-history-photo-barcode.md) - Research, manual management, default products and admin implementation plan
+- [Apple Health Shortcut Optimization](plans/2026-09-27-apple-health-shortcut-optimization.md) - Apple-source research, device benchmark procedure, prioritized plan, and empty URL setup
 
 ## 🎯 Quick Start
 
