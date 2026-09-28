@@ -14,6 +14,7 @@ never an auto-commit criterion.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -388,15 +389,65 @@ def _cand_from_row(tier: int, data: dict, *, match: float, exact: bool) -> Candi
     )
 
 
-async def search_candidates(query: FoodQuery, *, max_results: int = 5) -> list[Candidate]:
-    """External text search (FatSecret) as the last resort."""
+_PER_100_KCAL = re.compile(
+    r"per\s*100\s*g.*?calories:\s*([0-9]+(?:\.[0-9]+)?)\s*kcal",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def kcal_per_100g_from_description(description: Optional[str]) -> Optional[Decimal]:
+    if not description:
+        return None
+    match = _PER_100_KCAL.search(description)
+    if match is None:
+        return None
+    try:
+        return Decimal(match.group(1))
+    except Exception:
+        return None
+
+
+def _candidate_identity(cand: Candidate) -> tuple:
+    if cand.provider == "fatsecret" and cand.external_id:
+        return ("fs", str(cand.external_id))
+    if cand.product_id is not None:
+        return ("pid", cand.product_id)
+    return ("other", cand.label)
+
+
+def merge_choices(history: list[Candidate], search: list[Candidate], *, search_limit: int = 3) -> list[Candidate]:
+    """One history card, then FatSecret hits that are different foods."""
+    chosen: list[Candidate] = []
+    seen: set[tuple] = set()
+    for cand in history:
+        if cand.tier == TIER_EXPLICIT:
+            continue
+        chosen.append(cand)
+        seen.add(_candidate_identity(cand))
+        break
+    found = 0
+    for cand in search:
+        if _candidate_identity(cand) in seen:
+            continue
+        chosen.append(cand)
+        seen.add(_candidate_identity(cand))
+        found += 1
+        if found >= search_limit:
+            break
+    return chosen
+
+
+async def search_candidates(
+    query: FoodQuery, *, max_results: int = 8, language: Optional[str] = None,
+) -> list[Candidate]:
+    """FatSecret text search. Uses the words the user typed, in their region."""
     from app.services.fatsecret_api import search_food
 
-    term = query.name_en or query.text
+    term = query.text or query.name_en
     if query.brand and query.brand.lower() not in term.lower():
         term = f"{query.brand} {term}"
     try:
-        result = await search_food(term, max_results=max_results)
+        result = await search_food(term, max_results=max_results, language=language)
     except Exception:
         logger.warning("FatSecret search failed for resolver", exc_info=True)
         return []
@@ -405,6 +456,7 @@ async def search_candidates(query: FoodQuery, *, max_results: int = 5) -> list[C
         if not item.get("food_id"):
             continue
         brand = item.get("brand")
+        description = item.get("description")
         out.append(Candidate(
             tier=TIER_SEARCH,
             product_id=None,
@@ -412,8 +464,9 @@ async def search_candidates(query: FoodQuery, *, max_results: int = 5) -> list[C
             external_id=str(item["food_id"]),
             label=item.get("name") or term,
             brand=None if brand in (None, "", "Generic") else brand,
-            description=item.get("description"),
+            description=description,
             match=match_score(term, item.get("name"))[0],
+            kcal_per_100g=kcal_per_100g_from_description(description),
         ))
     return out
 
@@ -426,6 +479,7 @@ async def resolve(
     review_all: bool = False,
     allow_search: bool = True,
     history_enabled: bool = True,
+    language: Optional[str] = None,
 ) -> Resolution:
     candidates: list[Candidate] = []
     if history_enabled or query.product_id or query.barcode:
@@ -434,8 +488,12 @@ async def resolve(
             candidates = [c for c in candidates if c.tier == TIER_EXPLICIT]
     ranked = rank(query, candidates)
     resolution = decide(query, ranked, review_all=review_all)
-    if resolution.decision == "search" and allow_search and not query.barcode:
-        found = rank(query, await search_candidates(query))
-        if found:
-            return Resolution("choose", found[:3], "external_search")
-    return resolution
+    if resolution.decision == "auto" or query.barcode or not allow_search:
+        return resolution
+    found = rank(query, await search_candidates(query, language=language))
+    if resolution.decision == "search":
+        return Resolution("choose", found[:3], "external_search") if found else resolution
+    merged = merge_choices(resolution.candidates, found)
+    if not merged:
+        return resolution
+    return Resolution("choose", merged, "history_and_search")

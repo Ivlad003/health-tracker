@@ -149,29 +149,18 @@ async def _request_oauth2_token(scope: str = "basic") -> tuple[str, int]:
         return payload["access_token"], int(payload.get("expires_in") or 86400)
 
 
-async def search_food(query: str, max_results: int = 5) -> dict:
-    """Search FatSecret public food database. Returns formatted results."""
-    logger.info("FatSecret search: query='%s' max=%d", query, max_results)
-    token = await get_oauth2_token()
+def food_locales(language: Optional[str]) -> list[tuple[Optional[str], Optional[str]]]:
+    """Where to look. The mobile app for a Ukrainian account searches Ukraine, not the US set."""
+    if language == "uk":
+        return [("UA", "uk"), ("UA", "ru"), (None, None)]
+    if language == "ru":
+        return [("UA", "ru"), ("UA", "uk"), (None, None)]
+    return [(None, None)]
 
-    async with httpx.AsyncClient(timeout=_http_timeout()) as client:
-        resp = await client.post(
-            FATSECRET_API_URL,
-            headers={"Authorization": f"Bearer {token}"},
-            data={
-                "method": "foods.search",
-                "search_expression": query,
-                "format": "json",
-                "max_results": str(max_results),
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    _raise_on_error_body(data, "search")
 
+def _food_results(data: dict) -> list[dict]:
     foods = _as_list((data.get("foods") or {}).get("food", []))
-
-    results = [
+    return [
         {
             "name": f.get("food_name", ""),
             "brand": f.get("brand_name", "Generic"),
@@ -182,6 +171,60 @@ async def search_food(query: str, max_results: int = 5) -> dict:
         for f in foods
     ]
 
+
+async def _search_food_once(
+    query: str, max_results: int, region: Optional[str], language: Optional[str],
+) -> list[dict]:
+    scope = "basic localization" if region else "basic"
+    try:
+        token = await get_oauth2_token(scope)
+    except Exception:
+        if region:
+            return []
+        raise
+    payload = {
+        "method": "foods.search",
+        "search_expression": query,
+        "format": "json",
+        "max_results": str(max_results),
+    }
+    if region:
+        payload["region"] = region
+        if language:
+            payload["language"] = language
+    async with httpx.AsyncClient(timeout=_http_timeout()) as client:
+        resp = await client.post(
+            FATSECRET_API_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            data=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    if isinstance(data, dict) and "error" in data:
+        try:
+            code = int((data["error"] or {}).get("code", 0))
+        except (TypeError, ValueError):
+            code = 0
+        if region and code in (14, 208):
+            return []
+        _raise_on_error_body(data, "search")
+    return _food_results(data if isinstance(data, dict) else {})
+
+
+async def search_food(query: str, max_results: int = 8, language: Optional[str] = None) -> dict:
+    """Search FatSecret. Ukrainian and Russian try Ukraine before the US catalogue."""
+    logger.info("FatSecret search: query='%s' max=%d lang=%s", query, max_results, language)
+    results: list[dict] = []
+    for region, lang in food_locales(language):
+        try:
+            results = await _search_food_once(query, max_results, region, lang)
+        except Exception:
+            logger.warning(
+                "FatSecret search failed region=%s language=%s", region, lang, exc_info=True,
+            )
+            continue
+        if results:
+            break
     logger.info("FatSecret search result: query='%s' found=%d", query, len(results))
     return {"query": query, "results_count": len(results), "results": results}
 
@@ -217,37 +260,50 @@ def _parse_food(food: dict) -> dict:
     }
 
 
+def _locale_params(region: Optional[str], language: Optional[str]) -> dict:
+    params: dict = {}
+    if region:
+        params["region"] = region
+        if language:
+            params["language"] = language
+    return params
+
+
 async def get_food_details(
     food_id: str,
     *,
     access_token: Optional[str] = None,
     access_secret: Optional[str] = None,
+    region: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> dict:
     """``food.get.v4`` → food identity + structured servings (with IDs).
 
-    Diary and custom foods are visible only with the user's OAuth 1.0 token.
-    The public client-credentials call returns error 106 (invalid id) for them.
+    Diary foods from the mobile app often exist only in the user's region.
+    A US ``food.get`` then answers 106. Pass ``region`` (for example ``UA``).
     """
-    logger.info("FatSecret food.get: food_id=%s", food_id)
+    logger.info("FatSecret food.get: food_id=%s region=%s", food_id, region)
+    locale = _locale_params(region, language)
     if access_token and access_secret:
         data = await _user_call(
             access_token,
             access_secret,
-            {"method": "food.get.v4", "food_id": str(food_id), "format": "json"},
+            {"method": "food.get.v4", "food_id": str(food_id), "format": "json", **locale},
             "food.get",
         )
         return _parse_food(data.get("food") or {})
-    token = await get_oauth2_token()
-
+    scope = "basic localization" if region else "basic"
+    try:
+        token = await get_oauth2_token(scope)
+    except Exception:
+        if not region:
+            raise
+        raise FatSecretAPIError(14, "localization scope unavailable")
     async with httpx.AsyncClient(timeout=_http_timeout()) as client:
         resp = await client.post(
             FATSECRET_API_URL,
             headers={"Authorization": f"Bearer {token}"},
-            data={
-                "method": "food.get.v4",
-                "food_id": food_id,
-                "format": "json",
-            },
+            data={"method": "food.get.v4", "food_id": food_id, "format": "json", **locale},
         )
         resp.raise_for_status()
         data = resp.json()

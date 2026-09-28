@@ -174,25 +174,40 @@ async def refresh_fatsecret_product(
     *,
     access_token: Optional[str] = None,
     access_secret: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> dict:
     """Fetch ``food.get`` and refresh cached name + servings. Network call:
     never run it while holding a transaction open.
 
-    The user's token is tried first so foods that exist only in their diary
-    (public ``food.get`` answers 106) still refresh.
+    Tries the user's token and the Ukraine catalogue before the public US one.
+    A food logged in the mobile app often answers 106 until the region is set.
     """
-    from app.services.fatsecret_api import FatSecretAPIError, get_food_details
+    from app.services.fatsecret_api import FatSecretAPIError, food_locales, get_food_details
+
+    async def attempt(**kwargs):
+        try:
+            return await get_food_details(food_id, **kwargs)
+        except FatSecretAPIError as exc:
+            if exc.code not in (14, 106, 208):
+                raise
+            return None
 
     details = None
-    if access_token and access_secret:
-        try:
-            details = await get_food_details(
-                food_id, access_token=access_token, access_secret=access_secret,
+    for region, lang in food_locales(language):
+        if access_token and access_secret:
+            details = await attempt(
+                access_token=access_token, access_secret=access_secret,
+                region=region, language=lang,
             )
-        except FatSecretAPIError:
-            details = None
+            if details:
+                break
     if details is None:
-        details = await get_food_details(food_id)
+        for region, lang in food_locales(language):
+            details = await attempt(region=region, language=lang)
+            if details:
+                break
+    if details is None:
+        raise FatSecretAPIError(106, "Invalid ID: please check your food_id")
     await conn.execute(
         """UPDATE food_products
            SET provider_name = $2, provider_brand = $3, provider_cached_until = $4

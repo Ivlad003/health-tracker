@@ -195,6 +195,7 @@ async def prepare_item(
                 await catalog.refresh_fatsecret_product(
                     conn, product_id, product["external_id"],
                     access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+                    language=ctx.language,
                 )
             except Exception:
                 logger.warning("FatSecret refresh failed for product %s", product_id, exc_info=True)

@@ -121,7 +121,7 @@ def _item_prompt(draft: dict, lang: str) -> BotReply:
                     draft_id=draft["id"],
                 )
             rows = []
-            for n, cand in enumerate(cands[:3]):
+            for n, cand in enumerate(cands[:4]):
                 kcal = cand.get("kcal_per_100g")
                 desc = cand.get("label") or "?"
                 if cand.get("brand"):
@@ -291,6 +291,7 @@ async def build_item(pool: Any, ctx: UserContext, index: int, raw: dict, *, hist
             conn, ctx.user_id, query,
             review_all=ctx.prefs.recording_policy == "review_all",
             history_enabled=history,
+            language=ctx.language,
         )
     grams = _grams_from_item(raw)
     item = {
@@ -302,7 +303,7 @@ async def build_item(pool: Any, ctx: UserContext, index: int, raw: dict, *, hist
         "fat_pct": str(query.fat_pct) if query.fat_pct is not None else None,
         "grams": str(grams) if grams is not None else None,
         "quantity_source": "explicit" if grams is not None else None,
-        "candidates": [c.to_json() for c in resolution.candidates[:3]],
+        "candidates": [c.to_json() for c in resolution.candidates[:4]],
         "selected": None,
         "reason": resolution.reason,
         "presets": ctx.prefs.gram_presets,

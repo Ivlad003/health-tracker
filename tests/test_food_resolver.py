@@ -110,6 +110,28 @@ def test_query_parses_fat_from_text():
     assert FoodQuery.from_item({"name_original": "кефір 1,5%"}).fat_pct == Decimal("1.5")
 
 
+def test_merge_choices_keeps_history_and_other_search_hits():
+    from app.services.food_resolver import TIER_HISTORY, TIER_SEARCH, merge_choices
+
+    history = cand(TIER_HISTORY, 3, "Зеленый Борщ")
+    history.external_id = "7492318"
+    same = cand(TIER_SEARCH, None, "Зелений борщ")
+    same.external_id = "7492318"
+    other = cand(TIER_SEARCH, None, "Борщ зелений з кропивою")
+    other.external_id = "34499"
+    third = cand(TIER_SEARCH, None, "Зелений борщ з яйцем")
+    third.external_id = "35500"
+    merged = merge_choices([history], [same, other, third])
+    assert [c.external_id for c in merged] == ["7492318", "34499", "35500"]
+
+
+def test_ukrainian_search_order_tries_ukraine_before_us():
+    from app.services.fatsecret_api import food_locales
+
+    assert food_locales("uk") == [("UA", "uk"), ("UA", "ru"), (None, None)]
+    assert food_locales("en") == [(None, None)]
+
+
 def test_compatibility_uncertain_preparation():
     query = FoodQuery.from_item({"name_original": "рис варений"})
     ok, uncertain = compatibility(query, cand(TIER_HISTORY, 1, "Рис"))

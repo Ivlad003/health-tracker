@@ -480,6 +480,7 @@ async def import_product(body: ImportProductBody, session: Session):
         await catalog.refresh_fatsecret_product(
             pool, product_id, body.external_id,
             access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+            language=ctx.language,
         )
     except Exception:
         logger.warning("FatSecret refresh failed for imported product", exc_info=True)
@@ -602,6 +603,7 @@ async def refresh_product(product_id: int, session: Session):
         await catalog.refresh_fatsecret_product(
             pool, product_id, product["external_id"],
             access_token=ctx.fs_token, access_secret=ctx.fs_secret,
+            language=ctx.language,
         )
     except Exception:
         logger.warning("FatSecret refresh failed for product %s", product_id, exc_info=True)
